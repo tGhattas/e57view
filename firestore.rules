@@ -1,11 +1,6 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /clouds/{cloudId} {
-      allow read: if true;
-      allow create: if request.auth != null && request.resource.data.owner == request.auth.uid;
-      allow update, delete: if request.auth != null && resource.data.owner == request.auth.uid;
-    }
     // An agent session is a mailbox between one viewer tab and the /agent function.
     // Only the tab that created it may read or write it, and nobody may enumerate the
     // collection: the session id is a name, not a credential. The credential is the

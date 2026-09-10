@@ -76,12 +76,12 @@ ok('screenshot returns one image', !!r.j.shot && !r.j.result?.png, `${(bytes/102
 
 // an apply must return a plain summary: the undo record cannot cross Firestore
 await p.click('#k-agentedits'); await p.waitForTimeout(1200);
-r = await call({ session: sid, cmd: 'ai_suggest', args: { provider: 'heuristic', kinds: ['noise'], shot: false } }, auth);
-const nsug = Array.isArray(r.j.result) ? r.j.result.length : 0;
-ok('heuristic returned regions', r.status === 200 && nsug > 0, `${nsug} regions`);
-r = await call({ session: sid, cmd: 'suggestions', args: { op: 'apply', shot: false } }, auth);
+r = await call({ session: sid, cmd: 'regions', args: { op: 'add', shot: false,
+  region: { kind: 'box', role: 'delete', center: [54.5, 47, 7.3], half: [11, 4, 1], label: 'specks' } } }, auth);
+ok('agent can add a delete region', r.status === 200 && !!r.j.result?.id, r.j.result?.label ?? '');
+r = await call({ session: sid, cmd: 'regions', args: { op: 'apply', shot: false } }, auth);
 const ap = r.j.result || {};
-ok('apply replies with a summary', r.status === 200 && r.j.ok !== false && ap.dropped > 0 && !('undo' in ap),
+ok('apply replies with a summary', r.status === 200 && r.j.ok !== false && ap.dropped === SPECKS.length && !('undo' in ap),
    `kept ${ap.kept} dropped ${ap.dropped}`);
 r = await call({ session: sid, cmd: 'history', args: { op: 'undo', shot: false } }, auth);
 ok('undo restores through the endpoint', r.status === 200 && r.j.result?.points === NPTS, `${r.j.result?.points} pts`);

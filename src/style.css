@@ -233,3 +233,8 @@ input.txt{background:#0a1216;color:var(--ink);border:1px solid var(--line);borde
 #joy button{background:#0d1418e6;border:1px solid var(--line);color:var(--ink);border-radius:8px;font-size:14px;touch-action:none;user-select:none;-webkit-user-select:none}
 #joy .vert{display:flex;flex-direction:column;gap:2px}#joy .vert button{width:52px;height:44px;font-size:11px}
 #joy button:active{background:var(--teal);color:#04181b}
+
+/* copyable install snippet */
+.snip{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;line-height:1.5;color:var(--ink);
+  background:#0a1216;border:1px solid var(--line);border-radius:4px;padding:8px 9px;margin:0 0 8px;
+  overflow-x:auto;white-space:pre;user-select:all}

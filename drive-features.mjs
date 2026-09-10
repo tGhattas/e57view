@@ -102,9 +102,19 @@ await dl2.saveAs(e57Path);
 await busyGone(600000);
 console.log('EXPORT E57:', await p.textContent('#v-export'), `-> ${e57Path} (${(statSync(e57Path).size / 1e6).toFixed(1)} MB)`);
 
+// Reload now warns when there is unsaved history; accept it.
+async function reloadNow() {
+  await p.click('#k-reload');
+  try {
+    await p.waitForSelector('#modal:not(.hidden)', { timeout: 2500 });
+    const t = (await p.textContent('#modal-title')) || '';
+    if (/reload/i.test(t)) await p.click('#modal-btns button.danger');
+  } catch {}
+  await loaded();
+}
+
 // ---------------------------------------------------------------- reload full + cache it
-await p.click('#k-reload');
-await loaded();
+await reloadNow();
 await p.evaluate(() => document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed')));
 await p.waitForSelector('#modal:not(.hidden)', { timeout: 15000 });
 await p.click('#modal-btns button:has-text("Cache it")');
@@ -113,8 +123,7 @@ console.log('CACHE:', await p.textContent('#v-cache'));
 
 // ---------------------------------------------------------------- reload from cache
 const tC = Date.now();
-await p.click('#k-reload');
-await loaded();
+await reloadNow();
 await p.evaluate(() => document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed')));
 console.log(`LOAD (cache): ${await p.textContent('#tb-points')}  wall ${((Date.now() - tC) / 1000).toFixed(1)}s | ${await p.textContent('#v-loaded')}`);
 await p.waitForTimeout(800);

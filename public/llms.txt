@@ -4,12 +4,14 @@ Browser viewer for E57 / PLY / LAS point clouds. Humans open a scan; agents driv
 
 ## Open a scan
 
-https://opensketch.web.app/?cloud=CLOUD_ID
-https://opensketch.web.app/?cloud=CLOUD_ID&view=top
-https://opensketch.web.app/?cloud=CLOUD_ID&view=fit&ai=heuristic&kinds=noise
+A scan is opened from the viewer's own machine: drag an .e57, .ply or .las file onto the
+page, or pick one. Nothing is uploaded anywhere. A scan already cached on that device can be
+reopened by an agent with {"cmd":"open","args":{"cached":"KEY"}}.
 
-Query args: cloud, view (fit|top), az, el, dist, ai (heuristic|openai|xai), kinds (comma list:
-veg,vehicle,people,noise), session, agent=1 (local MCP bridge).
+https://opensketch.web.app/?view=top
+https://opensketch.web.app/?session=SESSION
+
+Query args: view (fit|top), az, el, dist, session, agent=1 (local MCP bridge).
 
 ## Drive a viewer tab over HTTP (no MCP)
 
@@ -22,14 +24,13 @@ curl -s https://opensketch.web.app/agent \
   -H 'Content-Type: application/json' \
   -d '{"session":"SESSION","cmd":"state"}'
 
-Commands: state, screenshot, set_view, set, regions, pick, measure, ai_suggest,
-suggestions, history, stations, open.
+Commands: state, screenshot, set_view, set, regions, pick, measure, history, stations, open.
 
 {"session":"S","cmd":"screenshot","args":{"width":1024}}
 {"session":"S","cmd":"set_view","args":{"preset":"top"}}
 {"session":"S","cmd":"set_view","args":{"pose":{"p":[10,10,5],"t":[0,0,0]}}}
-{"session":"S","cmd":"ai_suggest","args":{"provider":"heuristic","kinds":["noise"]}}
-{"session":"S","cmd":"suggestions","args":{"op":"apply"}}
+{"session":"S","cmd":"regions","args":{"op":"add","region":{"kind":"box","role":"delete","center":[10,4,2],"half":[2,2,2]}}}
+{"session":"S","cmd":"regions","args":{"op":"apply"}}
 {"session":"S","cmd":"history","args":{"op":"undo"}}
 
 GET /agent                     command list
@@ -44,8 +45,7 @@ Responses carry result JSON and, for most commands, shot (JPEG base64).
   It also expires 8 hours after creation, and Stop session revokes it by hand.
 - A command taking over 50 s answers 202 {pending: N}; collect it with GET /agent?s=S&n=N.
 - Sessions are read-only by default. Commands that drop points, write a file, load another
-  scan or call a paid model (regions/suggestions apply, history undo|redo|save, open,
-  ai_suggest with openai or xai) return 403 until the viewer tab ticks Allow edits.
+  scan (regions apply, history undo|redo|save, open) return 403 until the tab ticks Allow edits.
 - The original file on disk is never overwritten.
 
 ## Local MCP (agent on the same machine as the tab)
@@ -61,5 +61,4 @@ The server listens on ws://127.0.0.1:7337 and the tab connects out to it; nothin
 off the machine, which makes this the safer option when the agent runs beside the browser.
 
 Tools: viewer_state, viewer_screenshot, viewer_set_view, viewer_set, viewer_regions,
-viewer_pick, viewer_measure, viewer_export, viewer_open, viewer_ai_suggest,
-viewer_suggestions, viewer_history, viewer_stations.
+viewer_pick, viewer_measure, viewer_export, viewer_open, viewer_history, viewer_stations.

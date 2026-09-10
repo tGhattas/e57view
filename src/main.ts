@@ -3,7 +3,6 @@ import * as THREE from 'three';
 import { Viewer, isTouch, isIOS, type Knobs, type Station, type GizmoMode } from './viewer';
 import { REC, type Region } from './cells';
 import { AgentLink } from './agent';
-import { heuristicSuggest, prepareForAI, providerSuggest, mapResult } from './ai';
 import { History, cloneRegions } from './history';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -21,11 +20,10 @@ let histogram = new Uint32Array(256);
 const NB = 1024;
 let axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)];
 let axisCube: { origin: number[]; size: number } | null = null;
-let revealed = false, gotRealLeaf = false, fromCache = false, cropped = false, fromCloud: string | null = null;
+let revealed = false, gotRealLeaf = false, fromCache = false, cropped = false;
 let cacheKey = '';
 let t0 = 0;
-let cloudStreamer: import('./cloud').Streamer | null = null;
-let cloudMod: typeof import('./cloud') | null = null;
+let sessionMod: typeof import('./session') | null = null;
 
 const small = isTouch && Math.min(innerWidth, innerHeight) < 820;
 const MEM_LIMIT = isTouch ? 700e6 : 3.2e9;
@@ -129,16 +127,15 @@ function fail(msg: string) { const e = $('err'); e.textContent = msg; e.classLis
 
 // ------------------------------------------------------------------ opening files
 function resetForLoad(name: string) {
-  revealed = false; gotRealLeaf = false; fromCache = false; cropped = false; fromCloud = null;
-  cloudStreamer?.stop(); cloudStreamer = null;
+  revealed = false; gotRealLeaf = false; fromCache = false; cropped = false;
   (document.activeElement as HTMLElement | null)?.blur?.();
   $('drop').classList.add('hidden'); $('loading').classList.remove('hidden', 'over');
   $('ld-name').textContent = name; $('ld-stat').textContent = 'opening…'; $('ld-bar').style.width = '0%'; $('err').classList.add('hidden');
   viewer.clear();
   histogram = new Uint32Array(256); axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)]; axisCube = null;
-  sections.length = 0; suggestions.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false;
+  sections.length = 0; deletes.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false;
   void hist.clear();
-  syncRegions(); updateMeasureList(); setTool('none'); renderSectionList(); renderAiList(); updateHistUI();
+  syncRegions(); updateMeasureList(); setTool('none'); renderSectionList(); updateHistUI();
   worker?.terminate(); worker = null;
   t0 = performance.now();
 }
@@ -200,7 +197,7 @@ function onMeta(m: any) {
   const bits = [s.cartesian ? 'XYZ' : 'spherical']; if (s.hasColor) bits.push('RGB'); if (s.hasIntensity) bits.push('intensity'); if (s.hasNormals) bits.push('normals');
   $('ld-fields').textContent = bits.join(' · ');
   if (s.name) $('ld-name').textContent = s.name;
-  $('ld-stat').textContent = m.fromCache ? 'reading cached cells…' : m.fromCloud ? 'streaming from the cloud…' : `opened in ${m.openMs.toFixed(0)} ms · ${(m.bytesPulled/1e6).toFixed(1)} MB read · ${meta.stations.length} stations`;
+  $('ld-stat').textContent = m.fromCache ? 'reading cached cells…' : `opened in ${m.openMs.toFixed(0)} ms · ${(m.bytesPulled/1e6).toFixed(1)} MB read · ${meta.stations.length} stations`;
   ($('k-nrm') as HTMLInputElement).disabled = !s.hasNormals;
   $('tb-name').textContent = currentFile?.name ?? meta.scans[0].name ?? 'cloud';
   if (m.histogram) histogram = Uint32Array.from(m.histogram);
@@ -210,7 +207,7 @@ function onMeta(m: any) {
   $('k-stations').parentElement!.classList.toggle('hidden', !meta.stations.length);
 }
 function onDone(stats: any, how: string) {
-  if (!fromCache && !fromCloud) robustBounds();
+  if (!fromCache) robustBounds();
   revealViewport(); viewer.applyZRange(); autoRangeIntensity(); syncZLabels();
   const secs = (performance.now() - t0) / 1000, total = meta.scans[0].points;
   $('tb-points').textContent = `${fmt(stats.kept)} pts · ${how} in ${secs.toFixed(1)}s`;
@@ -219,8 +216,8 @@ function onDone(stats: any, how: string) {
   drawHistogram(); viewer.fit(); applyPendingView(); applyUrlCommands(); updateCropUI(true);
   worker?.terminate(); worker = null;
   if (currentHandle) idbPut(cacheKey, currentHandle);
-  updateCacheUI(); updateCloudUI(); updateHistUI();
-  if (!fromCache && !fromCloud && localStorage.getItem('nocache:' + cacheKey) !== '1') setTimeout(offerCache, 600);
+  updateCacheUI(); updateHistUI();
+  if (!fromCache && localStorage.getItem('nocache:' + cacheKey) !== '1') setTimeout(offerCache, 600);
 }
 function revealViewport() {
   if (revealed) return; revealed = true; viewer.fit();
@@ -355,12 +352,13 @@ addEventListener('keydown', (e: KeyboardEvent) => {
   else if (e.key === 'Home') viewer.fit();
 });
 
-// ------------------------------------------------------------------ regions: crop, sections, suggestions
+// ------------------------------------------------------------------ regions: crop and sections
 const cropState: Region = { id: 'crop', kind: 'box', role: 'keep', center: [0, 0, 0], half: [10, 10, 10], radius: 10, quat: [0, 0, 0, 1] };
 const cropUI = { on: false, frac: [0.35, 0.35, 0.35] };
 const sections: Region[] = [];
-const suggestions: Region[] = [];
-function allRegions(): Region[] { return [...(cropUI.on ? [cropState] : []), ...sections, ...suggestions]; }
+/** Delete-role regions. No UI creates these; an agent can, through the regions command. */
+const deletes: Region[] = [];
+function allRegions(): Region[] { return [...(cropUI.on ? [cropState] : []), ...sections, ...deletes]; }
 function syncRegions() { viewer.regionHide = $<HTMLInputElement>('k-crophide').checked; viewer.setRegions(allRegions()); }
 function maxDim() { const b = viewer.bounds(); const s = b.isEmpty() ? new THREE.Vector3(50, 50, 50) : b.getSize(new THREE.Vector3()); return Math.max(s.x, s.y, s.z, 1); }
 function cropFromSliders() {
@@ -411,7 +409,7 @@ function cancelStarted() {
   if (viewer.bubble) { viewer.exitBubble(); return; }
   if (viewer.tool !== 'none') { setTool('none'); return; }
   if (cropUI.on) { cancelCrop(); return; }
-  viewer.setActiveRegion(null); renderSectionList(); renderAiList();
+  viewer.setActiveRegion(null); renderSectionList();
 }
 async function applyKeep() {
   const keeps = allRegions().filter(r => r.role === 'keep');
@@ -422,7 +420,7 @@ async function applyKeep() {
     [{ label: 'Cancel', value: 'no' }, { label: 'Drop outside points', value: 'yes', cls: 'danger' }]);
   if (ans !== 'yes') return null;
   return commitApply(keeps, 'crop', res => `Crop · dropped ${fmt(res.dropped)}`, () => {
-    cropped = true; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; sections.length = 0; suggestions.length = 0;
+    cropped = true; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; sections.length = 0; deletes.length = 0;
     viewer.setActiveRegion(null);
   });
 }
@@ -430,7 +428,7 @@ $('k-cropapply').addEventListener('click', () => { if (!cropUI.on && !sections.l
 $('k-cropcancel').addEventListener('click', () => cancelCrop());
 
 function snapUi() {
-  return hist.snapshot({ cropped, cropOn: cropUI.on, crop: cropState, frac: cropUI.frac, sections, suggestions });
+  return hist.snapshot({ cropped, cropOn: cropUI.on, crop: cropState, frac: cropUI.frac, sections, deletes });
 }
 function restoreUi(s: ReturnType<History['snapshot']>) {
   cropped = s.cropped;
@@ -444,8 +442,8 @@ function restoreUi(s: ReturnType<History['snapshot']>) {
   $<HTMLInputElement>('k-cropsy').value = String(cropUI.frac[1] ?? cropUI.frac[0]);
   $<HTMLInputElement>('k-cropsz').value = String(cropUI.frac[2] ?? cropUI.frac[0]);
   sections.length = 0; sections.push(...cloneRegions(s.sections));
-  suggestions.length = 0; suggestions.push(...cloneRegions(s.suggestions));
-  syncRegions(); renderSectionList(); renderAiList(); cropReadouts();
+  deletes.length = 0; deletes.push(...cloneRegions(s.deletes));
+  syncRegions(); renderSectionList(); cropReadouts();
   if (cropUI.on) viewer.setActiveRegion('crop'); else if (viewer.activeRegion === 'crop') viewer.setActiveRegion(null);
   syncZLabels(); updateCacheUI(); updateHistUI(); viewer.touch();
 }
@@ -457,7 +455,7 @@ async function commitApply(regions: Region[], kind: 'crop' | 'clean', label: str
   const res = viewer.applyRegions(regions, true);
   if (!res.dropped) { hideBusy(); return res; }
   after();
-  syncRegions(); renderAiList();
+  syncRegions();
   const afterSnap = snapUi();
   const lab = typeof label === 'function' ? label(res) : label;
   if (res.undo) await hist.push({ kind, label: lab, dropped: res.dropped, kept: res.kept, undo: res.undo, robust, before, after: afterSnap });
@@ -465,7 +463,7 @@ async function commitApply(regions: Region[], kind: 'crop' | 'clean', label: str
   $('v-loaded').textContent = `${fmt(res.kept)} points in memory · ${fmt(res.dropped)} dropped`;
   $('tb-points').textContent = `${fmt(res.kept)} pts · ${kind === 'crop' ? 'cropped' : 'cleaned'}`;
   if (kind === 'crop') updateCropUI(true); else updateCropUI();
-  renderSectionList(); renderAiList(); syncZLabels(); updateCacheUI(); updateHistUI(); viewer.fit();
+  renderSectionList(); syncZLabels(); updateCacheUI(); updateHistUI(); viewer.fit();
   return res;
 }
 function updateHistUI() {
@@ -574,14 +572,14 @@ async function confirmDiscardHistory(): Promise<boolean> {
   return ans === 'yes';
 }
 async function reloadScan() {
-  if (!fromCloud && !currentFile) return;
+  if (!currentFile) return;
   if (hist.canUndo || hist.canRedo) {
-    const ans = await modal('Reload the scan?', `<p>There is unsaved history (${hist.undo.length} undo, ${hist.redo.length} redo). Reload discards it and reads the scan again from ${fromCache ? 'the cache on this device' : fromCloud ? 'the cloud' : 'disk'}.</p>`,
+    const ans = await modal('Reload the scan?', `<p>There is unsaved history (${hist.undo.length} undo, ${hist.redo.length} redo). Reload discards it and reads the scan again from ${fromCache ? 'the cache on this device' : 'disk'}.</p>`,
       [{ label: 'Cancel', value: 'no' }, { label: 'Reload anyway', value: 'yes', cls: 'danger' }]);
     if (ans !== 'yes') return;
   }
   await hist.clear();
-  if (fromCloud) openCloud(fromCloud); else if (currentFile) openFile(currentFile, currentHandle);
+  if (currentFile) openFile(currentFile, currentHandle);
 }
 hist.onChange = () => updateHistUI();
 $('k-undo').addEventListener('click', () => undoEdit());
@@ -606,84 +604,6 @@ function renderSectionList() {
     li.querySelector('.x')!.addEventListener('click', () => { sections.splice(sections.indexOf(s), 1); syncRegions(); renderSectionList(); cropReadouts(); });
     ul.appendChild(li);
   }
-}
-
-// ------------------------------------------------------------------ AI clean
-let callAiFn: ((data: any) => Promise<any>) | null = null;
-import('./cloud').then(m => { cloudMod = m; callAiFn = (d) => m.callAi(d); updateCloudUI(); }).catch(e => console.warn('cloud module unavailable', e));
-$('k-aiprov').addEventListener('change', () => document.querySelectorAll('.ai-remote').forEach(el => (el as HTMLElement).style.display = $<HTMLSelectElement>('k-aiprov').value === 'heuristic' ? 'none' : ''));
-$('k-aiprov').dispatchEvent(new Event('change'));
-$<HTMLInputElement>('k-aikey').value = localStorage.getItem('aikey') ?? '';
-$('k-aikey').addEventListener('change', () => localStorage.setItem('aikey', $<HTMLInputElement>('k-aikey').value));
-let lastAi: { prep: any; result: any } | null = null;
-async function runAi(provider: 'heuristic' | 'openai' | 'xai', model?: string, kinds?: string[], want?: string[]) {
-  if (!viewer.loaded) throw new Error('nothing loaded');
-  const t0 = performance.now();
-  let found: Region[] = []; let via = 'local';
-  if (provider === 'heuristic') found = heuristicSuggest(viewer, { kinds });
-  else {
-    busy('Finding candidates and rendering views…'); await tick();
-    const prep = await prepareForAI(viewer, { kinds });
-    busy(`Asking ${provider === 'openai' ? 'OpenAI' : 'Grok'} about ${prep.candidates.length} candidates…`);
-    const key = $<HTMLInputElement>('k-aikey').value.trim() || null;
-    const r = await providerSuggest(provider, model || undefined, key, prep.images, { extentX: prep.frame.extentX, extentY: prep.frame.extentY, zMin: 0, zMax: prep.frame.zMax - prep.frame.zMin, kinds: want ?? kinds, candidates: prep.candCtx, closeups: prep.closeups }, callAiFn);
-    found = mapResult(r, prep, viewer);
-    const confirmed = r.candidates.filter(c => c.remove).length;
-    via = `${r.via} · ${r.model} · ${(r.ms / 1000).toFixed(1)}s · ${confirmed}/${prep.candidates.length} candidates confirmed, ${r.additional.length} added, ${r.sections.length} sections`;
-    lastAi = { prep, result: r };
-  }
-  for (let i = suggestions.length - 1; i >= 0; i--) if (suggestions[i].role === 'pending') suggestions.splice(i, 1);
-  suggestions.push(...found);
-  syncRegions(); renderAiList();
-  $('v-ai').textContent = `${found.length} suggestion${found.length === 1 ? '' : 's'} · ${via} · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
-  return found;
-}
-$('k-aianalyse').addEventListener('click', async () => {
-  const provider = $<HTMLSelectElement>('k-aiprov').value as any;
-  const boxes = Array.from(document.querySelectorAll<HTMLInputElement>('#k-aikinds input:checked'));
-  const kinds = boxes.map(i => i.dataset.kind || i.value);
-  const want = boxes.map(i => i.value);
-  busy('Analysing…'); await tick();
-  try { await runAi(provider, $<HTMLInputElement>('k-aimodel').value.trim(), kinds, want); }
-  catch (e: any) { $('v-ai').textContent = 'failed: ' + (e?.message ?? e); }
-  hideBusy();
-});
-function decide(id: string, accept: boolean) {
-  const s = suggestions.find(x => x.id === id); if (!s) return;
-  if (accept) s.role = 'delete'; else suggestions.splice(suggestions.indexOf(s), 1);
-  syncRegions(); renderAiList();
-}
-viewer.onSuggestionDecision = decide;
-$('k-aiacceptall').addEventListener('click', () => { for (const s of suggestions) s.role = 'delete'; syncRegions(); renderAiList(); });
-$('k-airejectall').addEventListener('click', () => { for (let i = suggestions.length - 1; i >= 0; i--) if (suggestions[i].role === 'pending') suggestions.splice(i, 1); syncRegions(); renderAiList(); });
-async function applyApproved() {
-  const dels = suggestions.filter(s => s.role === 'delete'); if (!dels.length) return null;
-  const est = viewer.loaded - viewer.cells.estimateKept(dels);
-  const ans = await modal('Remove approved suggestions?', `<p>${dels.length} region${dels.length > 1 ? 's' : ''} approved — roughly <b>${fmt(est)}</b> points will be dropped from memory.</p><p>The file on disk is not touched. <b>Undo</b> puts them back. <b>Save as…</b> writes a copy of the result.</p>`,
-    [{ label: 'Cancel', value: 'no' }, { label: 'Remove', value: 'yes', cls: 'danger' }]);
-  if (ans !== 'yes') return null;
-  const gone = dels.slice();
-  return commitApply(dels, 'clean', `Clean · ${dels.length} region${dels.length > 1 ? 's' : ''}`, () => {
-    for (const d of gone) { const i = suggestions.indexOf(d); if (i >= 0) suggestions.splice(i, 1); }
-    cropped = true;
-  });
-}
-$('k-aiapply').addEventListener('click', () => applyApproved());
-function renderAiList() {
-  const ul = $('ai-list'); ul.innerHTML = '';
-  for (const s of suggestions) {
-    const li = document.createElement('li'); li.classList.toggle('sel', viewer.activeRegion === s.id);
-    const st = s.role === 'delete' ? '<span class="st acc">●</span>' : '<span class="st pend">●</span>';
-    li.innerHTML = `${st}<span class="ok">${s.label}</span> <span class="mono">${s.kind === 'slab' ? 'section' : `${(s.half[0] * 2).toFixed(1)}×${(s.half[1] * 2).toFixed(1)} m`}</span>` +
-      (s.role === 'pending' ? ` <span class="ok" data-a="1" title="Approve">✓</span>` : '') + `<span class="x" title="Decline">✕</span>`;
-    li.querySelector('.ok')!.addEventListener('click', () => { viewer.setActiveRegion(s.id); renderAiList(); });
-    li.querySelector('[data-a]')?.addEventListener('click', (e) => { e.stopPropagation(); decide(s.id, true); });
-    li.querySelector('.x')!.addEventListener('click', () => decide(s.id, false));
-    ul.appendChild(li);
-  }
-  const n = suggestions.length, a = suggestions.filter(s => s.role === 'delete').length;
-  $('ai-actions').classList.toggle('hidden', !n); $('k-aiapply').classList.toggle('hidden', !a);
-  ($('k-aiapply') as HTMLButtonElement).textContent = `Apply ${a} approved…`;
 }
 
 // ------------------------------------------------------------------ export
@@ -762,7 +682,7 @@ async function writeCache() {
 }
 function updateCacheUI() {
   const btn = $('k-cache'), rm = $('k-cacheremove');
-  if (!currentFile) { $('v-cache').textContent = fromCloud ? 'streamed from the cloud' : '—'; btn.classList.add('hidden'); rm.classList.add('hidden'); return; }
+  if (!currentFile) { $('v-cache').textContent = '—'; btn.classList.add('hidden'); rm.classList.add('hidden'); return; }
   if (fromCache) { $('v-cache').textContent = cropped ? 'cache holds the current (edited) points' : 'this scan is cached on this device'; btn.classList.add('hidden'); rm.classList.remove('hidden'); }
   else if (cropped) { $('v-cache').textContent = `not cached · caching now stores the edited ${fmt(viewer.loaded)} points (${mb(viewer.loaded * REC)})`; btn.classList.remove('hidden'); rm.classList.add('hidden'); }
   else { $('v-cache').textContent = `not cached · would take ${mb(viewer.loaded * REC)}`; btn.classList.remove('hidden'); rm.classList.add('hidden'); }
@@ -826,104 +746,15 @@ function applyUrlCommands() {
   else if (view === 'fit') viewer.fit();
   const az = q.get('az'), el = q.get('el');
   if (az != null && el != null && isFinite(+az) && isFinite(+el)) viewer.setOrbit(+az, +el, q.get('dist') ? +q.get('dist')! : undefined);
-  const ai = q.get('ai');
-  if (ai === 'heuristic' || ai === 'openai' || ai === 'xai') {
-    const kinds = (q.get('kinds') || '').split(',').map(s => s.trim()).filter(Boolean);
-    runAi(ai, q.get('model') || undefined, kinds.length ? kinds : undefined).catch(e => { $('v-ai').textContent = 'failed: ' + (e?.message ?? e); });
-  }
 }
 try { if (location.hash.length > 2) pendingView = JSON.parse(atob(location.hash.slice(1))); } catch {}
-
-// ------------------------------------------------------------------ cloud mode
-const cloudOn = () => localStorage.getItem('cloud') === '1';
-$<HTMLInputElement>('k-cloud').checked = cloudOn();
-$('k-cloud').addEventListener('change', e => { localStorage.setItem('cloud', (e.target as HTMLInputElement).checked ? '1' : '0'); updateCloudUI(); });
-let myClouds: any[] = [];
-async function updateCloudUI() {
-  const on = cloudOn();
-  $('k-cloudup').classList.toggle('hidden', !(on && currentFile && viewer.loaded && !fromCloud));
-  $('cloud-list').classList.toggle('hidden', !on);
-  if (!on) { $('v-cloud').textContent = 'off'; return; }
-  if (!cloudMod) { $('v-cloud').textContent = 'loading cloud module…'; return; }
-  try { myClouds = await cloudMod.listMyClouds(); renderCloudList(); if (!fromCloud && !$('v-cloud').querySelector('a') && !/converting|uploading|uploaded/.test($('v-cloud').textContent || '')) $('v-cloud').textContent = myClouds.length ? `${myClouds.length} in your cloud` : 'nothing uploaded yet'; }
-  catch (e: any) { $('v-cloud').textContent = 'cloud unavailable: ' + (e?.message ?? e); }
-}
-function renderCloudList() {
-  const ul = $('cloud-list'); ul.innerHTML = '';
-  for (const c of myClouds) {
-    const li = document.createElement('li');
-    const st = c.status === 'ready' ? `${fmt(c.points || 0)} pts · ${mb(c.bytes || 0)}` : c.status === 'error' ? 'error: ' + (c.error || '') : `${c.status}${c.progress ? ' ' + Math.round(c.progress * 100) + '%' : ''}`;
-    li.innerHTML = `<span class="ok">${c.name}</span> <span class="mono">${st}</span><span class="x" title="Delete">✕</span>`;
-    li.querySelector('.ok')!.addEventListener('click', async () => {
-      if (c.status !== 'ready') return;
-      if (!(await confirmDiscardHistory())) return;
-      await hist.clear();
-      location.href = `${location.origin}${location.pathname}?cloud=${c.id}`;
-    });
-    li.querySelector('.x')!.addEventListener('click', async () => { await cloudMod!.deleteCloud(c.id); updateCloudUI(); });
-    ul.appendChild(li);
-  }
-}
-$('k-cloudup').addEventListener('click', async () => {
-  if (!currentFile || !cloudMod) return;
-  const stride = Number($<HTMLSelectElement>('k-load').value) || 1;
-  const ans = await modal('Upload to the cloud?', `<p><b>${currentFile.name}</b> (${mb(currentFile.size)}) will be uploaded once and converted on the server${stride > 1 ? `, keeping 1 in ${stride} points` : ''}. Anyone with the link can then stream it without the file.</p>`,
-    [{ label: 'Cancel', value: 'no' }, { label: 'Upload', value: 'yes', cls: 'primary' }]);
-  if (ans !== 'yes') return;
-  busy('Uploading…', 0);
-  try {
-    const id = await cloudMod.uploadScan(currentFile, stride, (f, bps) => busy(`Uploading… ${(f * 100).toFixed(0)}% · ${mb(bps)}/s`, f));
-    hideBusy();
-    const link = `${location.origin}${location.pathname}?cloud=${id}`;
-    $('v-cloud').textContent = 'uploaded · converting on the server…';
-    const off = cloudMod.watchCloud(id, d => {
-      if (!d) return;
-      if (d.status === 'ready') { off(); $('v-cloud').innerHTML = `ready · <a href="${link}">open</a> · link copied`; navigator.clipboard?.writeText(link).catch(() => {}); updateCloudUI(); }
-      else if (d.status === 'error') { off(); $('v-cloud').textContent = 'conversion failed: ' + d.error; }
-      else $('v-cloud').textContent = `${d.status}${d.progress ? ' ' + Math.round(d.progress * 100) + '%' : ''}…`;
-    });
-  } catch (e: any) { hideBusy(); fail('Upload failed: ' + (e?.message ?? e)); }
-});
-async function openCloud(id: string) {
-  const m = cloudMod ?? await import('./cloud'); cloudMod = m;
-  currentFile = null; currentHandle = null;
-  resetForLoad('cloud scan'); fromCloud = id; cacheKey = '';
-  $('ld-stat').textContent = 'checking the cloud…';
-  await new Promise<void>((res, rej) => {
-    const off = m.watchCloud(id, async (d) => {
-      if (!d) { off(); rej(new Error('no such cloud scan')); return; }
-      if (d.status === 'error') { off(); rej(new Error(d.error || 'conversion failed')); return; }
-      if (d.status !== 'ready') { $('ld-stat').textContent = `${d.status}${d.progress ? ' ' + Math.round(d.progress * 100) + '%' : ''} on the server…`; $('ld-name').textContent = d.name; return; }
-      off();
-      try {
-        cloudStreamer = await m.streamCloud(d, {
-          meta: (scanMeta, x) => onMeta({ meta: scanMeta, fromCloud: true, histogram: x.histogram, robust: x.robust }),
-          leaf: (block, count, lm, capacity, tag) => { gotRealLeaf = true; viewer.addLeaf([block], count, lm, false, capacity, tag); if (!revealed) revealViewport(); },
-          append: (tag, recs, n) => viewer.appendLeaf(tag, recs, n),
-          progress: (done, total) => { $('ld-bar').style.width = (done / Math.max(total, 1) * 100) + '%'; $('ld-stat').textContent = `streaming ${mb(done)} of ${mb(total)} preview…`; },
-          done: (st) => { onDone({ kept: st.kept, leaves: st.leaves, droppedInvalid: 0 }, 'streamed'); $('v-loaded').textContent = `${fmt(st.kept)} points in the cloud · ${st.leaves} cells · refining as you look`; },
-        }, { prefixFrac: isTouch ? 0.04 : 0.08 });
-        res();
-      } catch (e) { rej(e); }
-    });
-  }).catch(e => fail('Cloud: ' + (e?.message ?? e)));
-}
-let lastRefine = 0;
-function pumpRefine() {
-  if (!cloudStreamer) return;
-  const now = performance.now(); if (now - lastRefine < 120) return; lastRefine = now;
-  const list = viewer.cells.refine.slice().sort((a, b) => b.want - a.want).slice(0, 4);
-  for (const r of list) { r.leaf.fetching = true; cloudStreamer.refine(r.leaf.tag, r.want); }
-  if (list.length) viewer.touch();
-}
 
 // ------------------------------------------------------------------ agent link
 const agent = new AgentLink({
   state: () => ({
-    file: currentFile?.name ?? (fromCloud ? `cloud:${fromCloud}` : null), points: viewer.loaded, cells: viewer.cells.leafCount, cropped, fromCache, fromCloud,
+    file: currentFile?.name ?? null, points: viewer.loaded, cells: viewer.cells.leafCount, cropped, fromCache,
     history: hist.steps,
     view: viewer.getView(), knobs, regions: allRegions(), measurements: viewer.measureList.map(m => ({ a: m.a.toArray(), b: m.b.toArray(), dist: m.dist })),
-    suggestions: suggestions.map(s => ({ id: s.id, label: s.label, role: s.role, kind: s.kind, center: s.center, half: s.half })),
     stations: viewer.stations.length, bubble: viewer.bubble?.index ?? null, cached: cachedItems.map(c => ({ key: c.key, name: c.name, points: c.points })),
     translation: meta?.scans?.[0]?.translation ?? null, bounds: viewer.bounds().isEmpty() ? null : { min: viewer.bounds().min.toArray(), max: viewer.bounds().max.toArray() },
   }),
@@ -937,22 +768,22 @@ const agent = new AgentLink({
   },
   regions: async (a) => {
     if (a.op === 'list') return allRegions();
-    if (a.op === 'clear') { sections.length = 0; suggestions.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; syncRegions(); renderSectionList(); renderAiList(); return []; }
+    if (a.op === 'clear') { sections.length = 0; deletes.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; syncRegions(); renderSectionList(); return []; }
     if (a.op === 'add' || a.op === 'update') {
       const r: Region = { id: a.region.id ?? uid(a.region.role === 'keep' ? 'sec-' : 'ai-'), kind: a.region.kind, role: a.region.role ?? 'keep', center: a.region.center, half: a.region.half ?? [1, 1, 1], radius: a.region.radius ?? (a.region.half?.[0] ?? 1), quat: a.region.quat ?? [0, 0, 0, 1], label: a.region.label };
       if (r.kind === 'slab') { const md = maxDim(); r.half = [md * 3, md * 3, r.half[2]]; }
-      const pool = r.role === 'keep' ? sections : suggestions; const i = pool.findIndex(x => x.id === r.id);
+      const pool = r.role === 'keep' ? sections : deletes; const i = pool.findIndex(x => x.id === r.id);
       if (i >= 0) pool[i] = r; else pool.push(r);
-      syncRegions(); renderSectionList(); renderAiList(); viewer.setActiveRegion(r.id); viewer.render(); return r;
+      syncRegions(); renderSectionList(); viewer.setActiveRegion(r.id); viewer.render(); return r;
     }
-    if (a.op === 'remove') { for (const pool of [sections, suggestions]) { const i = pool.findIndex(x => x.id === a.id); if (i >= 0) pool.splice(i, 1); } if (a.id === 'crop') cropUI.on = false; syncRegions(); renderSectionList(); renderAiList(); viewer.render(); return allRegions(); }
+    if (a.op === 'remove') { for (const pool of [sections, deletes]) { const i = pool.findIndex(x => x.id === a.id); if (i >= 0) pool.splice(i, 1); } if (a.id === 'crop') cropUI.on = false; syncRegions(); renderSectionList(); viewer.render(); return allRegions(); }
     if (a.op === 'apply') {
       const keeps = allRegions().filter(r => r.role === 'keep');
       const dels = allRegions().filter(r => r.role === 'delete');
       const r = await commitApply([...keeps, ...dels], keeps.length ? 'crop' : 'clean', 'Agent apply', () => {
         cropped = true; sections.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false;
-        if (keeps.length) suggestions.length = 0;
-        else for (const d of dels) { const i = suggestions.indexOf(d); if (i >= 0) suggestions.splice(i, 1); }
+        if (keeps.length) deletes.length = 0;
+        else for (const d of dels) { const i = deletes.indexOf(d); if (i >= 0) deletes.splice(i, 1); }
       });
       return { kept: r.kept, dropped: r.dropped, points: viewer.loaded };
     }
@@ -975,27 +806,9 @@ const agent = new AgentLink({
   },
   open: async (a) => {
     if (a.stride) $<HTMLSelectElement>('k-load').value = String(a.stride);
-    if (a.cloud) await openCloud(a.cloud); else if (a.cached) await openCached(a.cached); else throw new Error('give cached: <key> or cloud: <id>');
+    if (a.cached) await openCached(a.cached); else throw new Error('give cached: <key>');
     await new Promise<void>(res => { const iv = setInterval(() => { if (/(loaded|from cache|streamed) in/.test($('tb-points').textContent || '')) { clearInterval(iv); res(); } }, 200); });
     return { points: viewer.loaded };
-  },
-  ai_suggest: async (a) => { const found = await runAi(a.provider ?? 'heuristic', a.model, a.kinds); viewer.render(); return found; },
-  suggestions: async (a) => {
-    if (a.op === 'list') return suggestions;
-    if (a.op === 'accept') decide(a.id, true); else if (a.op === 'reject') decide(a.id, false);
-    else if (a.op === 'accept_all') { for (const s of suggestions) s.role = 'delete'; syncRegions(); renderAiList(); }
-    else if (a.op === 'reject_all' || a.op === 'clear') { suggestions.length = 0; syncRegions(); renderAiList(); }
-    else if (a.op === 'apply') {
-      for (const s of suggestions) if (s.role === 'pending') s.role = 'delete';
-      const dels = suggestions.filter(s => s.role === 'delete');
-      const gone = dels.slice();
-      const r = await commitApply(dels, 'clean', 'Agent clean', () => {
-        for (const d of gone) { const i = suggestions.indexOf(d); if (i >= 0) suggestions.splice(i, 1); }
-        cropped = true;
-      });
-      return { kept: r.kept, dropped: r.dropped, regions: gone.length, points: viewer.loaded };
-    }
-    viewer.render(); return suggestions;
   },
   history: async (a) => {
     if (a.op === 'status') return hist.steps;
@@ -1007,6 +820,16 @@ const agent = new AgentLink({
   stations: async (a) => { if (a.enter === -1) viewer.exitBubble(); else if (a.enter !== undefined) await enterStation(a.enter); viewer.render(); return { stations: viewer.stationPositions(), bubble: viewer.bubble?.index ?? null }; },
 });
 agent.onStatus = (s) => { $('v-agent').textContent = s; };
+// The MCP server is a plain file the user runs; the page can only hand it over.
+$('k-mcpget').addEventListener('click', () => {
+  const a = document.createElement('a'); a.href = '/mcp.mjs'; a.download = 'e57view-mcp.mjs';
+  document.body.appendChild(a); a.click(); a.remove();
+  $('v-agent').textContent = 'downloaded e57view-mcp.mjs · register it with the command below';
+});
+$('k-mcpcopy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('v-mcp').textContent ?? ''); $('v-agent').textContent = 'install commands copied'; }
+  catch { $('v-agent').textContent = 'select the text below and copy it'; }
+});
 $('k-agent').addEventListener('change', e => { const on = (e.target as HTMLInputElement).checked; localStorage.setItem('agent', on ? '1' : '0'); on ? agent.start() : agent.stop(); });
 if (new URLSearchParams(location.search).get('agent') === '1' || localStorage.getItem('agent') === '1') { $<HTMLInputElement>('k-agent').checked = true; agent.start(); }
 
@@ -1014,9 +837,8 @@ if (new URLSearchParams(location.search).get('agent') === '1' || localStorage.ge
  *  anything that drops points, writes a file, loads another scan or spends provider credit. */
 function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   if (cmd === 'open') return true;
-  if (cmd === 'regions' || cmd === 'suggestions') return a.op === 'apply';
+  if (cmd === 'regions') return a.op === 'apply';
   if (cmd === 'history') return a.op !== 'status';
-  if (cmd === 'ai_suggest') return !!a.provider && a.provider !== 'heuristic';
   return false;
 }
 /** An agent reply is written into a Firestore document, so it must be small and plain.
@@ -1059,7 +881,7 @@ function updateAgentUI() {
   ($('k-agentedits') as HTMLInputElement).disabled = !agentSid;
 }
 async function startRemoteSession(sid: string) {
-  const m = cloudMod ?? await import('./cloud'); cloudMod = m;
+  const m = sessionMod ?? await import('./session'); sessionMod = m;
   await m.ensureAuth();
   stopSession?.();
   agentSid = sid;
@@ -1069,9 +891,9 @@ async function startRemoteSession(sid: string) {
 }
 $('k-agenturl').addEventListener('click', async () => {
   try {
-    const m = cloudMod ?? await import('./cloud'); cloudMod = m;
+    const m = sessionMod ?? await import('./session'); sessionMod = m;
     const edits = $<HTMLInputElement>('k-agentedits').checked;
-    const { sid, token, expiresAt } = await m.createAgentSession(fromCloud, edits);
+    const { sid, token, expiresAt } = await m.createAgentSession(edits);
     agentToken = token;
     try { sessionStorage.setItem('agent-token:' + sid, token); } catch {}
     await startRemoteSession(sid);
@@ -1079,7 +901,6 @@ $('k-agenturl').addEventListener('click', async () => {
     // leaked link (history, referrer, analytics) grants nothing.
     const page = new URL(location.origin + location.pathname);
     page.searchParams.set('session', sid);
-    if (fromCloud) page.searchParams.set('cloud', fromCloud);
     const blob = [
       `# e57view agent session — expires ${new Date(expiresAt).toLocaleString()}`,
       `# ${edits ? 'Edits allowed.' : 'Read-only: tick "Allow edits" in the viewer to permit crop, clean and save.'}`,
@@ -1102,12 +923,12 @@ $('k-agentstop').addEventListener('click', async () => {
   stopSession?.(); stopSession = null; agentSid = null; agentToken = null;
   try { sessionStorage.removeItem('agent-token:' + sid); } catch {}
   updateAgentUI();
-  try { await cloudMod?.stopAgentSession(sid); agentStatus('session stopped · its token no longer works', 8000); }
+  try { await sessionMod?.stopAgentSession(sid); agentStatus('session stopped · its token no longer works', 8000); }
   catch (e: any) { agentStatus('stopped locally, but the record remains: ' + (e?.message ?? e), 8000); }
 });
 $('k-agentedits').addEventListener('change', async e => {
   const on = (e.target as HTMLInputElement).checked;
-  if (agentSid) { try { await cloudMod?.setAgentEdits(agentSid, on); } catch {} }
+  if (agentSid) { try { await sessionMod?.setAgentEdits(agentSid, on); } catch {} }
 });
 updateAgentUI();
 // Close the window, lose the token. A beacon survives unload where a normal request does
@@ -1119,11 +940,11 @@ addEventListener('pagehide', (e) => {
     if (agentToken && navigator.sendBeacon) {
       const body = JSON.stringify({ session: sid, token: agentToken, cmd: 'revoke' });
       navigator.sendBeacon('/agent', new Blob([body], { type: 'application/json' }));
-    } else cloudMod?.stopAgentSession(sid);
+    } else sessionMod?.stopAgentSession(sid);
   } catch {}
 });
 const sessionParam = new URLSearchParams(location.search).get('session');
-if (sessionParam) import('./cloud').then(m => { cloudMod = m; startRemoteSession(sessionParam); }).catch(e => agentStatus('session: ' + ((e as any)?.message ?? e)));
+if (sessionParam) import('./session').then(m => { sessionMod = m; startRemoteSession(sessionParam); }).catch(e => agentStatus('session: ' + ((e as any)?.message ?? e)));
 
 // ------------------------------------------------------------------ entry
 async function pickFile() {
@@ -1185,7 +1006,7 @@ addEventListener('orientationchange', () => setTimeout(() => { viewer.resize(); 
 document.querySelectorAll<HTMLElement>('#panel .grp').forEach((g, i) => {
   const h = g.querySelector('h3'); if (!h) return;
   const name = g.dataset.grp ?? h.textContent ?? String(i); const key = 'grp:' + name;
-  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'ai', 'cloud', 'agent'].includes(name);
+  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent'].includes(name);
   const stored = localStorage.getItem(key); g.classList.toggle('closed', stored ? stored === '1' : defaultClosed);
   h.addEventListener('click', () => { g.classList.toggle('closed'); localStorage.setItem(key, g.classList.contains('closed') ? '1' : '0'); });
 });
@@ -1193,14 +1014,10 @@ viewer.onStats = () => {
   const s = viewer.stats;
   $('v-stats').textContent = `${fmt(s.pointsDrawn)} drawn · ${s.leavesDrawn}/${s.leavesVisible} cells · ${viewer.frameMs.toFixed(1)} ms`;
   if (viewer.fps) $('tb-fps').textContent = `${viewer.fps.toFixed(0)} fps`;
-  pumpRefine();
 };
 
 push();
 refreshCachedList();
-updateCloudUI();
-const cloudParam = new URLSearchParams(location.search).get('cloud');
-if (cloudParam) openCloud(cloudParam);
 (function loop() { viewer.render(); requestAnimationFrame(loop); })();
 (window as any).__viewer = viewer;
-(window as any).__app = { openFile, openCloud, openCached, writeCache, runAi, applyKeep, applyApproved, addSection, decide, undoEdit, redoEdit, saveCurrent, hist, clouds: () => cloudMod?.listMyClouds(), aiRenders: () => prepareForAI(viewer), get lastAi() { return lastAi; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, get suggestions() { return suggestions; } };
+(window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); } };

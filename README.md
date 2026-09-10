@@ -67,116 +67,13 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
 - **Cache** — after a decode you are asked whether to cache the decoded cells in the
   browser's private storage. A cached scan reopens in about a second. Cached scans are
   listed on the start screen, with a remove button, and reopen in one click in Chromium.
-- **Undo / redo / Save.** Crop and AI clean are undoable (⌘Z / ⇧⌘Z). ⌘S opens *Save as…*,
+- **Undo / redo / Save.** Every destructive edit is undoable (⌘Z / ⇧⌘Z). ⌘S opens *Save as…*,
   which writes a copy of the points in memory; the on-device cache is updated only if the
   scan was already cached, and history is cleared after a warning. Large undo steps spill
   to the origin-private file system so a multi-million-point crop does not pin hundreds of
   megabytes in RAM.
 - **View link** — copies a URL that restores the camera and colour mode when the same file
   is opened again.
-
-## Round four
-
-- **Crop rotation and slabs.** The crop region is now a box, sphere or slab with its own
-  orientation: Move / Rotate / Resize with the gizmo. A slab is a section plane with
-  thickness, infinite in its own plane, so tilted cuts are one drag away.
-- **Sections.** Add as many slabs as you like (floors, a corridor, a wall). Points inside
-  *any* section are kept; Apply crop drops the rest. Sections and the crop box share the
-  same keep rule.
-- **AI clean.** Three providers behind one button. *Local heuristic* finds vegetation from
-  colour and surface chaos on a metre grid of the cloud in under a second, no network.
-  *OpenAI* and *Grok* run a hybrid: the heuristic's clumps become numbered candidates drawn
-  on a clean top-down render with a labelled 10 m grid, each candidate also gets an oblique
-  close-up with its box drawn, and the model confirms or rejects each one (a box on a roof
-  or a playground canopy is rejected), names it, may add boxes the detector missed (cars,
-  overexposed canopies) and may propose height sections. Added boxes are snapped to the
-  data — vegetation cells first, then rough-and-tall cells, else the model's footprint
-  trimmed to occupied cells — so boxes stay tight; the model supplies judgement, never
-  geometry. Every suggestion appears as a tinted box with ✓ / ✗ in the view and in a list;
-  approve or decline individually or all at once, adjust any box with the gizmo, then
-  *Apply approved* removes those points after a confirmation. Defaults are `gpt-5.5` and
-  `grok-4.3`; type any model name in the field. Keys live in Firebase secrets
-  (`OPENAI_API_KEY`, `XAI_API_KEY`); a key pasted in the panel is used directly from the
-  browser instead.
-- **PLY and LAS import.** Scans from phone LiDAR apps open directly; they get the same
-  cells, cache and tools as E57.
-- **Cloud mode.** Switch it on, upload a scan once, and it is converted on the server into
-  the same cell format the local cache uses. Anyone with the link streams it: a uniform
-  prefix of every cell first, then the cells the camera is looking at are refined by HTTP
-  range requests. No file on the viewer's device, no rendering server.
-- **Agent link + MCP server.** `mcp/server.mjs` exposes the viewer to AI agents (Claude
-  Code, Claude Desktop, Cursor…): state, screenshots, camera, settings, regions, measure,
-  export to a local path, AI suggestions, history, stations. It ships as one self-contained
-  file, so there is nothing to clone or install:
-
-  ```
-  curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
-  claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"
-  ```
-
-  Then switch on *Local MCP* in the panel (or open with `?agent=1`). The server listens on
-  `ws://127.0.0.1:7337` and the tab connects out to it, so nothing is exposed off the
-  machine. A web page cannot start this process itself; browsers have no way to launch a
-  local program, which is exactly why the HTTP endpoint below exists for the remote case.
-- **HTTP agent endpoint.** `POST /agent` drives the same commands from anywhere, without
-  MCP. *Copy agent URL* mints a session: the page link carries only the session id, while
-  the bearer token is copied alongside it and never enters the URL, so a leaked link grants
-  nothing. Sessions expire after 8 hours, *Stop session* revokes one immediately, and they
-  are read-only until *Allow edits* is ticked, which gates crop, clean, save, open and paid
-  model calls. Only the tab that created a session can read or write it, and the collection
-  cannot be enumerated. See `public/llms.txt` for the contract. MCP over localhost stays the
-  safer option when the agent runs on the same machine.
-- **iPhone and iPad.** A touch toolbar (Orbit / Fly / Measure / Crop / Leave photo), an
-  on-screen joystick for fly mode, a larger gizmo, and a *Scan with this device* card.
-
-### About LiDAR capture on iPhone and iPad
-
-Safari has no access to the LiDAR sensor and no WebXR depth on iOS, so a web page cannot
-capture a scan. What works: capture in Scaniverse, Polycam or 3D Scanner App, export PLY,
-LAS or E57, and open it here — the importers above exist for exactly that. The project's
-native OpenSketch iOS app could add an ARKit capture that writes E57 or PLY to Files; the
-web app would open it unchanged.
-
-### Cloud architecture
-
-```
-browser ── Firebase Storage upload ──► uploads/{uid}/{id}/file
-                                             │ finalize trigger
-                                        convertCloud (Cloud Functions gen2, 16 GiB, 4 vCPU)
-                                             │ same WebAssembly decoder as the browser
-                                        clouds/{id}/cells.bin + meta.json
-                                             │ HTTP range requests (tokened URLs)
-viewer ◄── prefix of every cell, then refinement of visible cells
-```
-
-Conversion runs once per upload and is billed for its runtime only; serving is static
-storage egress; the viewer's GPU does the rendering. Pixel streaming was rejected: it
-needs always-on GPU servers and gets worse with every extra viewer.
-
-### Setting the AI keys
-
-```sh
-firebase functions:secrets:set OPENAI_API_KEY --project opensketch
-firebase functions:secrets:set XAI_API_KEY --project opensketch
-firebase deploy --only functions --project opensketch
-```
-
-Both currently hold the placeholder `unset`, which the function reports as "not set".
-`functions/.env.example` documents them for local emulation; do not put the real names in
-`functions/.env` — an env var with a secret's name blocks the deploy.
-
-### MCP setup
-
-```sh
-cd mcp && npm install
-claude mcp add e57view -- node /absolute/path/to/e57view/mcp/server.mjs
-```
-
-Then open https://opensketch.web.app/?agent=1 in Chrome on the same machine. Chrome will
-ask once whether the site may access devices on your local network: that is the bridge
-on `127.0.0.1:7337` — allow it. (Automated browsers cannot answer that prompt, which is why
-the production run of the test shows the link as off; on the http dev server no prompt
-is needed.)
 
 ## Mobile
 
@@ -204,15 +101,26 @@ Drive, and Safari's tab memory ceiling — are written defensively but unproven.
 
 ## Not built yet
 
-No parallel decode. No undo for a crop other than reloading. No multi-scan visibility
-toggles (the test file is one registered scan). No angle or area measurement.
+No parallel decode. No multi-scan visibility toggles (the test file is one registered
+scan). No angle or area measurement.
+
+## Removed
+
+Cloud upload and AI-assisted cleaning were built and then taken out of the product. The
+viewer is local-only again: a scan never leaves the machine that opened it, there are no
+provider keys and no server-side conversion. The agent interface stays, because it drives
+the tab the user already has open rather than moving any data. History is in
+`FINDINGS.md`.
 
 ## Deploy
 
 ```sh
-npm run build
-firebase deploy --only hosting --project opensketch
+npm run build     # bundles the app and the MCP server into dist/
+firebase deploy --only hosting,functions,firestore:rules --project opensketch
 ```
+
+The only Cloud Function is `agent`, the mailbox that lets an AI agent drive an open tab
+over HTTP. It stores nothing but the current command and its answer.
 
 ## Run it
 

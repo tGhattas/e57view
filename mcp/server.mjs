@@ -100,15 +100,7 @@ server.tool('viewer_open', 'Open a scan: a cached scan by key (as listed by view
   cached: z.string().optional(), cloud: z.string().optional(), stride: z.number().int().min(1).optional(),
 }, async (a) => withShot(await call('open', a, 15 * 60 * 1000), true));
 
-server.tool('viewer_ai_suggest', 'Ask an AI provider what to clean (vegetation, vehicles, noise). provider heuristic|openai|xai. Returns suggestions and shows them as pending boxes.', {
-  provider: z.enum(['heuristic', 'openai', 'xai']).default('heuristic'), model: z.string().optional(), kinds: z.array(z.string()).optional(),
-}, async (a) => withShot(await call('ai_suggest', a, 300000), true));
-
-server.tool('viewer_suggestions', 'Accept/reject AI suggestions by id or all, or apply the accepted ones (undoable until Save).', {
-  op: z.enum(['list', 'accept', 'reject', 'accept_all', 'reject_all', 'apply', 'clear']), id: z.string().optional(),
-}, async (a) => withShot(await call('suggestions', a, 120000), a.op !== 'list'));
-
-server.tool('viewer_history', 'Undo or redo the last crop/clean, save the in-memory cloud into the device cache (clears undo/redo), or report stack status.', {
+server.tool('viewer_history', 'Undo or redo the last edit, save a copy of the in-memory cloud (clears undo/redo), or report stack status.', {
   op: z.enum(['undo', 'redo', 'save', 'status']),
 }, async (a) => withShot(await call('history', a, 180000), a.op !== 'status'));
 

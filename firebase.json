@@ -50,12 +50,6 @@
       }
     ]
   },
-  "storage": [
-    {
-      "target": "clouds",
-      "rules": "storage.rules"
-    }
-  ],
   "firestore": {
     "rules": "firestore.rules"
   },

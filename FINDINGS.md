@@ -409,3 +409,20 @@ in the native OpenSketch app that already exists in this Firebase project.
 Chrome 152 gates a public https page's WebSocket to 127.0.0.1 behind a local-network-access
 permission. With the check disabled the live site connects instantly; in a normal browser the
 user sees a one-time prompt. Verified both ways with Playwright.
+
+## Productionising
+
+Cloud upload and AI cleaning came out. Both worked — the numbers above are real — but they
+pulled the product away from what it is good at: opening a scan that never leaves the
+machine. Removing them deleted `src/ai.ts`, `src/cloud.ts`, two Cloud Functions
+(`aiSuggest`, `convertCloud`), the Storage bucket rules and CORS, the shared prompt module
+and four test drivers. `src/session.ts` keeps the Firestore agent mailbox, which is all the
+backend the viewer still needs.
+
+What stayed is the agent interface, because it moves no data: it drives the tab the user
+already has open. Delete-role regions survive without the AI that used to create them, so
+an agent can still remove points with `regions add {role:'delete'}` then `regions apply`,
+undoably. The MCP server is bundled by `npm run build` into one 876 KB file served from the
+site, so registering it is a `curl` and a `claude mcp add` with no clone and no install; the
+Agent panel has a Download server button and the two commands ready to copy. A web page
+cannot start a local process, which is the whole reason the HTTP endpoint exists alongside.

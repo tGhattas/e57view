@@ -161,7 +161,7 @@
       </div>
       <button id="k-save" class="primary wide" disabled>Save as…</button>
       <button id="k-reload" class="ghost wide">Reload</button>
-      <p class="hint">Undo/redo cover crop and AI clean. <b>Save as…</b> writes a copy of the current points to a file you choose, updates the on-device cache if there is one, and clears undo. <b>⌘Z</b> / <b>⇧⌘Z</b> / <b>⌘S</b>. Escape cancels a crop region.</p>
+      <p class="hint">Undo/redo cover crop and section edits. <b>Save as…</b> writes a copy of the current points to a file you choose, updates the on-device cache if there is one, and clears undo. <b>⌘Z</b> / <b>⇧⌘Z</b> / <b>⌘S</b>. Escape cancels a crop region.</p>
       <p class="hint mono" id="v-hist">—</p>
     </div>
 
@@ -197,53 +197,23 @@
       <p class="hint mono" id="v-sections">—</p>
     </div>
 
-    <div class="grp" data-grp="ai">
-      <h3>AI clean</h3>
-      <label class="row"><span>Provider</span>
-        <select id="k-aiprov">
-          <option value="heuristic">Local heuristic</option>
-          <option value="openai">OpenAI (GPT)</option>
-          <option value="xai">xAI (Grok)</option>
-        </select>
-      </label>
-      <label class="row ai-remote"><span>Model</span><input type="text" id="k-aimodel" placeholder="gpt-5.5 / grok-4.3" class="txt"></label>
-      <label class="row ai-remote"><span>Your key</span><input type="password" id="k-aikey" placeholder="optional, stays in this browser" class="txt"></label>
-      <div class="chips" id="k-aikinds">
-        <label><input type="checkbox" data-kind="veg" value="vegetation (trees, bushes, hedges)" checked> vegetation</label>
-        <label><input type="checkbox" data-kind="vehicle" value="vehicles"> vehicles</label>
-        <label><input type="checkbox" data-kind="people" value="people"> people</label>
-        <label><input type="checkbox" data-kind="noise" value="floating noise and scanning artefacts"> noise</label>
-      </div>
-      <button id="k-aianalyse" class="primary wide">Analyse</button>
-      <p class="hint mono" id="v-ai">—</p>
-      <ul id="ai-list" class="mlist"></ul>
-      <div class="seg" id="ai-actions">
-        <button id="k-aiacceptall" class="ghost">Approve all</button>
-        <button id="k-airejectall" class="ghost">Decline all</button>
-      </div>
-      <button id="k-aiapply" class="primary wide">Apply approved…</button>
-      <p class="hint">Each box shows ✓ / ✗ in the view. Approved boxes turn red and are removed on Apply. Select one in the list to adjust it with the gizmo.</p>
-    </div>
-
-    <div class="grp" data-grp="cloud">
-      <h3>Cloud</h3>
-      <label class="row"><span>Cloud mode</span><input type="checkbox" id="k-cloud"></label>
-      <p class="hint">Upload once; it is converted on the server and anyone with the link streams it — no file needed on their device.</p>
-      <button id="k-cloudup" class="primary wide">Upload this scan to the cloud</button>
-      <p class="hint mono" id="v-cloud">—</p>
-      <ul id="cloud-list" class="mlist"></ul>
-    </div>
-
     <div class="grp" data-grp="agent">
       <h3>Agent</h3>
       <label class="row"><span>Local MCP</span><input type="checkbox" id="k-agent"></label>
       <p class="hint mono" id="v-agent">off</p>
-      <p class="hint">Local MCP talks to a process on this machine over 127.0.0.1. Chrome on the https site asks once to allow local network access.</p>
+      <p class="hint">Lets an agent on <b>this machine</b> drive the viewer through the e57view MCP server. It is one file and needs only Node 20; a web page cannot start it for you, so download it and register it once:</p>
+      <div class="seg">
+        <button id="k-mcpget" class="ghost">Download server</button>
+        <button id="k-mcpcopy" class="ghost">Copy install</button>
+      </div>
+      <pre class="snip" id="v-mcp">curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
+claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"</pre>
+      <p class="hint">Then tick <b>Local MCP</b> above. The server listens on 127.0.0.1 only, so nothing is exposed off this machine; Chrome asks once to allow local network access.</p>
       <label class="row"><span>Allow edits</span><input type="checkbox" id="k-agentedits"></label>
       <button id="k-agenturl" class="ghost wide">Copy agent URL…</button>
       <button id="k-agentstop" class="ghost wide hidden">Stop session</button>
       <p class="hint mono" id="v-agenturl">—</p>
-      <p class="hint">Copies a page link plus a bearer token for <span class="mono">POST /agent</span>, so an agent can drive this tab from anywhere without MCP. The token is shown once and never appears in the URL. A session dies when you close this tab, and expires after 8 hours; tick <b>Allow edits</b> to let an agent crop, clean, save or call a paid model. Keep this tab open.</p>
+      <p class="hint">Copies a page link plus a bearer token for <span class="mono">POST /agent</span>, so an agent can drive this tab from anywhere without MCP. The token is shown once and never appears in the URL. A session dies when you close this tab, and expires after 8 hours; tick <b>Allow edits</b> to let an agent crop, delete or save. Keep this tab open.</p>
     </div>
 
     <div class="grp" data-grp="measure">

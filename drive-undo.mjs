@@ -65,22 +65,6 @@ await p.click('#tb-panel');
 console.log('PANEL TOGGLE kept camera');
 await p.screenshot({ path: 'shots/controls-panel.png' });
 
-const kinds = await p.evaluate(async () => {
-  const veg = await window.__app.runAi('heuristic', undefined, ['veg']);
-  const noise = await window.__app.runAi('heuristic', undefined, ['noise']);
-  return {
-    veg: veg.map(s => s.label),
-    noise: noise.map(s => s.label),
-  };
-});
-console.log('KINDS veg', kinds.veg.slice(0, 5), 'noise', kinds.noise.slice(0, 5));
-if (kinds.noise.some(l => /vegetation/i.test(l))) throw new Error('noise-only heuristic still returned vegetation boxes');
-
-await p.evaluate(async () => { await window.__app.runAi('heuristic', undefined, ['veg']); });
-const nLabels = await p.evaluate(() => document.querySelectorAll('#labels .slabel').length);
-console.log('LABELS before crop', nLabels);
-await dismissModal();
-
 // Escape cancels a crop region
 await p.evaluate(() => { document.querySelector('[data-grp="crop"]').classList.remove('closed'); });
 await p.click('#k-cropcentre');
@@ -98,15 +82,10 @@ await p.waitForSelector('#modal:not(.hidden)');
 console.log('CROP MODAL:', (await p.textContent('#modal-body')).replace(/\s+/g, ' ').trim().slice(0, 160));
 await p.click('#modal-btns button.danger');
 await p.waitForFunction(() => document.getElementById('busy').classList.contains('hidden'), null, { timeout: 30000 });
-const afterCrop = await p.evaluate(() => ({ n: window.__viewer.loaded, undo: window.__app.hist.undo.length, redo: window.__app.hist.redo.length, sug: window.__app.suggestions.length, labels: document.querySelectorAll('#labels .slabel').length }));
+const afterCrop = await p.evaluate(() => ({ n: window.__viewer.loaded, undo: window.__app.hist.undo.length, redo: window.__app.hist.redo.length, labels: document.querySelectorAll('#labels .slabel').length }));
 console.log('CROP', afterCrop);
 if (!(afterCrop.n > 0 && afterCrop.n < loaded && afterCrop.undo === 1 && afterCrop.redo === 0)) throw new Error('crop did not record an undo step');
-if (afterCrop.sug !== 0 || afterCrop.labels !== 0) throw new Error('crop left AI suggestion tags in the view');
-const outsideTags = await p.evaluate(() => {
-  const b = window.__viewer.bounds();
-  return window.__app.suggestions.filter(s => s.center[0] < b.min.x || s.center[0] > b.max.x || s.center[1] < b.min.y || s.center[1] > b.max.y || s.center[2] < b.min.z || s.center[2] > b.max.z).length;
-});
-if (outsideTags) throw new Error('crop left suggestion centres outside the remaining cloud');
+if (afterCrop.labels !== 0) throw new Error('crop left region tags in the view');
 await p.screenshot({ path: 'shots/undo-crop.png' });
 
 await dismissModal();

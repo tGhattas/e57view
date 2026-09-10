@@ -19,7 +19,7 @@ export interface UiSnap {
   crop: Region;
   frac: number[];
   sections: Region[];
-  suggestions: Region[];
+  deletes: Region[];
 }
 
 export interface HistEntry {
@@ -72,8 +72,8 @@ export class History {
   get canRedo() { return this.redo.length > 0; }
   get steps() { return { undo: this.undo.length, redo: this.redo.length, ram: this.ram }; }
 
-  snapshot(p: { cropped: boolean; cropOn: boolean; crop: Region; frac: number[]; sections: Region[]; suggestions: Region[] }): UiSnap {
-    return { cropped: p.cropped, cropOn: p.cropOn, crop: cloneRegion(p.crop), frac: p.frac.slice(), sections: cloneRegions(p.sections), suggestions: cloneRegions(p.suggestions) };
+  snapshot(p: { cropped: boolean; cropOn: boolean; crop: Region; frac: number[]; sections: Region[]; deletes: Region[] }): UiSnap {
+    return { cropped: p.cropped, cropOn: p.cropOn, crop: cloneRegion(p.crop), frac: p.frac.slice(), sections: cloneRegions(p.sections), deletes: cloneRegions(p.deletes) };
   }
 
   async push(partial: Omit<HistEntry, 'id' | 'spilled'>): Promise<HistEntry> {
