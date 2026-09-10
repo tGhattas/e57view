@@ -19,7 +19,7 @@ Image 2 is an oblique overview for context only; never report coordinates from i
 ${cand}
 Things to remove so the built structures and ground remain: ${want}.
 NEVER remove buildings, walls, roofs, roads, ground, stairs, fences or terraces. A candidate on a roof or wall is a detector error: keep it.
-You may ADD boxes the detector missed, given as fractions of image 1 with (0,0) top-left and (1,1) bottom-right. Keep them tight, one per object or clump; they are refined against the data afterwards.
+Then look at image 1 for removable objects NOT covered by any candidate — parked cars, canopies rendered white by sunlight, bushes, poles, floating noise — and list each as an additional box, given as fractions of image 1 with (0,0) top-left and (1,1) bottom-right. Keep them tight, one per object or clump; they are refined against the data afterwards. Do not repeat a candidate.
 Answer with JSON only, exactly this shape:
 {"candidates":[{"id":"C1","remove":true,"label":"tree","confidence":0.9,"reason":"round canopy east of the house"}],
  "additional":[{"label":"car","x0":0.61,"y0":0.42,"x1":0.66,"y1":0.47,"confidence":0.7,"reason":"parked on the street"}],

@@ -236,6 +236,9 @@ export function mapResult(r: AiParsed, prep: AiPrep, viewer: Viewer): Region[] {
     out.push({ ...c, id: uid(), label: `${d.label} (${pct(d.confidence)})` });
   }
   const MAXSIDE = 30;
+  // what the label implies about height: a car is never 20 m tall even if a tree hangs over it
+  const capFor = (label: string) => /car|vehicle|van|truck|bike|motor|scooter|bin|cone|sign/i.test(label) ? 3.0 : /person|people|pedestrian/i.test(label) ? 2.2 : /bush|shrub|hedge|planter|low veg/i.test(label) ? 4.5 : null;
+  const vegLike = (label: string) => /tree|canopy|foliage|bush|shrub|hedge|vegetation|plant|leaf|leav/i.test(label);
   for (const s of r.additional) {
     let x0 = frame.originX + s.x0 * frame.extentX, x1 = frame.originX + s.x1 * frame.extentX;
     let y0 = frame.originY + (1 - s.y1) * frame.extentY, y1 = frame.originY + (1 - s.y0) * frame.extentY;
@@ -243,28 +246,39 @@ export function mapResult(r: AiParsed, prep: AiPrep, viewer: Viewer): Region[] {
     const gx0 = Math.max(0, Math.floor((x0 - grid.b.min.x) / grid.cell)), gx1 = Math.min(grid.nx - 1, Math.floor((x1 - grid.b.min.x) / grid.cell));
     const gy0 = Math.max(0, Math.floor((y0 - grid.b.min.y) / grid.cell)), gy1 = Math.min(grid.ny - 1, Math.floor((y1 - grid.b.min.y) / grid.cell));
     const inRect = (g: number) => { const gx = g % grid.nx, gy = (g / grid.nx) | 0; return gx >= gx0 && gx <= gx1 && gy >= gy0 && gy <= gy1; };
+    const cap = capFor(s.label);
+    // ground under the box: 5th percentile of the cells' lowest points
+    const lows: number[] = [];
+    for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) { const g = gy * grid.nx + gx; if (grid.cnt[g] >= 3) lows.push(grid.zmin[g]); }
+    lows.sort((a, c) => a - c);
+    const ground = lows.length ? lows[Math.floor(lows.length * 0.05)] : null;
+    const clampZ = (reg: Region): Region => {
+      if (cap == null || ground == null) return reg;
+      const z0 = Math.min(reg.center[2] - reg.half[2], ground - 0.3), z1 = Math.min(reg.center[2] + reg.half[2], ground + cap);
+      return { ...reg, center: [reg.center[0], reg.center[1], (z0 + z1) / 2], half: [reg.half[0], reg.half[1], Math.max(0.3, (z1 - z0) / 2)] };
+    };
     // 1) vegetation cells inside → one tight box per clump (skip clumps already covered by a confirmed candidate)
-    const veg = components(grid, g => grid.veg[g] === 1 && inRect(g), 1);
+    const veg = vegLike(s.label) ? components(grid, g => grid.veg[g] === 1 && inRect(g), 1) : [];
     if (veg.length) {
       let n = 0;
       for (const c of veg) {
         if (n >= 4) break;
         const cx = (c.x0 + c.x1) / 2, cy = (c.y0 + c.y1) / 2;
         if (out.some(o => Math.abs(o.center[0] - cx) <= o.half[0] && Math.abs(o.center[1] - cy) <= o.half[1])) continue;
-        out.push({ ...compRegion(c, `${s.label} (${pct(s.confidence)})`), id: uid() }); n++;
+        out.push(clampZ({ ...compRegion(c, `${s.label} (${pct(s.confidence)})`), id: uid() })); n++;
       }
       if (n) continue;
       if (veg.every(c => out.some(o => Math.abs(o.center[0] - (c.x0 + c.x1) / 2) <= o.half[0] && Math.abs(o.center[1] - (c.y0 + c.y1) / 2) <= o.half[1]))) continue;
     }
-    // 2) no colour signal (overexposed canopy, a car, noise): snap to rough-and-tall clumps under the box
-    const rough = components(grid, g => grid.chaos[g] === 1 && inRect(g), 1);
+    // 2) no colour signal (overexposed canopy): snap to rough-and-tall clumps under the box — vegetation labels only
+    const rough = vegLike(s.label) ? components(grid, g => grid.chaos[g] === 1 && inRect(g), 1) : [];
     if (rough.length && rough[0].cells.length * grid.cell * grid.cell >= 2) {
       let n = 0;
       for (const c of rough) {
         if (n >= 3 || c.cells.length < 2) break;
         const cx = (c.x0 + c.x1) / 2, cy = (c.y0 + c.y1) / 2;
         if (out.some(o => Math.abs(o.center[0] - cx) <= o.half[0] && Math.abs(o.center[1] - cy) <= o.half[1])) continue;
-        out.push({ ...compRegion(c, `${s.label} (${pct(s.confidence)})`), id: uid() }); n++;
+        out.push(clampZ({ ...compRegion(c, `${s.label} (${pct(s.confidence)})`), id: uid() })); n++;
       }
       if (n) continue;
     }
@@ -284,8 +298,8 @@ export function mapResult(r: AiParsed, prep: AiPrep, viewer: Viewer): Region[] {
     let z0: number, z1: number;
     if (s.zFrom != null && s.zTo != null) { z0 = frame.zMin + Math.min(s.zFrom, s.zTo); z1 = frame.zMin + Math.max(s.zFrom, s.zTo); }
     else { z0 = zs[Math.floor(zs.length * 0.05)] - 0.3; z1 = zs1[Math.min(zs1.length - 1, Math.floor(zs1.length * 0.95))] + 0.3; }
-    out.push({ id: uid(), kind: 'box', role: 'pending', label: `${s.label}? (${pct(s.confidence)})`,
-      center: [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2], half: [(x1 - x0) / 2, (y1 - y0) / 2, Math.max(0.2, (z1 - z0) / 2)], radius: 0, quat: [0, 0, 0, 1] });
+    out.push(clampZ({ id: uid(), kind: 'box', role: 'pending', label: `${s.label}? (${pct(s.confidence)})`,
+      center: [(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2], half: [(x1 - x0) / 2, (y1 - y0) / 2, Math.max(0.2, (z1 - z0) / 2)], radius: 0, quat: [0, 0, 0, 1] }));
   }
   const span = Math.max(frame.extentX, frame.extentY) * 3;
   for (const s of r.sections) {

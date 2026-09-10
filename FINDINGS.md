@@ -319,8 +319,17 @@ thickness. Two horizontal sections 1.5 m and 8 m above the floor cut 18,439,323 
   `grok-4.6` 289 s. Defaults: `gpt-5.5` and `grok-4.3`. Reasoning models reject
   `temperature` and `max_tokens`, so the request body is model-gated
   (`shared/aiprompt.mjs`, shared by the browser fallback and the Cloud Function).
-- End-to-end through the Cloud Function on the 18.4M-point load: see the numbers below
-  the benchmark table in the README.
+- End-to-end through the Cloud Function on the 18.4M-point load (1 in 4): candidates,
+  renders and 12 close-ups in **0.8 s**; `gpt-5.5` answered in 17.3 s and confirmed 13 of
+  16 candidates, keeping the pool canopy roof and the two playground-structure boxes with
+  reasons quoting the close-ups; `grok-4.3` answered in 12.9 s and confirmed 13 of 16,
+  keeping the roof edge and the playground structure. Every returned box is 1.8–6.8 m on a
+  side with the height taken from the points, against 43 × 34 × 34 m before the rework.
+- Production (https://opensketch.web.app, same load): `gpt-5.5` 36.6 s, 13 of 16 candidates
+  confirmed plus 15 added (six parked cars, canopies the colour detector missed because
+  they render white); `grok-4.3` 14.6 s, 13 of 16 plus 6 added. Added boxes take their
+  height from the ground under them with a cap implied by the label (a car is 3 m, not
+  the 20 m tree hanging over it), so the cars come back as 4.9 × 4.3 × 3.3 m boxes.
 
 ### Import
 PLY (binary/ASCII) and LAS 1.2–1.4 uncompressed parse over the same synchronous ranged reader
