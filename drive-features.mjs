@@ -130,7 +130,11 @@ await p.waitForTimeout(800);
 await p.screenshot({ path: 'shots/f-cached.png' });
 
 // ---------------------------------------------------------------- panorama
-console.log('STATIONS:', await p.textContent('#v-stations'));
+// station clicks are ignored while a tool is armed, so leave measure mode first
+await p.evaluate(() => document.querySelector('#toolbar [data-tool="orbit"]')?.click());
+await p.keyboard.press('Escape');
+await p.waitForFunction(() => window.__viewer.tool === 'none', null, { timeout: 5000 });
+console.log('STATIONS:', await p.textContent('#v-stations'), '· tool:', await p.evaluate(() => window.__viewer.tool));
 const hit = await p.evaluate(() => {
   const v = window.__viewer; const cam = v.camera;
   // pick the station nearest the screen centre
