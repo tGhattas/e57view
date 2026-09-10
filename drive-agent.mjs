@@ -5,9 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const URL_ = process.env.URL || 'https://opensketch.web.app/';
 const ORIGIN = new URL(URL_).origin;
+// A solid slab plus isolated specks floating clear of it, which the noise detector should find.
 const ply = join(tmpdir(), 'e57view-agent.ply');
-{ const L = ['ply','format ascii 1.0','element vertex 4096','property float x','property float y','property float z','property uchar red','property uchar green','property uchar blue','end_header'];
+const SLAB = 32 * 32 * 4;
+const SPECKS = [];
+for (let i = 0; i < 8; i++) for (let k = 0; k < 4; k++) SPECKS.push([44 + i * 3, 44 + (i % 3) * 3, 7 + k * 0.2]);
+const NPTS = SLAB + SPECKS.length;
+{ const L = ['ply','format ascii 1.0',`element vertex ${NPTS}`,'property float x','property float y','property float z','property uchar red','property uchar green','property uchar blue','end_header'];
   for (let z=0;z<4;z++) for (let y=0;y<32;y++) for (let x=0;x<32;x++) L.push(`${x} ${y} ${z} 190 175 150`);
+  for (const [x,y,z] of SPECKS) L.push(`${x} ${y} ${z} 230 230 230`);
   writeFileSync(ply, L.join('\n')); }
 
 const b = await chromium.launch({ channel: 'chrome', headless: true, args: ['--ignore-gpu-blocklist'] });
@@ -18,6 +24,7 @@ await p.goto(URL_, { waitUntil: 'networkidle' });
 await p.evaluate(() => localStorage.clear());
 await p.setInputFiles('#file-input', ply);
 await p.waitForFunction(() => /loaded in/.test(document.getElementById('tb-points')?.textContent || ''), null, { timeout: 90000 });
+console.log(`FIXTURE ${NPTS} points (${SPECKS.length} floating specks)`);
 await p.waitForTimeout(900);
 try { await p.click('#modal-btns button:has-text("Not now")', { timeout: 3000 }); } catch {}
 await p.evaluate(() => document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed')));
@@ -45,7 +52,7 @@ ok('no token rejected', r.status === 401, `http ${r.status}`);
 r = await call({ session: sid, cmd: 'state' }, { Authorization: 'Bearer ' + 'f'.repeat(64) });
 ok('wrong token rejected', r.status === 401, `http ${r.status}`);
 r = await call({ session: sid, cmd: 'state' }, auth);
-ok('valid token accepted', r.status === 200 && r.j.result?.points === 4096, `http ${r.status} · ${r.j.result?.points} pts`);
+ok('valid token accepted', r.status === 200 && r.j.result?.points === NPTS, `http ${r.status} · ${r.j.result?.points} pts`);
 
 r = await call({ session: sid, cmd: 'history', args: { op: 'undo' } }, auth);
 ok('edit blocked while read-only', r.status === 403, `http ${r.status}`);
@@ -66,6 +73,19 @@ ok('pose applied after a preset', JSON.stringify(got) === JSON.stringify(want.p)
 r = await call({ session: sid, cmd: 'screenshot', args: { width: 900 } }, auth);
 const bytes = JSON.stringify(r.j).length;
 ok('screenshot returns one image', !!r.j.shot && !r.j.result?.png, `${(bytes/1024).toFixed(0)} KB body`);
+
+// an apply must return a plain summary: the undo record cannot cross Firestore
+await p.click('#k-agentedits'); await p.waitForTimeout(1200);
+r = await call({ session: sid, cmd: 'ai_suggest', args: { provider: 'heuristic', kinds: ['noise'], shot: false } }, auth);
+const nsug = Array.isArray(r.j.result) ? r.j.result.length : 0;
+ok('heuristic returned regions', r.status === 200 && nsug > 0, `${nsug} regions`);
+r = await call({ session: sid, cmd: 'suggestions', args: { op: 'apply', shot: false } }, auth);
+const ap = r.j.result || {};
+ok('apply replies with a summary', r.status === 200 && r.j.ok !== false && ap.dropped > 0 && !('undo' in ap),
+   `kept ${ap.kept} dropped ${ap.dropped}`);
+r = await call({ session: sid, cmd: 'history', args: { op: 'undo', shot: false } }, auth);
+ok('undo restores through the endpoint', r.status === 200 && r.j.result?.points === NPTS, `${r.j.result?.points} pts`);
+await p.click('#k-agentedits'); await p.waitForTimeout(800);
 
 await p.click('#k-agentstop');
 await p.waitForTimeout(1500);

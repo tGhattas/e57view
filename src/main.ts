@@ -949,11 +949,12 @@ const agent = new AgentLink({
     if (a.op === 'apply') {
       const keeps = allRegions().filter(r => r.role === 'keep');
       const dels = allRegions().filter(r => r.role === 'delete');
-      return commitApply([...keeps, ...dels], keeps.length ? 'crop' : 'clean', 'Agent apply', () => {
+      const r = await commitApply([...keeps, ...dels], keeps.length ? 'crop' : 'clean', 'Agent apply', () => {
         cropped = true; sections.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false;
         if (keeps.length) suggestions.length = 0;
         else for (const d of dels) { const i = suggestions.indexOf(d); if (i >= 0) suggestions.splice(i, 1); }
       });
+      return { kept: r.kept, dropped: r.dropped, points: viewer.loaded };
     }
     throw new Error('bad op');
   },
@@ -988,10 +989,11 @@ const agent = new AgentLink({
       for (const s of suggestions) if (s.role === 'pending') s.role = 'delete';
       const dels = suggestions.filter(s => s.role === 'delete');
       const gone = dels.slice();
-      return commitApply(dels, 'clean', 'Agent clean', () => {
+      const r = await commitApply(dels, 'clean', 'Agent clean', () => {
         for (const d of gone) { const i = suggestions.indexOf(d); if (i >= 0) suggestions.splice(i, 1); }
         cropped = true;
       });
+      return { kept: r.kept, dropped: r.dropped, regions: gone.length, points: viewer.loaded };
     }
     viewer.render(); return suggestions;
   },
@@ -1017,19 +1019,31 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   if (cmd === 'ai_suggest') return !!a.provider && a.provider !== 'heuristic';
   return false;
 }
+/** An agent reply is written into a Firestore document, so it must be small and plain.
+ *  Undo records carry typed arrays and live GL handles; they would blow the 1 MiB limit
+ *  and be rejected, leaving the caller with an error for work that actually succeeded. */
+const HEAVY = new Set(['undo', 'recs', 'mask', 'leaf']);
+function slim(v: any): any {
+  return JSON.parse(JSON.stringify(v, (k, x) => {
+    if (HEAVY.has(k) || ArrayBuffer.isView(x)) return undefined;
+    return typeof x === 'number' && !isFinite(x) ? null : x;
+  }) ?? 'null');
+}
 async function dispatchAgent(cmd: string, args: any = {}) {
   if (agentNeedsEdit(cmd, args) && !$<HTMLInputElement>('k-agentedits').checked)
     throw new Error(`"${cmd}" changes the scan or spends credit. This session is read-only: tick "Allow edits" in the Agent panel of the viewer tab.`);
   const wantShot = cmd === 'screenshot' || args?.shot === true || (args?.shot !== false && cmd !== 'state' && cmd !== 'pick');
-  const result = await agent.run(cmd, args);
+  const raw = await agent.run(cmd, args);
+  if (raw && typeof raw === 'object' && wantShot) delete (raw as any).png;   // don't ship the same frame twice
+  let result = slim(raw);
+  const size = JSON.stringify(result ?? null).length;
+  if (size > 150_000) result = { note: `result omitted, ${size} characters is too large to return`, keys: Object.keys(raw ?? {}) };
   const out: any = { result };
   if (wantShot) {
-    const url = viewer.snapshot(Math.min(1280, Number(args?.width) || 1024), 'jpeg');
-    const b64 = url.split(',')[1] || '';
-    if (b64.length < 700_000) { out.shot = b64; out.mime = 'image/jpeg'; }
-    if (out.shot && result && typeof result === 'object' && 'png' in result) delete (result as any).png;  // don't ship the same frame twice
+    const b64 = viewer.snapshot(Math.min(1280, Number(args?.width) || 1024), 'jpeg').split(',')[1] || '';
+    if (b64.length < 600_000) { out.shot = b64; out.mime = 'image/jpeg'; }
   }
-  return JSON.parse(JSON.stringify(out, (_k, v) => (typeof v === 'number' && !isFinite(v) ? null : v)));
+  return out;
 }
 let stopSession: (() => void) | null = null;
 let agentSid: string | null = null;

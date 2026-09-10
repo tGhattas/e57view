@@ -388,6 +388,18 @@ silently turned every later `set_view` pose into a top-down jump. It now writes 
 as a PNG in the result and a JPEG alongside it, 660 KB per call; the PNG is dropped when a
 JPEG is attached, which took a 900 px screenshot to 94 KB.
 
+### Driving a clean from outside the browser
+A first real run through `POST /agent` removed 1,052,087 points of scanner noise from a
+32.4M-point scan (17 regions, detector 0.7 s, apply 15.7 s including readback) but answered
+with `Invalid JSON payload received`. The apply handler returned the result of
+`applyRegions` verbatim, which now carries the undo record: typed arrays, `THREE.Vector3`
+instances and live WebGL leaf handles. Firestore rejected the write, so the caller saw a
+failure for work that had in fact succeeded — the worst possible answer for an agent, which
+would retry and delete more. Agent replies are now slimmed (heavy keys and typed arrays
+dropped, result capped at 150 K characters, screenshot at 600 K) and both apply paths return
+`{kept, dropped, points}`. `drive-agent.mjs` covers the whole loop against production:
+token rejection, the read-only gate, pose after preset, apply, and undo.
+
 ### What could not be done
 Browsers on iOS have no LiDAR or WebXR-depth access. The honest path is capture in a
 scanning app and open the export here (which now works for PLY/LAS/E57), or an ARKit capture
