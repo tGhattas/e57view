@@ -108,8 +108,14 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
   Code, Claude Desktop, Cursor…): state, screenshots, camera, settings, regions, measure,
   export to a local path, AI suggestions, stations. Switch on *Agent link* in the panel
   (or open with `?agent=1`); the server relays over a localhost WebSocket.
-- **HTTP agent endpoint.** `POST /agent` with a session id from *Copy agent URL* drives the
-  same commands without MCP; see `public/llms.txt` for the contract.
+- **HTTP agent endpoint.** `POST /agent` drives the same commands from anywhere, without
+  MCP. *Copy agent URL* mints a session: the page link carries only the session id, while
+  the bearer token is copied alongside it and never enters the URL, so a leaked link grants
+  nothing. Sessions expire after 8 hours, *Stop session* revokes one immediately, and they
+  are read-only until *Allow edits* is ticked, which gates crop, clean, save, open and paid
+  model calls. Only the tab that created a session can read or write it, and the collection
+  cannot be enumerated. See `public/llms.txt` for the contract. MCP over localhost stays the
+  safer option when the agent runs on the same machine.
 - **iPhone and iPad.** A touch toolbar (Orbit / Fly / Measure / Crop / Leave photo), an
   on-screen joystick for fly mode, a larger gizmo, and a *Scan with this device* card.
 

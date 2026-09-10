@@ -2,33 +2,53 @@
 
 Browser viewer for E57 / PLY / LAS point clouds. Humans open a scan; agents drive it.
 
-## Open a scan (no MCP)
+## Open a scan
 
 https://opensketch.web.app/?cloud=CLOUD_ID
 https://opensketch.web.app/?cloud=CLOUD_ID&view=top
 https://opensketch.web.app/?cloud=CLOUD_ID&view=fit&ai=heuristic&kinds=noise
 
-Query args: cloud, view (fit|top), az, el, dist, ai (heuristic|openai|xai), kinds (comma list: veg,vehicle,people,noise), session, agent=1 (local MCP bridge).
+Query args: cloud, view (fit|top), az, el, dist, ai (heuristic|openai|xai), kinds (comma list:
+veg,vehicle,people,noise), session, agent=1 (local MCP bridge).
 
-## Drive without configuring MCP
+## Drive a viewer tab over HTTP (no MCP)
 
-1. In the viewer, Agent → Copy agent URL (or open the scan with ?session=SESSION). Keep that tab open.
-2. POST https://opensketch.web.app/agent
-   Content-Type: application/json
+1. In the viewer: Agent -> Copy agent URL. That copies a page link and a bearer token.
+   The token is shown once and never appears in the URL. Keep the tab open.
+2. POST https://opensketch.web.app/agent with the token in an Authorization header:
 
-{"session":"SESSION","cmd":"state"}
-{"session":"SESSION","cmd":"screenshot","args":{"width":1024}}
-{"session":"SESSION","cmd":"set_view","args":{"preset":"top"}}
-{"session":"SESSION","cmd":"ai_suggest","args":{"provider":"heuristic","kinds":["noise"]}}
-{"session":"SESSION","cmd":"suggestions","args":{"op":"apply"}}
-{"session":"SESSION","cmd":"history","args":{"op":"undo"}}
+curl -s https://opensketch.web.app/agent \
+  -H 'Authorization: Bearer TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"session":"SESSION","cmd":"state"}'
 
-GET https://opensketch.web.app/agent  — command list
-GET https://opensketch.web.app/agent?s=SESSION  — is the tab online?
+Commands: state, screenshot, set_view, set, regions, pick, measure, ai_suggest,
+suggestions, history, stations, open.
 
-Responses include result JSON and, for most cmds, shot (JPEG base64). The original file on disk is never overwritten.
+{"session":"S","cmd":"screenshot","args":{"width":1024}}
+{"session":"S","cmd":"set_view","args":{"preset":"top"}}
+{"session":"S","cmd":"set_view","args":{"pose":{"p":[10,10,5],"t":[0,0,0]}}}
+{"session":"S","cmd":"ai_suggest","args":{"provider":"heuristic","kinds":["noise"]}}
+{"session":"S","cmd":"suggestions","args":{"op":"apply"}}
+{"session":"S","cmd":"history","args":{"op":"undo"}}
 
-## Local MCP (same machine as the tab)
+GET /agent                     command list
+GET /agent?s=SESSION           session status (token required)
+
+Responses carry result JSON and, for most commands, shot (JPEG base64).
+
+## Limits
+
+- The session id is a name, not a credential. Without the token every request is 401.
+- Sessions expire 8 hours after they are created. Stop session revokes one immediately.
+- Sessions are read-only by default. Commands that drop points, write a file, load another
+  scan or call a paid model (regions/suggestions apply, history undo|redo|save, open,
+  ai_suggest with openai or xai) return 403 until the viewer tab ticks Allow edits.
+- The original file on disk is never overwritten.
+
+## Local MCP (agent on the same machine as the tab)
 
 claude mcp add e57view -- node /path/to/e57view/mcp/server.mjs
 Then open the viewer with ?agent=1
+
+MCP needs no network exposure and is the safer choice when the agent runs beside the browser.

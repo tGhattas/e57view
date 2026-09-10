@@ -20,7 +20,7 @@
   function gtag(){ dataLayer.push(arguments); }
   window.gtag = gtag;
   gtag('js', new Date());
-  gtag('config', id, { anonymize_ip: true });
+  gtag('config', id, { anonymize_ip: true, page_location: location.origin + location.pathname });
   var s = document.createElement('script');
   s.async = true;
   s.src = 'https://www.googletagmanager.com/gtag/js?id=' + id;
@@ -239,9 +239,11 @@
       <label class="row"><span>Local MCP</span><input type="checkbox" id="k-agent"></label>
       <p class="hint mono" id="v-agent">off</p>
       <p class="hint">Local MCP talks to a process on this machine over 127.0.0.1. Chrome on the https site asks once to allow local network access.</p>
+      <label class="row"><span>Allow edits</span><input type="checkbox" id="k-agentedits"></label>
       <button id="k-agenturl" class="ghost wide">Copy agent URL…</button>
+      <button id="k-agentstop" class="ghost wide hidden">Stop session</button>
       <p class="hint mono" id="v-agenturl">—</p>
-      <p class="hint">The URL opens this scan. POST to <span class="mono">/agent</span> with the session id to crop, clean, screenshot — no MCP config. Keep this tab open.</p>
+      <p class="hint">Copies a page link plus a bearer token for <span class="mono">POST /agent</span>, so an agent can drive this tab from anywhere without MCP. The token is shown once and never appears in the URL. Sessions are read-only and expire after 8 hours; tick <b>Allow edits</b> to let an agent crop, clean, save or call a paid model. Keep this tab open.</p>
     </div>
 
     <div class="grp" data-grp="measure">

@@ -10,7 +10,7 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, rmSync, statSync, createReadStream } from 'node:fs';
 import { convertFile } from './convert.mjs';
 import { suggest } from './ai.mjs';
@@ -86,41 +86,81 @@ export const aiSuggest = onCall(
 
 const AGENT_HELP = {
   name: 'e57view agent',
-  how: 'Open the scan in a browser (optionally ?cloud=ID&session=SID), keep the tab open, then POST commands here. No MCP config required.',
-  open: 'https://opensketch.web.app/?cloud=CLOUD_ID&session=SESSION_ID&view=top',
-  post: { session: 'from Copy agent URL', cmd: 'state | screenshot | set_view | set | regions | pick | measure | ai_suggest | suggestions | history | stations | open', args: {} },
+  how: 'In the viewer: Agent → Copy agent URL. That copies a page link plus a bearer token. Keep the tab open and POST commands here with the token in an Authorization header. No MCP config required.',
+  auth: "Authorization: Bearer <token from Copy agent URL>  (or JSON { token }). The session id names the mailbox; the token is the credential. Sessions expire after 8 hours and are read-only unless the viewer ticks Allow edits.",
+  post: { session: 'session id', cmd: 'state | screenshot | set_view | set | regions | pick | measure | ai_suggest | suggestions | history | stations | open', args: {} },
   examples: [
     { cmd: 'state' },
     { cmd: 'screenshot', args: { width: 1024 } },
     { cmd: 'set_view', args: { preset: 'top' } },
+    { cmd: 'set_view', args: { pose: { p: [10, 10, 5], t: [0, 0, 0] } } },
     { cmd: 'ai_suggest', args: { provider: 'heuristic', kinds: ['noise'] } },
     { cmd: 'suggestions', args: { op: 'apply' } },
-    { cmd: 'regions', args: { op: 'apply' } },
     { cmd: 'history', args: { op: 'undo' } },
   ],
+  note: 'Commands that drop points, write a file, load another scan or call a paid model need Allow edits ticked in the viewer tab.',
 };
+
+/** Constant-time compare of sha256(token) against the stored hash. */
+function tokenOk(token, hash) {
+  if (!token || typeof hash !== 'string' || !hash) return false;
+  const a = Buffer.from(createHash('sha256').update(String(token)).digest('hex'));
+  const b = Buffer.from(hash);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+function bearer(req) {
+  const m = String(req.get('authorization') || '').match(/^Bearer\s+(.+)$/i);
+  return m ? m[1].trim() : String(req.body?.token || '');
+}
+function needsEdit(cmd, args = {}) {
+  if (cmd === 'open') return true;
+  if (cmd === 'regions' || cmd === 'suggestions') return args.op === 'apply';
+  if (cmd === 'history') return args.op !== 'status';
+  if (cmd === 'ai_suggest') return !!args.provider && args.provider !== 'heuristic';
+  return false;
+}
 
 export const agent = onRequest({ cors: true, timeoutSeconds: 120, memory: '256MiB' }, async (req, res) => {
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+  if (req.method !== 'GET' && req.method !== 'POST') { res.status(405).json({ error: 'GET or POST' }); return; }
+  // The id names the mailbox and may travel in a query string; the token never does.
   const sid = String(req.query.s || req.query.session || req.body?.session || '');
-  if (req.method === 'GET' && !sid) { res.json(AGENT_HELP); return; }
-  if (!/^[a-zA-Z0-9]{16,40}$/.test(sid)) { res.status(400).json({ error: 'pass session as ?s= or JSON { session }' }); return; }
-  const db = getFirestore();
-  const ref = db.doc(`agentSessions/${sid}`);
+  if (!sid) { res.json(AGENT_HELP); return; }
+  if (!/^[a-zA-Z0-9]{16,40}$/.test(sid)) { res.status(400).json({ error: 'bad session id' }); return; }
+
+  const ref = getFirestore().doc(`agentSessions/${sid}`);
   const snap = await ref.get();
-  if (!snap.exists) { res.status(404).json({ error: 'unknown session. In the viewer, Agent → Copy agent URL, and keep that tab open.' }); return; }
-  if (req.method === 'GET') {
-    const d = snap.data() || {};
-    const age = Date.now() - (d.viewerAt || 0);
-    res.json({ session: sid, cloudId: d.cloudId || null, viewer: age < 20_000 ? 'online' : 'offline — open the agent URL in a tab', help: AGENT_HELP });
+  const d = snap.exists ? (snap.data() || {}) : null;
+  // One answer for "no such session" and "wrong token", so this cannot be used to probe ids.
+  if (!d || !tokenOk(bearer(req), d.tokenHash)) {
+    res.status(401).json({ error: 'unknown session or bad token. In the viewer: Agent → Copy agent URL, then send the token as "Authorization: Bearer <token>".' });
     return;
   }
-  if (req.method !== 'POST') { res.status(405).json({ error: 'GET or POST' }); return; }
+  if (d.expiresAt && Date.now() > d.expiresAt) {
+    res.status(410).json({ error: 'session expired. Copy a fresh agent URL in the viewer.' });
+    return;
+  }
+  if (req.method === 'GET') {
+    res.json({
+      session: sid, cloudId: d.cloudId || null,
+      viewer: Date.now() - (d.viewerAt || 0) < 20_000 ? 'online' : 'offline — open the viewer page and keep it open',
+      mode: d.allowEdits ? 'edits allowed' : 'read-only',
+      expiresAt: d.expiresAt ?? null, help: AGENT_HELP,
+    });
+    return;
+  }
+
   const cmd = req.body?.cmd || req.body?.op;
-  if (!cmd || typeof cmd !== 'string') { res.status(400).json({ error: 'JSON body { cmd, args? }' }); return; }
+  if (!cmd || typeof cmd !== 'string') { res.status(400).json({ error: 'JSON body { session, cmd, args? }' }); return; }
   const args = req.body.args ?? {};
-  const n = (snap.data()?.n || 0) + 1;
-  await ref.set({ n, cmd: { n, name: cmd, args }, res: null }, { merge: true });
+  if (needsEdit(cmd, args) && !d.allowEdits) {
+    res.status(403).json({ error: `"${cmd}" changes the scan or spends credit. This session is read-only: tick "Allow edits" in the viewer's Agent panel.` });
+    return;
+  }
+  const n = (d.n || 0) + 1;
+  // mergeFields replaces these fields outright. A deep merge would leave arguments from
+  // earlier commands behind, and a stale "preset" silently overrode later poses.
+  await ref.set({ n, cmd: { n, name: cmd, args }, res: null }, { mergeFields: ['n', 'cmd', 'res'] });
   let unsub = () => {};
   try {
     const out = await new Promise((resolve, reject) => {
@@ -132,6 +172,6 @@ export const agent = onRequest({ cors: true, timeoutSeconds: 120, memory: '256Mi
     });
     res.json(out);
   } catch {
-    res.status(504).json({ error: 'viewer did not answer. Keep the tab with ?session=' + sid + ' open.' });
+    res.status(504).json({ error: 'the viewer did not answer. Keep the page with ?session=' + sid + ' open.' });
   } finally { unsub(); }
 });

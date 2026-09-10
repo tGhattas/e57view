@@ -47,11 +47,33 @@ export function watchCloud(id: string, cb: (d: CloudDoc | null) => void) {
   return onSnapshot(doc(db, 'clouds', id), s => cb(s.exists() ? ({ id: s.id, ...(s.data() as any) }) : null));
 }
 
-export async function createAgentSession(cloudId: string | null): Promise<string> {
-  await ensureAuth();
-  const sid = crypto.randomUUID().replace(/-/g, '').slice(0, 20);
-  await setDoc(doc(db, 'agentSessions', sid), { createdAt: Date.now(), cloudId, n: 0, viewerAt: Date.now() });
-  return sid;
+/** Agent sessions: the id names the mailbox, the token opens it. The token is shown
+ *  once, never stored here and never put in the page URL; only its hash is saved. */
+const SESSION_TTL = 8 * 3600e3;
+export interface AgentSession { sid: string; token: string; expiresAt: number }
+
+async function sha256Hex(s: string): Promise<string> {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2, '0')).join('');
+}
+const hex = () => crypto.randomUUID().replace(/-/g, '');
+
+export async function createAgentSession(cloudId: string | null, allowEdits = false): Promise<AgentSession> {
+  const owner = await ensureAuth();
+  const sid = hex().slice(0, 20);
+  const token = hex() + hex();                      // 256 bits
+  const expiresAt = Date.now() + SESSION_TTL;
+  await setDoc(doc(db, 'agentSessions', sid), {
+    owner, cloudId, allowEdits, createdAt: Date.now(), expiresAt,
+    tokenHash: await sha256Hex(token), n: 0, viewerAt: Date.now(),
+  });
+  return { sid, token, expiresAt };
+}
+export async function setAgentEdits(sid: string, allowEdits: boolean) {
+  await setDoc(doc(db, 'agentSessions', sid), { allowEdits }, { merge: true });
+}
+export async function stopAgentSession(sid: string) {
+  await deleteDoc(doc(db, 'agentSessions', sid));
 }
 
 export function watchAgentSession(sid: string, dispatch: (cmd: string, args: any) => Promise<any>, onStatus?: (s: string) => void): () => void {
@@ -59,8 +81,10 @@ export function watchAgentSession(sid: string, dispatch: (cmd: string, args: any
   let handling = 0;
   const beat = window.setInterval(() => { setDoc(ref, { viewerAt: Date.now() }, { merge: true }).catch(() => {}); }, 8000);
   const off = onSnapshot(ref, async snap => {
-    const d = snap.data(); if (!d) { onStatus?.('session missing'); return; }
-    onStatus?.(d.cmd && d.res?.n !== d.cmd.n ? `running ${d.cmd.name}…` : 'listening for HTTP commands');
+    const d = snap.data(); if (!d) { onStatus?.('session ended'); return; }
+    const left = Math.max(0, ((d.expiresAt ?? 0) - Date.now()) / 3600e3);
+    const tail = `${d.allowEdits ? 'edits allowed' : 'read-only'} · expires in ${left.toFixed(1)} h`;
+    onStatus?.(d.cmd && d.res?.n !== d.cmd.n ? `running ${d.cmd.name}…` : `listening · ${tail}`);
     const cmd = d.cmd; if (!cmd || cmd.n === handling || d.res?.n === cmd.n) return;
     handling = cmd.n;
     try {
@@ -69,7 +93,7 @@ export function watchAgentSession(sid: string, dispatch: (cmd: string, args: any
     } catch (e: any) {
       await setDoc(ref, { res: { n: cmd.n, ok: false, error: String(e?.message ?? e), at: Date.now() }, viewerAt: Date.now() }, { merge: true });
     }
-  });
+  }, err => onStatus?.('session error: ' + err.message));
   return () => { off(); clearInterval(beat); };
 }
 

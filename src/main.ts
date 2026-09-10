@@ -1008,7 +1008,18 @@ agent.onStatus = (s) => { $('v-agent').textContent = s; };
 $('k-agent').addEventListener('change', e => { const on = (e.target as HTMLInputElement).checked; localStorage.setItem('agent', on ? '1' : '0'); on ? agent.start() : agent.stop(); });
 if (new URLSearchParams(location.search).get('agent') === '1' || localStorage.getItem('agent') === '1') { $<HTMLInputElement>('k-agent').checked = true; agent.start(); }
 
+/** Commands a remote session may run only when this tab has ticked Allow edits:
+ *  anything that drops points, writes a file, loads another scan or spends provider credit. */
+function agentNeedsEdit(cmd: string, a: any = {}): boolean {
+  if (cmd === 'open') return true;
+  if (cmd === 'regions' || cmd === 'suggestions') return a.op === 'apply';
+  if (cmd === 'history') return a.op !== 'status';
+  if (cmd === 'ai_suggest') return !!a.provider && a.provider !== 'heuristic';
+  return false;
+}
 async function dispatchAgent(cmd: string, args: any = {}) {
+  if (agentNeedsEdit(cmd, args) && !$<HTMLInputElement>('k-agentedits').checked)
+    throw new Error(`"${cmd}" changes the scan or spends credit. This session is read-only: tick "Allow edits" in the Agent panel of the viewer tab.`);
   const wantShot = cmd === 'screenshot' || args?.shot === true || (args?.shot !== false && cmd !== 'state' && cmd !== 'pick');
   const result = await agent.run(cmd, args);
   const out: any = { result };
@@ -1016,31 +1027,71 @@ async function dispatchAgent(cmd: string, args: any = {}) {
     const url = viewer.snapshot(Math.min(1280, Number(args?.width) || 1024), 'jpeg');
     const b64 = url.split(',')[1] || '';
     if (b64.length < 700_000) { out.shot = b64; out.mime = 'image/jpeg'; }
+    if (out.shot && result && typeof result === 'object' && 'png' in result) delete (result as any).png;  // don't ship the same frame twice
   }
   return JSON.parse(JSON.stringify(out, (_k, v) => (typeof v === 'number' && !isFinite(v) ? null : v)));
 }
 let stopSession: (() => void) | null = null;
+let agentSid: string | null = null;
+let agentSticky = 0;                                   // hold a message the watcher must not overwrite
+function agentStatus(text: string, sticky = 0) {
+  if (!sticky && Date.now() < agentSticky) return;
+  agentSticky = sticky ? Date.now() + sticky : 0;
+  $('v-agenturl').textContent = text;
+}
+function updateAgentUI() {
+  $('k-agentstop').classList.toggle('hidden', !agentSid);
+  ($('k-agentedits') as HTMLInputElement).disabled = !agentSid;
+}
 async function startRemoteSession(sid: string) {
   const m = cloudMod ?? await import('./cloud'); cloudMod = m;
   await m.ensureAuth();
   stopSession?.();
-  stopSession = m.watchAgentSession(sid, dispatchAgent, s => { $('v-agenturl').textContent = s; });
+  agentSid = sid;
+  stopSession = m.watchAgentSession(sid, dispatchAgent, s => agentStatus(s));
+  updateAgentUI();
 }
 $('k-agenturl').addEventListener('click', async () => {
   try {
     const m = cloudMod ?? await import('./cloud'); cloudMod = m;
-    const sid = await m.createAgentSession(fromCloud);
+    const edits = $<HTMLInputElement>('k-agentedits').checked;
+    const { sid, token, expiresAt } = await m.createAgentSession(fromCloud, edits);
     await startRemoteSession(sid);
-    const page = new URL(location.href);
+    // The page URL carries the session id only. The token goes to the agent alone, so a
+    // leaked link (history, referrer, analytics) grants nothing.
+    const page = new URL(location.origin + location.pathname);
     page.searchParams.set('session', sid);
     if (fromCloud) page.searchParams.set('cloud', fromCloud);
-    const blob = `${page}\n\nPOST ${location.origin}/agent\n${JSON.stringify({ session: sid, cmd: 'state' })}`;
+    const blob = [
+      `# e57view agent session — expires ${new Date(expiresAt).toLocaleString()}`,
+      `# ${edits ? 'Edits allowed.' : 'Read-only: tick "Allow edits" in the viewer to permit crop, clean and save.'}`,
+      `# Keep this tab open. The token below is the credential; it is shown once and is not in the URL.`,
+      '',
+      `Viewer page: ${page}`,
+      '',
+      `curl -s ${location.origin}/agent \\`,
+      `  -H 'Authorization: Bearer ${token}' \\`,
+      `  -H 'Content-Type: application/json' \\`,
+      `  -d '${JSON.stringify({ session: sid, cmd: 'state' })}'`,
+    ].join('\n');
     await navigator.clipboard.writeText(blob);
-    $('v-agenturl').textContent = `copied session ${sid} · keep this tab open`;
-  } catch (e: any) { $('v-agenturl').textContent = 'failed: ' + (e?.message ?? e); }
+    agentStatus(`session ${sid} copied with its token · ${edits ? 'edits allowed' : 'read-only'}`, 8000);
+  } catch (e: any) { agentStatus('failed: ' + (e?.message ?? e), 8000); }
 });
+$('k-agentstop').addEventListener('click', async () => {
+  if (!agentSid) return;
+  const sid = agentSid;
+  stopSession?.(); stopSession = null; agentSid = null; updateAgentUI();
+  try { await cloudMod?.stopAgentSession(sid); agentStatus('session stopped · its token no longer works', 8000); }
+  catch (e: any) { agentStatus('stopped locally, but the record remains: ' + (e?.message ?? e), 8000); }
+});
+$('k-agentedits').addEventListener('change', async e => {
+  const on = (e.target as HTMLInputElement).checked;
+  if (agentSid) { try { await cloudMod?.setAgentEdits(agentSid, on); } catch {} }
+});
+updateAgentUI();
 const sessionParam = new URLSearchParams(location.search).get('session');
-if (sessionParam) import('./cloud').then(m => { cloudMod = m; startRemoteSession(sessionParam); }).catch(e => { $('v-agenturl').textContent = 'session: ' + ((e as any)?.message ?? e); });
+if (sessionParam) import('./cloud').then(m => { cloudMod = m; startRemoteSession(sessionParam); }).catch(e => agentStatus('session: ' + ((e as any)?.message ?? e)));
 
 // ------------------------------------------------------------------ entry
 async function pickFile() {

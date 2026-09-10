@@ -6,8 +6,18 @@ service cloud.firestore {
       allow create: if request.auth != null && request.resource.data.owner == request.auth.uid;
       allow update, delete: if request.auth != null && resource.data.owner == request.auth.uid;
     }
-    match /agentSessions/{sid}/{doc=**} {
-      allow read, write: if request.auth != null;
+    // An agent session is a mailbox between one viewer tab and the /agent function.
+    // Only the tab that created it may read or write it, and nobody may enumerate the
+    // collection: the session id is a name, not a credential. The credential is the
+    // bearer token, whose SHA-256 lives here and which the function checks.
+    match /agentSessions/{sid} {
+      allow list: if false;
+      allow get: if request.auth != null && resource.data.owner == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.owner == request.auth.uid
+                    && request.resource.data.tokenHash is string;
+      allow update: if request.auth != null && resource.data.owner == request.auth.uid
+                    && request.resource.data.owner == resource.data.owner;
+      allow delete: if request.auth != null && resource.data.owner == request.auth.uid;
     }
   }
 }

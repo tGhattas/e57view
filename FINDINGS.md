@@ -364,6 +364,30 @@ a 148 MB spill to disk; undo **0.5 s**, redo **0.4 s**. AI clean of 15 boxes **2
 **0.3 s**. Save (E57 export + cache rewrite) **2.8 s** for 6.9M points; reload of the saved
 cache **0.1 s**.
 
+### Securing the HTTP agent endpoint
+The first version was open. The Firestore rule was `allow read, write: if request.auth != null`
+and anonymous auth is open to anyone, so a stranger who had never seen a session id could sign
+in, **list every live session**, and then drive any open viewer tab: read state, pull
+screenshots of the scan, crop it, or save over the cache. Verified against the deployed
+project before the fix, and denied after it. The session id also travelled in the page URL, so
+it reached browser history, referrer headers and the Google Analytics tag.
+
+Four changes. Rules are owner-scoped (`resource.data.owner == request.auth.uid`) with
+`allow list: if false`, so the collection cannot be enumerated. The id was split from the
+credential: the page URL carries only the session id, while a 256-bit bearer token is copied
+to the agent, stored as SHA-256 and compared in constant time by the function, which answers
+401 identically for an unknown session and a bad token so ids cannot be probed. Sessions
+expire after 8 hours and *Stop session* deletes the document. Commands that drop points,
+write a file, load another scan or call a paid model return 403 until the tab ticks
+*Allow edits*. Analytics now reports `origin + pathname` only.
+
+Two bugs surfaced while testing the endpoint. The function wrote commands with `merge: true`,
+which deep-merges maps, so arguments from earlier commands persisted: a stale `preset: 'top'`
+silently turned every later `set_view` pose into a top-down jump. It now writes with
+`mergeFields`, replacing the field outright. And a screenshot shipped the same frame twice,
+as a PNG in the result and a JPEG alongside it, 660 KB per call; the PNG is dropped when a
+JPEG is attached, which took a 900 px screenshot to 94 KB.
+
 ### What could not be done
 Browsers on iOS have no LiDAR or WebXR-depth access. The honest path is capture in a
 scanning app and open the export here (which now works for PLY/LAS/E57), or an ARKit capture
