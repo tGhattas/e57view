@@ -35,6 +35,13 @@ export interface HistEntry {
   spilled: boolean;
 }
 
+export type HistoryIo = {
+  write(id: string, i: number, recs: Uint8Array): Promise<void>;
+  read(id: string, i: number): Promise<Uint8Array>;
+  drop(id: string): Promise<void>;
+  clear(): Promise<void>;
+};
+
 const DIR = 'e57view-undo';
 export const RAM_BUDGET = coarse ? 96e6 : 384e6;
 const SPILL_AT = 24e6;
@@ -48,7 +55,12 @@ export class History {
   undo: HistEntry[] = [];
   redo: HistEntry[] = [];
   onChange: (() => void) | null = null;
+  /** True after a spill failed on both the worker and main-thread paths. */
+  diskFail = false;
   private n = 0;
+  private io: HistoryIo | null;
+
+  constructor(opts: { io?: HistoryIo } = {}) { this.io = opts.io ?? null; }
 
   get ram(): number {
     let n = 0;
@@ -89,7 +101,7 @@ export class History {
 
   async clear() {
     await this.discard(this.undo); await this.discard(this.redo);
-    this.undo = []; this.redo = []; this.onChange?.();
+    this.undo = []; this.redo = []; this.diskFail = false; this.onChange?.();
   }
 
   async fetch(e: HistEntry, i: number): Promise<Uint8Array> {
@@ -108,27 +120,44 @@ export class History {
 
   private async spill(e: HistEntry) {
     try {
-      const root = await navigator.storage.getDirectory();
-      const d = await root.getDirectoryHandle(DIR, { create: true });
-      const ed = await d.getDirectoryHandle(e.id, { create: true });
       for (let i = 0; i < e.undo.leaves.length; i++) {
         const recs = e.undo.leaves[i].recs;
         if (!recs.byteLength) continue;
         const copy = new Uint8Array(recs.byteLength); copy.set(recs);
-        const fh = await ed.getFileHandle(i + '.bin', { create: true });
-        const w = await fh.createWritable();
-        await w.write(copy.buffer);
-        await w.close();
+        try {
+          if (this.io) await this.io.write(e.id, i, copy);
+          else await this.writeMain(e.id, i, copy);
+        } catch (err) {
+          if (!this.io) throw err;
+          const copy2 = new Uint8Array(recs.byteLength); copy2.set(recs);
+          await this.writeMain(e.id, i, copy2);
+        }
         e.undo.leaves[i].recs = new Uint8Array(0);
         if ((i & 7) === 7) await new Promise(r => setTimeout(r, 0));
       }
       e.spilled = true;
+      this.diskFail = false;
     } catch (err) {
       console.warn('undo spill failed; keeping the step in RAM', err);
+      this.diskFail = true;
+      this.onChange?.();
     }
   }
 
+  private async writeMain(id: string, i: number, recs: Uint8Array) {
+    const root = await navigator.storage.getDirectory();
+    const d = await root.getDirectoryHandle(DIR, { create: true });
+    const ed = await d.getDirectoryHandle(id, { create: true });
+    const fh = await ed.getFileHandle(i + '.bin', { create: true });
+    const w = await fh.createWritable();
+    await w.write(recs.buffer as ArrayBuffer);
+    await w.close();
+  }
+
   private async readSpill(id: string, i: number): Promise<Uint8Array> {
+    if (this.io) {
+      try { return await this.io.read(id, i); } catch { /* fall through */ }
+    }
     const root = await navigator.storage.getDirectory();
     const d = await root.getDirectoryHandle(DIR);
     const ed = await d.getDirectoryHandle(id);
@@ -138,11 +167,21 @@ export class History {
 
   private async discard(list: HistEntry[]) {
     if (!list.length) return;
-    try {
-      const root = await navigator.storage.getDirectory();
-      const d = await root.getDirectoryHandle(DIR);
-      for (const e of list) { try { await d.removeEntry(e.id, { recursive: true }); } catch {} }
-    } catch {}
-    for (const e of list) { for (const l of e.undo.leaves) l.recs = new Uint8Array(0); e.spilled = true; }
+    for (const e of list) {
+      try {
+        if (this.io) await this.io.drop(e.id);
+        else await this.dropMain(e.id);
+      } catch {
+        try { await this.dropMain(e.id); } catch {}
+      }
+      for (const l of e.undo.leaves) l.recs = new Uint8Array(0);
+      e.spilled = true;
+    }
+  }
+
+  private async dropMain(id: string) {
+    const root = await navigator.storage.getDirectory();
+    const d = await root.getDirectoryHandle(DIR);
+    await d.removeEntry(id, { recursive: true });
   }
 }

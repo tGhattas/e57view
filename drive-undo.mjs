@@ -139,15 +139,57 @@ await p.waitForFunction(() => document.getElementById('busy').classList.contains
 const afterSave = await p.evaluate(() => ({ n: window.__viewer.loaded, undo: window.__app.hist.undo.length, redo: window.__app.hist.redo.length, cache: document.getElementById('v-cache').textContent, hist: document.getElementById('v-hist').textContent }));
 console.log('SAVE', afterSave);
 if (afterSave.undo !== 0 || afterSave.redo !== 0) throw new Error('save did not clear undo/redo');
-if (!/saved|cache/i.test(afterSave.cache || '')) throw new Error('cache status was not updated');
+const cacheEntries = await p.evaluate(async () => {
+  const root = await navigator.storage.getDirectory();
+  try { const d = await root.getDirectoryHandle('e57view-cache'); let n = 0; for await (const _ of d) n++; return n; } catch { return 0; }
+});
+if (cacheEntries) throw new Error('Save created a cache although the scan was not cached');
+if (!/undo cleared/.test(afterSave.cache || '') || /cache updated/.test(afterSave.cache || '')) throw new Error('status after uncached save is wrong: ' + afterSave.cache);
 await p.screenshot({ path: 'shots/undo-saved.png' });
 
-// reload from the just-written cache
+// reload from disk (not cache) — Save did not write a cache
 await p.evaluate(() => document.getElementById('k-reload').click());
-await p.waitForFunction(() => /(from cache) in/.test(document.getElementById('tb-points')?.textContent || ''), null, { timeout: 30000 });
-const afterReload = await p.evaluate(() => window.__viewer.loaded);
-console.log('RELOAD FROM CACHE', afterReload);
-if (afterReload !== afterCrop.n) throw new Error(`cache reload expected ${afterCrop.n}, got ${afterReload}`);
+await p.waitForFunction(() => /loaded in/.test(document.getElementById('tb-points')?.textContent || ''), null, { timeout: 30000 });
+const afterReload = await p.evaluate(() => ({ n: window.__viewer.loaded, undo: window.__app.hist.undo.length }));
+console.log('RELOAD FROM DISK', afterReload);
+if (afterReload.n !== N || afterReload.undo !== 0) throw new Error(`disk reload expected ${N} pts / undo 0, got ${afterReload.n} / undo ${afterReload.undo}`);
+
+// cache it, crop again, Save → cache must hold the edited points
+await p.evaluate(() => window.__app.writeCache());
+await p.waitForFunction(() => document.getElementById('busy').classList.contains('hidden'), null, { timeout: 30000 });
+console.log('CACHE written');
+await dismissModal();
+await p.click('#k-cropcentre');
+await p.evaluate(() => { for (const id of ['k-cropsize', 'k-cropsy', 'k-cropsz']) { const s = document.getElementById(id); s.value = '0.35'; s.dispatchEvent(new Event('input')); } });
+await p.click('#k-cropapply');
+await p.waitForSelector('#modal:not(.hidden)');
+await p.click('#modal-btns button.danger');
+await p.waitForFunction(() => document.getElementById('busy').classList.contains('hidden'), null, { timeout: 30000 });
+const afterCrop2 = await p.evaluate(() => ({ n: window.__viewer.loaded, undo: window.__app.hist.undo.length }));
+console.log('CROP2', afterCrop2);
+if (!(afterCrop2.n > 0 && afterCrop2.n < N && afterCrop2.undo === 1)) throw new Error('second crop did not record an undo step');
+
+const [dl2] = await Promise.all([
+  p.waitForEvent('download', { timeout: 120000 }),
+  (async () => {
+    await p.click('#tb-save');
+    await p.waitForSelector('#modal:not(.hidden)');
+    console.log('SAVE2 MODAL:', (await p.textContent('#modal-body')).replace(/\s+/g, ' ').trim().slice(0, 200));
+    await p.click('#modal-btns button.primary');
+  })(),
+]);
+console.log('DOWNLOAD2', dl2.suggestedFilename());
+await p.waitForFunction(() => window.__app.hist.undo.length === 0, null, { timeout: 120000 });
+const afterSave2 = await p.evaluate(() => ({ n: window.__viewer.loaded, undo: window.__app.hist.undo.length, cache: document.getElementById('v-cache').textContent }));
+console.log('SAVE2', afterSave2);
+if (!/cache updated/.test(afterSave2.cache || '')) throw new Error('status after cached save is wrong: ' + afterSave2.cache);
+
+await p.evaluate(() => document.getElementById('k-reload').click());
+await p.waitForFunction(() => /from cache in/.test(document.getElementById('tb-points')?.textContent || ''), null, { timeout: 30000 });
+await p.waitForFunction(() => window.__viewer.cells.pendingCount === 0, null, { timeout: 30000 });
+const afterCacheReload = await p.evaluate(() => window.__viewer.loaded);
+console.log('RELOAD FROM CACHE', afterCacheReload);
+if (afterCacheReload !== afterCrop2.n) throw new Error(`cache reload expected ${afterCrop2.n}, got ${afterCacheReload}`);
 
 console.log('OK');
 await b.close();

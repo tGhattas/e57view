@@ -121,12 +121,17 @@ export const agent = onRequest({ cors: true, timeoutSeconds: 120, memory: '256Mi
   const args = req.body.args ?? {};
   const n = (snap.data()?.n || 0) + 1;
   await ref.set({ n, cmd: { n, name: cmd, args }, res: null }, { merge: true });
-  const t0 = Date.now();
-  while (Date.now() - t0 < 100_000) {
-    await new Promise(r => setTimeout(r, 300));
-    const s = await ref.get();
-    const out = s.data()?.res;
-    if (out?.n === n) { res.json(out); return; }
-  }
-  res.status(504).json({ error: 'viewer did not answer. Keep the tab with ?session=' + sid + ' open.' });
+  let unsub = () => {};
+  try {
+    const out = await new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('timeout')), 100_000);
+      unsub = ref.onSnapshot(s => {
+        const r = s.data()?.res;
+        if (r?.n === n) { clearTimeout(t); resolve(r); }
+      }, err => { clearTimeout(t); reject(err); });
+    });
+    res.json(out);
+  } catch {
+    res.status(504).json({ error: 'viewer did not answer. Keep the tab with ?session=' + sid + ' open.' });
+  } finally { unsub(); }
 });

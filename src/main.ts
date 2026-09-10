@@ -24,7 +24,6 @@ let axisCube: { origin: number[]; size: number } | null = null;
 let revealed = false, gotRealLeaf = false, fromCache = false, cropped = false, fromCloud: string | null = null;
 let cacheKey = '';
 let t0 = 0;
-const hist = new History();
 let cloudStreamer: import('./cloud').Streamer | null = null;
 let cloudMod: typeof import('./cloud') | null = null;
 
@@ -43,15 +42,75 @@ function hashKey(s: string) { let h = 0x811c9dc5; for (let i = 0; i < s.length; 
 function keyFor(f: File, stride: number) { return hashKey(`${f.name}|${f.size}|${f.lastModified}|${stride}`); }
 const ioWaiters = new Map<string, (m: any) => void>();
 function ioOnce(type: string): Promise<any> { return new Promise(res => ioWaiters.set(type, res)); }
+let undoTail: Promise<unknown> = Promise.resolve();
+function withUndoIo<T>(fn: () => Promise<T>): Promise<T> {
+  const run = undoTail.then(fn, fn);
+  undoTail = run.then(() => {}, () => {});
+  return run;
+}
+function ioOnceUndo(type: string): Promise<any> {
+  return new Promise((res, rej) => {
+    ioWaiters.set(type, res);
+    ioWaiters.set('__undo_err', (e: Error) => rej(e));
+  });
+}
 io.onmessage = (ev: MessageEvent) => {
   const m = ev.data;
+  if (m.type === 'error' && typeof m.op === 'string' && m.op.startsWith('undo-')) {
+    for (const t of ['undo-written', 'undo-chunk', 'undo-dropped', 'undo-cleared']) ioWaiters.delete(t);
+    const errW = ioWaiters.get('__undo_err');
+    if (errW) { ioWaiters.delete('__undo_err'); errW(new Error(m.message)); }
+    return;
+  }
   const w = ioWaiters.get(m.type);
-  if (w) { ioWaiters.delete(m.type); w(m); return; }
+  if (w) {
+    ioWaiters.delete(m.type);
+    if (['undo-written', 'undo-chunk', 'undo-dropped', 'undo-cleared'].includes(m.type)) ioWaiters.delete('__undo_err');
+    w(m); return;
+  }
   if (['leaf', 'meta', 'plan', 'progress', 'done'].includes(m.type)) { onWorker(ev); return; }
   if (m.type === 'export-progress') { busy(`Writing ${fmt(m.written)} of ${fmt(exportTotal)} points…`, m.written / Math.max(exportTotal, 1)); return; }
   if (m.type === 'cache-progress') { busy(`Caching… ${mb(m.bytes)}`, m.bytes / Math.max(cacheBytesExpected, 1)); return; }
   if (m.type === 'error') { hideBusy(); fail(`${m.op}: ${m.message}`); }
 };
+function histBuf(recs: Uint8Array): ArrayBuffer {
+  return recs.byteOffset === 0 && recs.byteLength === recs.buffer.byteLength
+    ? recs.buffer as ArrayBuffer
+    : recs.slice().buffer;
+}
+const histIo = {
+  write(id: string, i: number, recs: Uint8Array) {
+    return withUndoIo(async () => {
+      const buf = histBuf(recs);
+      io.postMessage({ type: 'undo-write', id, i, recs: buf }, [buf]);
+      const m = await ioOnceUndo('undo-written');
+      if (m.id !== id || m.i !== i) throw new Error('undo-write mismatch');
+    });
+  },
+  read(id: string, i: number) {
+    return withUndoIo(async () => {
+      io.postMessage({ type: 'undo-read', id, i });
+      const m = await ioOnceUndo('undo-chunk');
+      if (m.id !== id || m.i !== i) throw new Error('undo-read mismatch');
+      return new Uint8Array(m.recs);
+    });
+  },
+  drop(id: string) {
+    return withUndoIo(async () => {
+      io.postMessage({ type: 'undo-drop', id });
+      const m = await ioOnceUndo('undo-dropped');
+      if (m.id !== id) throw new Error('undo-drop mismatch');
+    });
+  },
+  clear() {
+    return withUndoIo(async () => {
+      io.postMessage({ type: 'undo-clear' });
+      await ioOnceUndo('undo-cleared');
+    });
+  },
+};
+const hist = new History({ io: histIo });
+void histIo.clear().catch(() => {});
 function idb(): Promise<IDBDatabase> { return new Promise((res, rej) => { const r = indexedDB.open('e57view', 1); r.onupgradeneeded = () => r.result.createObjectStore('handles'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
 async function idbPut(key: string, val: any) { try { const d = await idb(); d.transaction('handles', 'readwrite').objectStore('handles').put(val, key); } catch {} }
 async function idbGet(key: string): Promise<any> { try { const d = await idb(); return await new Promise(res => { const r = d.transaction('handles').objectStore('handles').get(key); r.onsuccess = () => res(r.result); r.onerror = () => res(null); }); } catch { return null; } }
@@ -362,7 +421,7 @@ async function applyKeep() {
   const ans = await modal('Apply crop?', `<p>Everything outside ${what} will be dropped from memory — roughly <b>${fmt(est)}</b> of ${fmt(viewer.loaded)} points kept.</p><p>The file on disk is not touched. <b>Undo</b> puts the points back. <b>Save as…</b> writes a copy. AI suggestion tags are cleared (they come back if you undo). <b>Escape</b> cancels.</p>`,
     [{ label: 'Cancel', value: 'no' }, { label: 'Drop outside points', value: 'yes', cls: 'danger' }]);
   if (ans !== 'yes') return null;
-  return commitApply(keeps, 'crop', `Crop · dropped ${fmt(viewer.loaded - est)}`, () => {
+  return commitApply(keeps, 'crop', res => `Crop · dropped ${fmt(res.dropped)}`, () => {
     cropped = true; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; sections.length = 0; suggestions.length = 0;
     viewer.setActiveRegion(null);
   });
@@ -390,7 +449,7 @@ function restoreUi(s: ReturnType<History['snapshot']>) {
   if (cropUI.on) viewer.setActiveRegion('crop'); else if (viewer.activeRegion === 'crop') viewer.setActiveRegion(null);
   syncZLabels(); updateCacheUI(); updateHistUI(); viewer.touch();
 }
-async function commitApply(regions: Region[], kind: 'crop' | 'clean', label: string, after: () => void) {
+async function commitApply(regions: Region[], kind: 'crop' | 'clean', label: string | ((res: { kept: number; dropped: number }) => string), after: () => void) {
   if (!regions.length || !viewer.loaded) return { kept: viewer.loaded, dropped: 0, undo: null };
   const before = snapUi();
   const robust = viewer.robust ? viewer.robust.clone() : viewer.cells.bounds.clone();
@@ -400,7 +459,8 @@ async function commitApply(regions: Region[], kind: 'crop' | 'clean', label: str
   after();
   syncRegions(); renderAiList();
   const afterSnap = snapUi();
-  if (res.undo) await hist.push({ kind, label, dropped: res.dropped, kept: res.kept, undo: res.undo, robust, before, after: afterSnap });
+  const lab = typeof label === 'function' ? label(res) : label;
+  if (res.undo) await hist.push({ kind, label: lab, dropped: res.dropped, kept: res.kept, undo: res.undo, robust, before, after: afterSnap });
   hideBusy();
   $('v-loaded').textContent = `${fmt(res.kept)} points in memory · ${fmt(res.dropped)} dropped`;
   $('tb-points').textContent = `${fmt(res.kept)} pts · ${kind === 'crop' ? 'cropped' : 'cleaned'}`;
@@ -414,7 +474,7 @@ function updateHistUI() {
   for (const id of ['k-redo', 'tb-redo']) { const b = $(id) as HTMLButtonElement; b.disabled = !r; b.title = r ? `Redo: ${hist.peekRedo()!.label}` : 'Nothing to redo'; }
   for (const id of ['k-save', 'tb-save']) { const b = $(id) as HTMLButtonElement; b.disabled = !loaded || !meta; }
   const bits: string[] = [];
-  if (u || r) bits.push(`${hist.undo.length} undo · ${hist.redo.length} redo` + (hist.ram ? ` · ${mb(hist.ram)} in RAM` : hist.peekUndo()?.spilled || hist.peekRedo()?.spilled ? ' · spilled to disk' : ''));
+  if (u || r) bits.push(`${hist.undo.length} undo · ${hist.redo.length} redo` + (hist.ram ? ` · ${mb(hist.ram)} in RAM` : hist.peekUndo()?.spilled || hist.peekRedo()?.spilled ? ' · spilled to disk' : '') + (hist.diskFail ? ' · disk unavailable, undo held in memory' : ''));
   else if (loaded) bits.push('no edits to undo');
   $('v-hist').textContent = bits.join(' · ') || '—';
 }
@@ -481,7 +541,9 @@ async function saveCurrent() {
   const parts = [
     `<p>Writes the <b>${fmt(viewer.loaded)}</b> points in memory to a <b>${fmtSel.toUpperCase()}</b> file you choose. The original file on disk is never overwritten.</p>`,
     (nU || nR) ? `<p><b>Undo (${nU}) and redo (${nR})</b> will be emptied after a successful save.</p>` : '',
-    currentFile ? `<p>If this scan is cached on this device, that cache is updated to match.</p>` : '',
+    fromCache
+      ? `<p>The cached copy on this device will be replaced by these ${fmt(viewer.loaded)} points.</p>`
+      : `<p>This scan is not cached on this device, so nothing is written there.</p>`,
   ].filter(Boolean).join('');
   const ans = await modal('Save as…', parts, [{ label: 'Cancel', value: 'no' }, { label: 'Choose location…', value: 'yes', cls: 'primary' }]);
   if (ans !== 'yes') return;
@@ -494,14 +556,22 @@ async function saveCurrent() {
     const r = await runExport(fmtSel, 1);
     busy('Saving…');
     await writeOutFile(r, handle);
-    if (currentFile) { try { await writeCache(); } catch {} }
+    let cacheUpdated = false;
+    if (currentFile && fromCache) { try { await writeCache(); cacheUpdated = true; } catch {} }
     await hist.clear();
     updateHistUI(); updateCacheUI();
     $('v-export').textContent = `saved ${r.name} · ${fmt(r.count)} points · ${mb(r.bytes)}`;
     $('tb-points').textContent = `${fmt(r.count)} pts · saved`;
-    if (currentFile) $('v-cache').textContent = fromCache ? `saved ${r.name} · cache updated · undo cleared` : `saved ${r.name} · undo cleared`;
+    if (currentFile) $('v-cache').textContent = cacheUpdated ? `saved ${r.name} · cache updated · undo cleared` : `saved ${r.name} · undo cleared`;
   } catch (e: any) { fail('Could not save: ' + (e?.message ?? e)); }
   finally { hideBusy(); }
+}
+async function confirmDiscardHistory(): Promise<boolean> {
+  if (hist.undo.length + hist.redo.length === 0) return true;
+  const ans = await modal('Discard unsaved history?',
+    `<p>There is unsaved history (${hist.undo.length} undo, ${hist.redo.length} redo). Continuing replaces the loaded scan and discards it.</p>`,
+    [{ label: 'Cancel', value: 'no' }, { label: 'Discard and continue', value: 'yes', cls: 'danger' }]);
+  return ans === 'yes';
 }
 async function reloadScan() {
   if (!fromCloud && !currentFile) return;
@@ -694,7 +764,7 @@ function updateCacheUI() {
   const btn = $('k-cache'), rm = $('k-cacheremove');
   if (!currentFile) { $('v-cache').textContent = fromCloud ? 'streamed from the cloud' : '—'; btn.classList.add('hidden'); rm.classList.add('hidden'); return; }
   if (fromCache) { $('v-cache').textContent = cropped ? 'cache holds the current (edited) points' : 'this scan is cached on this device'; btn.classList.add('hidden'); rm.classList.remove('hidden'); }
-  else if (cropped) { $('v-cache').textContent = 'not cached — Save writes the current points here'; btn.classList.add('hidden'); rm.classList.add('hidden'); }
+  else if (cropped) { $('v-cache').textContent = `not cached · caching now stores the edited ${fmt(viewer.loaded)} points (${mb(viewer.loaded * REC)})`; btn.classList.remove('hidden'); rm.classList.add('hidden'); }
   else { $('v-cache').textContent = `not cached · would take ${mb(viewer.loaded * REC)}`; btn.classList.remove('hidden'); rm.classList.add('hidden'); }
 }
 $('k-cache').addEventListener('click', () => writeCache());
@@ -711,7 +781,10 @@ async function refreshCachedList() {
     const rm = document.createElement('button'); rm.className = 'ghost'; rm.textContent = 'Remove';
     rm.onclick = async (e) => { e.stopPropagation(); io.postMessage({ type: 'cache-delete', key: it.key }); await ioOnce('cache-deleted'); refreshCachedList(); };
     li.appendChild(rm);
-    if (handle) li.querySelector('.nm')!.addEventListener('click', () => openCached(it.key).catch(e => fail(String(e?.message ?? e))));
+    if (handle) li.querySelector('.nm')!.addEventListener('click', async () => {
+      if (!(await confirmDiscardHistory())) return;
+      openCached(it.key).catch(e => fail(String(e?.message ?? e)));
+    });
     ul.appendChild(li);
   }
 }
@@ -781,7 +854,12 @@ function renderCloudList() {
     const li = document.createElement('li');
     const st = c.status === 'ready' ? `${fmt(c.points || 0)} pts · ${mb(c.bytes || 0)}` : c.status === 'error' ? 'error: ' + (c.error || '') : `${c.status}${c.progress ? ' ' + Math.round(c.progress * 100) + '%' : ''}`;
     li.innerHTML = `<span class="ok">${c.name}</span> <span class="mono">${st}</span><span class="x" title="Delete">✕</span>`;
-    li.querySelector('.ok')!.addEventListener('click', () => { if (c.status === 'ready') location.href = `${location.origin}${location.pathname}?cloud=${c.id}`; });
+    li.querySelector('.ok')!.addEventListener('click', async () => {
+      if (c.status !== 'ready') return;
+      if (!(await confirmDiscardHistory())) return;
+      await hist.clear();
+      location.href = `${location.origin}${location.pathname}?cloud=${c.id}`;
+    });
     li.querySelector('.x')!.addEventListener('click', async () => { await cloudMod!.deleteCloud(c.id); updateCloudUI(); });
     ul.appendChild(li);
   }
@@ -977,12 +1055,27 @@ async function pickFile() {
 $('pick').addEventListener('click', pickFile); $('pick2').addEventListener('click', pickFile);
 const testInput = document.createElement('input');
 testInput.type = 'file'; testInput.id = 'file-input'; testInput.style.cssText = 'position:fixed;opacity:0;pointer-events:none;left:-9999px';
-testInput.onchange = () => testInput.files?.[0] && openFile(testInput.files[0]);
+testInput.onchange = async () => {
+  if (!testInput.files?.[0]) return;
+  if (!(await confirmDiscardHistory())) return;
+  openFile(testInput.files[0]);
+};
 document.body.appendChild(testInput);
 const drop = $('drop');
 for (const t of ['dragenter', 'dragover']) addEventListener(t, e => { e.preventDefault(); drop.classList.add('drag'); });
 addEventListener('dragleave', e => { e.preventDefault(); drop.classList.remove('drag'); });
-addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'); const f = (e as DragEvent).dataTransfer?.files?.[0]; if (f) openFile(f); });
+addEventListener('drop', async e => {
+  e.preventDefault(); drop.classList.remove('drag');
+  const f = (e as DragEvent).dataTransfer?.files?.[0];
+  if (!f) return;
+  if (!(await confirmDiscardHistory())) return;
+  openFile(f);
+});
+addEventListener('beforeunload', e => {
+  if (hist.undo.length + hist.redo.length === 0) return;
+  e.preventDefault();
+  (e as any).returnValue = '';
+});
 
 // ------------------------------------------------------------------ device defaults, sheet, groups
 (function deviceDefaults() {

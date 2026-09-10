@@ -67,6 +67,11 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
 - **Cache** — after a decode you are asked whether to cache the decoded cells in the
   browser's private storage. A cached scan reopens in about a second. Cached scans are
   listed on the start screen, with a remove button, and reopen in one click in Chromium.
+- **Undo / redo / Save.** Crop and AI clean are undoable (⌘Z / ⇧⌘Z). ⌘S opens *Save as…*,
+  which writes a copy of the points in memory; the on-device cache is updated only if the
+  scan was already cached, and history is cleared after a warning. Large undo steps spill
+  to the origin-private file system so a multi-million-point crop does not pin hundreds of
+  megabytes in RAM.
 - **View link** — copies a URL that restores the camera and colour mode when the same file
   is opened again.
 
@@ -103,6 +108,8 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
   Code, Claude Desktop, Cursor…): state, screenshots, camera, settings, regions, measure,
   export to a local path, AI suggestions, stations. Switch on *Agent link* in the panel
   (or open with `?agent=1`); the server relays over a localhost WebSocket.
+- **HTTP agent endpoint.** `POST /agent` with a session id from *Copy agent URL* drives the
+  same commands without MCP; see `public/llms.txt` for the contract.
 - **iPhone and iPad.** A touch toolbar (Orbit / Fly / Measure / Crop / Leave photo), an
   on-screen joystick for fly mode, a larger gizmo, and a *Scan with this device* card.
 

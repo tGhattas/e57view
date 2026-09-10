@@ -358,6 +358,12 @@ The MCP server relays tool calls over a localhost WebSocket to the tab; screensh
 as PNG image content. Driven from a stand-in bridge in the test: state, 154 KB screenshot,
 a measurement of 10.453 m from two picked pixels, and a keep box rotated 45°.
 
+### Undo / redo / save
+On the same 18.4M-point load (1 in 4): a crop dropping 10.6M points took **1.2 s** including
+a 148 MB spill to disk; undo **0.5 s**, redo **0.4 s**. AI clean of 15 boxes **2.7 s**, undo
+**0.3 s**. Save (E57 export + cache rewrite) **2.8 s** for 6.9M points; reload of the saved
+cache **0.1 s**.
+
 ### What could not be done
 Browsers on iOS have no LiDAR or WebXR-depth access. The honest path is capture in a
 scanning app and open the export here (which now works for PLY/LAS/E57), or an ARKit capture

@@ -99,7 +99,7 @@ void main(){
 }`;
 
 export interface UndoLeaf { leaf: Leaf; recs: Uint8Array; mask: Uint8Array | null; count: number; capacity: number; bmin: THREE.Vector3; bmax: THREE.Vector3; spacing: number; index: number }
-export interface UndoRecord { leaves: UndoLeaf[]; bytes: number; prevTotal: number }
+export interface UndoRecord { leaves: UndoLeaf[]; bytes: number; prevTotal: number; regions: Region[] }
 
 export interface LeafMeta {
   origin: [number, number, number]; size: number;
@@ -395,7 +395,10 @@ export class CellRenderer {
     const sets = this.sets(regions);
     if (!sets.keep.length && !sets.del.length) return { kept: this.total, dropped: 0, undo: null };
     const keep: Leaf[] = [];
-    const undo: UndoRecord | null = record ? { leaves: [], bytes: 0, prevTotal: this.total } : null;
+    const undo: UndoRecord | null = record ? {
+      leaves: [], bytes: 0, prevTotal: this.total,
+      regions: regions.map(r => ({ id: r.id, kind: r.kind, role: r.role, center: [...r.center] as [number, number, number], half: [...r.half] as [number, number, number], radius: r.radius, quat: [...r.quat] as [number, number, number, number], label: r.label })),
+    } : null;
     let kept = 0, dropped = 0;
     const p = new THREE.Vector3(), l = new THREE.Vector3();
     const snap = (lf: Leaf, index: number, recs: Uint8Array, mask: Uint8Array | null) => {
@@ -471,22 +474,55 @@ export class CellRenderer {
     return this.total;
   }
 
-  /** Apply an undone record again using its masks (no re-classification). Refills `recs` so the record can be undone once more. */
+  /** Apply an undone record again using its masks (no re-classification). Refills `recs` so the record can be undone once more.
+   *  Cloud leaves may have grown past `e.count` after undo; extras are classified with the stored regions. */
   redoApply(rec: UndoRecord): { kept: number; dropped: number } {
     const gl = this.gl;
     let dropped = 0; rec.bytes = 0;
+    const sets = rec.regions?.length ? this.sets(rec.regions) : null;
+    const p = new THREE.Vector3(), loc = new THREE.Vector3();
     for (const e of rec.leaves) {
       const src = e.leaf.readback(gl);
-      if (!e.mask) { e.recs = src; dropped += e.leaf.count; e.leaf.dispose(gl); const i = this.leaves.indexOf(e.leaf); if (i >= 0) this.leaves.splice(i, 1); }
-      else {
-        const dst = new Uint8Array(src.length); let n = 0, gone = 0;
-        for (let j = 0; j < e.count; j++) if (e.mask[j >> 3] & (1 << (j & 7))) gone++;
-        const out = new Uint8Array(gone * REC); let o = 0;
-        for (let j = 0; j < e.count; j++) {
-          const r = src.subarray(j * REC, j * REC + REC);
-          if (e.mask[j >> 3] & (1 << (j & 7))) { out.set(r, o); o += REC; } else { dst.set(r, n * REC); n++; }
+      if (e.leaf.count === e.count) {
+        if (!e.mask) { e.recs = src; dropped += e.leaf.count; e.leaf.dispose(gl); const i = this.leaves.indexOf(e.leaf); if (i >= 0) this.leaves.splice(i, 1); }
+        else {
+          const dst = new Uint8Array(src.length); let n = 0, gone = 0;
+          for (let j = 0; j < e.count; j++) if (e.mask[j >> 3] & (1 << (j & 7))) gone++;
+          const out = new Uint8Array(gone * REC); let o = 0;
+          for (let j = 0; j < e.count; j++) {
+            const r = src.subarray(j * REC, j * REC + REC);
+            if (e.mask[j >> 3] & (1 << (j & 7))) { out.set(r, o); o += REC; } else { dst.set(r, n * REC); n++; }
+          }
+          e.recs = out; dropped += gone; e.leaf.replace(gl, dst, n);
         }
-        e.recs = out; dropped += gone; e.leaf.replace(gl, dst, n);
+      } else {
+        const nCur = e.leaf.count;
+        const mask = new Uint8Array((nCur + 7) >> 3);
+        if (!e.mask) { for (let j = 0; j < e.count; j++) mask[j >> 3] |= 1 << (j & 7); }
+        else { for (let j = 0; j < e.count; j++) if (e.mask[j >> 3] & (1 << (j & 7))) mask[j >> 3] |= 1 << (j & 7); }
+        if (sets) {
+          const u16 = new Uint16Array(src.buffer, src.byteOffset, (nCur * REC) >> 1);
+          const k = e.leaf.size / 65536, ox = e.leaf.origin.x, oy = e.leaf.origin.y, oz = e.leaf.origin.z;
+          for (let j = e.count; j < nCur; j++) {
+            const b = j * 7;
+            p.set(ox + u16[b] * k, oy + u16[b + 1] * k, oz + u16[b + 2] * k);
+            if (!keepPoint(loc, p, sets)) mask[j >> 3] |= 1 << (j & 7);
+          }
+        }
+        let gone = 0, n = 0;
+        for (let j = 0; j < nCur; j++) if (mask[j >> 3] & (1 << (j & 7))) gone++;
+        const out = new Uint8Array(gone * REC); let o = 0;
+        const dst = new Uint8Array(nCur * REC);
+        for (let j = 0; j < nCur; j++) {
+          const r = src.subarray(j * REC, j * REC + REC);
+          if (mask[j >> 3] & (1 << (j & 7))) { out.set(r, o); o += REC; } else { dst.set(r, n * REC); n++; }
+        }
+        e.count = nCur;
+        e.mask = n === 0 ? null : mask;
+        e.recs = n === 0 ? src : out;
+        dropped += gone;
+        if (n === 0) { e.leaf.dispose(gl); const i = this.leaves.indexOf(e.leaf); if (i >= 0) this.leaves.splice(i, 1); }
+        else e.leaf.replace(gl, dst, n);
       }
       rec.bytes += e.recs.byteLength + (e.mask?.byteLength ?? 0);
     }
