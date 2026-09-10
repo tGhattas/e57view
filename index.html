@@ -11,6 +11,22 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <title>e57view</title>
+<script>
+(function () {
+  var id = 'G-WL0V1TLGPW';
+  var h = location.hostname;
+  if (h === 'localhost' || h === '127.0.0.1') return;
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){ dataLayer.push(arguments); }
+  window.gtag = gtag;
+  gtag('js', new Date());
+  gtag('config', id, { anonymize_ip: true });
+  var s = document.createElement('script');
+  s.async = true;
+  s.src = 'https://www.googletagmanager.com/gtag/js?id=' + id;
+  document.head.appendChild(s);
+})();
+</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2305090b'/%3E%3Ccircle cx='10' cy='12' r='2.4' fill='%2346c6d2'/%3E%3Ccircle cx='20' cy='9' r='1.8' fill='%2346c6d2'/%3E%3Ccircle cx='23' cy='19' r='2.6' fill='%232b7a84'/%3E%3Ccircle cx='13' cy='22' r='2' fill='%2346c6d2'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,6 +43,9 @@
     <span class="mono" id="tb-fps">—</span>
     <span class="spacer"></span>
     <span class="pill hidden" id="tb-tool"></span>
+    <button id="tb-undo" class="ghost" disabled title="Undo (⌘Z)">Undo</button>
+    <button id="tb-redo" class="ghost" disabled title="Redo (⇧⌘Z)">Redo</button>
+    <button id="tb-save" class="ghost" disabled title="Save as… (⌘S)">Save as…</button>
     <button id="tb-panel" class="ghost" title="Toggle panel (Tab)">Controls</button>
   </div>
 
@@ -136,7 +155,14 @@
         </select>
       </label>
       <p class="hint mono" id="v-loaded">—</p>
+      <div class="seg">
+        <button id="k-undo" class="ghost" disabled>Undo</button>
+        <button id="k-redo" class="ghost" disabled>Redo</button>
+      </div>
+      <button id="k-save" class="primary wide" disabled>Save as…</button>
       <button id="k-reload" class="ghost wide">Reload</button>
+      <p class="hint">Undo/redo cover crop and AI clean. <b>Save as…</b> writes a copy of the current points to a file you choose, updates the on-device cache if there is one, and clears undo. <b>⌘Z</b> / <b>⇧⌘Z</b> / <b>⌘S</b>. Escape cancels a crop region.</p>
+      <p class="hint mono" id="v-hist">—</p>
     </div>
 
     <div class="grp" data-grp="crop">
@@ -155,8 +181,11 @@
       <label class="row box-only"><span>Depth</span><input type="range" id="k-cropsy" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsy">—</b></label>
       <label class="row box-only"><span>Height</span><input type="range" id="k-cropsz" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsz">—</b></label>
       <button id="k-cropcentre" class="ghost wide">Centre on orbit point</button>
-      <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. Points outside every keep region are dimmed in preview.</p>
-      <button id="k-cropapply" class="primary wide">Apply crop…</button>
+      <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. Points outside every keep region are dimmed in preview. <b>Escape</b> cancels the region.</p>
+      <div class="seg">
+        <button id="k-cropcancel" class="ghost">Cancel region</button>
+        <button id="k-cropapply" class="primary">Apply crop…</button>
+      </div>
       <p class="hint mono" id="v-crop">—</p>
     </div>
 
@@ -180,10 +209,10 @@
       <label class="row ai-remote"><span>Model</span><input type="text" id="k-aimodel" placeholder="gpt-5.5 / grok-4.3" class="txt"></label>
       <label class="row ai-remote"><span>Your key</span><input type="password" id="k-aikey" placeholder="optional, stays in this browser" class="txt"></label>
       <div class="chips" id="k-aikinds">
-        <label><input type="checkbox" value="vegetation (trees, bushes, hedges)" checked> vegetation</label>
-        <label><input type="checkbox" value="vehicles"> vehicles</label>
-        <label><input type="checkbox" value="people"> people</label>
-        <label><input type="checkbox" value="floating noise and scanning artefacts"> noise</label>
+        <label><input type="checkbox" data-kind="veg" value="vegetation (trees, bushes, hedges)" checked> vegetation</label>
+        <label><input type="checkbox" data-kind="vehicle" value="vehicles"> vehicles</label>
+        <label><input type="checkbox" data-kind="people" value="people"> people</label>
+        <label><input type="checkbox" data-kind="noise" value="floating noise and scanning artefacts"> noise</label>
       </div>
       <button id="k-aianalyse" class="primary wide">Analyse</button>
       <p class="hint mono" id="v-ai">—</p>
@@ -207,9 +236,12 @@
 
     <div class="grp" data-grp="agent">
       <h3>Agent</h3>
-      <label class="row"><span>Agent link</span><input type="checkbox" id="k-agent"></label>
+      <label class="row"><span>Local MCP</span><input type="checkbox" id="k-agent"></label>
       <p class="hint mono" id="v-agent">off</p>
-      <p class="hint">Lets an AI agent drive this viewer through the e57view MCP server on this machine and see screenshots of what it changed. On the https site Chrome asks once to allow access to your local network — that is the bridge on 127.0.0.1.</p>
+      <p class="hint">Local MCP talks to a process on this machine over 127.0.0.1. Chrome on the https site asks once to allow local network access.</p>
+      <button id="k-agenturl" class="ghost wide">Copy agent URL…</button>
+      <p class="hint mono" id="v-agenturl">—</p>
+      <p class="hint">The URL opens this scan. POST to <span class="mono">/agent</span> with the session id to crop, clean, screenshot — no MCP config. Keep this tab open.</p>
     </div>
 
     <div class="grp" data-grp="measure">
@@ -258,6 +290,7 @@
     <div class="grp" data-grp="cache">
       <h3>Cache</h3>
       <p class="hint mono" id="v-cache">—</p>
+      <p class="hint">Writes decoded cells on this device so the next open is instant. <b>Save</b> (in Performance) also updates this cache after a crop, and clears undo.</p>
       <button id="k-cache" class="ghost wide">Cache this scan on this device</button>
       <button id="k-cacheremove" class="ghost wide hidden">Remove from cache</button>
       <button id="k-viewlink" class="ghost wide">Copy view link</button>

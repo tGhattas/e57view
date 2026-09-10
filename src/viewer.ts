@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { EDL_FS, QUAD_VS } from './shaders';
-import { CellRenderer, type DrawStats, type LeafMeta, type Region } from './cells';
+import { CellRenderer, pointInRegion, type DrawStats, type LeafMeta, type Region, type UndoRecord } from './cells';
 
 const BG = new THREE.Color(0x05090b);
 const TEAL = 0x46c6d2;
@@ -305,9 +305,24 @@ export class Viewer {
         if (this.activeRegion === r.id) this.tc.attach(g);
       }
       if (!this.gizmoBusy || this.activeRegion !== r.id) this.applyRegionToGroup(r, g);
+      g.visible = this.regionOverlayVisible(r);
     }
     this.syncSuggestionLabels();
     this.dirty = true;
+  }
+  /** Pending tags/boxes outside a keep (crop) region stay in the list but are not shown. */
+  private regionOverlayVisible(r: Region): boolean {
+    if (r.role === 'keep' || r.role === 'delete') return true;
+    const keeps = this.regions.filter(x => x.role === 'keep');
+    if (!keeps.length) {
+      const b = this.cells.bounds;
+      if (b.isEmpty()) return true;
+      const m = Math.max(1, b.getSize(new THREE.Vector3()).length() * 0.02);
+      return r.center[0] >= b.min.x - m && r.center[0] <= b.max.x + m
+        && r.center[1] >= b.min.y - m && r.center[1] <= b.max.y + m
+        && r.center[2] >= b.min.z - m && r.center[2] <= b.max.z + m;
+    }
+    return keeps.some(k => pointInRegion(r.center, k));
   }
 
   setActiveRegion(id: string | null) {
@@ -333,8 +348,8 @@ export class Viewer {
     this.onRegionChange?.(r);
   }
 
-  applyRegions(list: Region[]) {
-    const r = this.cells.applyRegions(list);
+  applyRegions(list: Region[], record = false) {
+    const r = this.cells.applyRegions(list, record);
     const keeps = list.filter(x => x.role === 'keep');
     if (keeps.length) {
       const bb = new THREE.Box3();
@@ -352,11 +367,24 @@ export class Viewer {
     this.dirty = true;
     return r;
   }
+  /** After an undo/redo the cells changed underneath: put the robust box back and refresh derived state. */
+  restoreBounds(robust: THREE.Box3 | null) {
+    this.robust = robust && !robust.isEmpty() ? robust.clone() : this.cells.bounds.clone();
+    if (!this.cells.bounds.isEmpty()) this.robust.intersect(this.cells.bounds);
+    this.applyZRange(); this.dirty = true;
+  }
+  undoRegions(rec: UndoRecord, fetch: (i: number) => Promise<Uint8Array> | Uint8Array) {
+    return this.cells.undoApply(rec, fetch);
+  }
+  redoRegions(rec: UndoRecord) {
+    return this.cells.redoApply(rec);
+  }
 
   private syncSuggestionLabels() {
     const want = new Set<string>();
     for (const r of this.regions) {
       if (!(r.role === 'pending' || r.role === 'delete') || !r.label) continue;
+      if (!this.regionOverlayVisible(r)) continue;
       want.add(r.id);
       let el = this.slabels.get(r.id);
       if (!el) {
@@ -524,14 +552,16 @@ export class Viewer {
   setView(v: { p: number[]; t: number[] }) { this.setFly(false); this.exitBubble(); this.camera.position.fromArray(v.p); this.controls.target.fromArray(v.t); this.controls.update(); this.touch(); }
 
   // ------------------------------------------------------------ snapshots
-  snapshot(maxWidth = 1280): string {
+  snapshot(maxWidth = 1280, type: 'png' | 'jpeg' = 'png'): string {
     this.dirty = true; this.render();
     const w = this.canvas.width, h = this.canvas.height;
     const sc = Math.min(1, maxWidth / w);
-    if (sc >= 1) return this.canvas.toDataURL('image/png');
+    const mime = type === 'jpeg' ? 'image/jpeg' : 'image/png';
+    const q = type === 'jpeg' ? 0.72 : undefined;
+    if (sc >= 1) return this.canvas.toDataURL(mime, q);
     const c = document.createElement('canvas'); c.width = Math.round(w * sc); c.height = Math.round(h * sc);
     c.getContext('2d')!.drawImage(this.canvas, 0, 0, c.width, c.height);
-    return c.toDataURL('image/png');
+    return c.toDataURL(mime, q);
   }
   /** Run `fn` with overlays hidden and a denser, brighter point pass — what an AI should look at. */
   cleanRender<T>(fn: () => T): T {
@@ -625,7 +655,7 @@ export class Viewer {
       budget, density: k.density, ptSize: k.size, sizeMode: k.sizeMode, minPx: 1, maxPx: k.maxPx,
       colorMode: k.colorMode, zMin: this.zRange[0], zMax: this.zRange[1], iMin: k.iMin, iMax: k.iMax,
       clipZMin: k.clipZMin, clipZMax: k.clipZMax, round: k.round, normalShade: k.normalShade, bright: k.bright, gamma: k.gamma,
-      screenH: this.rt.height, fovDeg: this.camera.fov, regions: this.regions, regionHide: this.regionHide,
+      screenH: this.rt.height, fovDeg: this.camera.fov, regions: this.regions.filter(r => this.regionOverlayVisible(r)), regionHide: this.regionHide,
     });
     this.renderer.resetState();
 

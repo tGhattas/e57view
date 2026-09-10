@@ -47,6 +47,32 @@ export function watchCloud(id: string, cb: (d: CloudDoc | null) => void) {
   return onSnapshot(doc(db, 'clouds', id), s => cb(s.exists() ? ({ id: s.id, ...(s.data() as any) }) : null));
 }
 
+export async function createAgentSession(cloudId: string | null): Promise<string> {
+  await ensureAuth();
+  const sid = crypto.randomUUID().replace(/-/g, '').slice(0, 20);
+  await setDoc(doc(db, 'agentSessions', sid), { createdAt: Date.now(), cloudId, n: 0, viewerAt: Date.now() });
+  return sid;
+}
+
+export function watchAgentSession(sid: string, dispatch: (cmd: string, args: any) => Promise<any>, onStatus?: (s: string) => void): () => void {
+  const ref = doc(db, 'agentSessions', sid);
+  let handling = 0;
+  const beat = window.setInterval(() => { setDoc(ref, { viewerAt: Date.now() }, { merge: true }).catch(() => {}); }, 8000);
+  const off = onSnapshot(ref, async snap => {
+    const d = snap.data(); if (!d) { onStatus?.('session missing'); return; }
+    onStatus?.(d.cmd && d.res?.n !== d.cmd.n ? `running ${d.cmd.name}…` : 'listening for HTTP commands');
+    const cmd = d.cmd; if (!cmd || cmd.n === handling || d.res?.n === cmd.n) return;
+    handling = cmd.n;
+    try {
+      const out = await dispatch(cmd.name, cmd.args ?? {});
+      await setDoc(ref, { res: { n: cmd.n, ok: true, ...out, at: Date.now() }, viewerAt: Date.now() }, { merge: true });
+    } catch (e: any) {
+      await setDoc(ref, { res: { n: cmd.n, ok: false, error: String(e?.message ?? e), at: Date.now() }, viewerAt: Date.now() }, { merge: true });
+    }
+  });
+  return () => { off(); clearInterval(beat); };
+}
+
 export async function listMyClouds(): Promise<CloudDoc[]> {
   const uid = await ensureAuth();
   const q = query(collection(db, 'clouds'), where('owner', '==', uid), orderBy('createdAt', 'desc'));

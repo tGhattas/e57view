@@ -4,7 +4,7 @@
 //                 the upload. Billed only while it runs; serving is static storage.
 //  aiSuggest    — holds the AI provider keys; the browser sends renders, gets boxes back.
 import { onObjectFinalized } from 'firebase-functions/v2/storage';
-import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
 import { defineSecret } from 'firebase-functions/params';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { initializeApp } from 'firebase-admin/app';
@@ -83,3 +83,50 @@ export const aiSuggest = onCall(
       throw new HttpsError('internal', String(e?.message ?? e));
     }
   });
+
+const AGENT_HELP = {
+  name: 'e57view agent',
+  how: 'Open the scan in a browser (optionally ?cloud=ID&session=SID), keep the tab open, then POST commands here. No MCP config required.',
+  open: 'https://opensketch.web.app/?cloud=CLOUD_ID&session=SESSION_ID&view=top',
+  post: { session: 'from Copy agent URL', cmd: 'state | screenshot | set_view | set | regions | pick | measure | ai_suggest | suggestions | history | stations | open', args: {} },
+  examples: [
+    { cmd: 'state' },
+    { cmd: 'screenshot', args: { width: 1024 } },
+    { cmd: 'set_view', args: { preset: 'top' } },
+    { cmd: 'ai_suggest', args: { provider: 'heuristic', kinds: ['noise'] } },
+    { cmd: 'suggestions', args: { op: 'apply' } },
+    { cmd: 'regions', args: { op: 'apply' } },
+    { cmd: 'history', args: { op: 'undo' } },
+  ],
+};
+
+export const agent = onRequest({ cors: true, timeoutSeconds: 120, memory: '256MiB' }, async (req, res) => {
+  if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+  const sid = String(req.query.s || req.query.session || req.body?.session || '');
+  if (req.method === 'GET' && !sid) { res.json(AGENT_HELP); return; }
+  if (!/^[a-zA-Z0-9]{16,40}$/.test(sid)) { res.status(400).json({ error: 'pass session as ?s= or JSON { session }' }); return; }
+  const db = getFirestore();
+  const ref = db.doc(`agentSessions/${sid}`);
+  const snap = await ref.get();
+  if (!snap.exists) { res.status(404).json({ error: 'unknown session. In the viewer, Agent → Copy agent URL, and keep that tab open.' }); return; }
+  if (req.method === 'GET') {
+    const d = snap.data() || {};
+    const age = Date.now() - (d.viewerAt || 0);
+    res.json({ session: sid, cloudId: d.cloudId || null, viewer: age < 20_000 ? 'online' : 'offline — open the agent URL in a tab', help: AGENT_HELP });
+    return;
+  }
+  if (req.method !== 'POST') { res.status(405).json({ error: 'GET or POST' }); return; }
+  const cmd = req.body?.cmd || req.body?.op;
+  if (!cmd || typeof cmd !== 'string') { res.status(400).json({ error: 'JSON body { cmd, args? }' }); return; }
+  const args = req.body.args ?? {};
+  const n = (snap.data()?.n || 0) + 1;
+  await ref.set({ n, cmd: { n, name: cmd, args }, res: null }, { merge: true });
+  const t0 = Date.now();
+  while (Date.now() - t0 < 100_000) {
+    await new Promise(r => setTimeout(r, 300));
+    const s = await ref.get();
+    const out = s.data()?.res;
+    if (out?.n === n) { res.json(out); return; }
+  }
+  res.status(504).json({ error: 'viewer did not answer. Keep the tab with ?session=' + sid + ' open.' });
+});

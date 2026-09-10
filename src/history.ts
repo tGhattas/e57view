@@ -1,0 +1,148 @@
+// Undo / redo of destructive in-memory edits (crop, AI clean).
+//
+// Each step keeps the dropped 14-byte records plus a bit-mask of original
+// order so undo can re-interleave exactly (the shuffled LOD prefix stays
+// uniform). Small steps stay in RAM; large ones spill to OPFS so a 15-million
+// point crop does not pin ~200 MB on the heap. Save / reload / a new file
+// discards the stack.
+
+import * as THREE from 'three';
+import type { Region, UndoRecord } from './cells';
+
+const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+
+export type HistKind = 'crop' | 'clean';
+
+export interface UiSnap {
+  cropped: boolean;
+  cropOn: boolean;
+  crop: Region;
+  frac: number[];
+  sections: Region[];
+  suggestions: Region[];
+}
+
+export interface HistEntry {
+  id: string;
+  kind: HistKind;
+  label: string;
+  dropped: number;
+  kept: number;
+  undo: UndoRecord;
+  robust: THREE.Box3;
+  before: UiSnap;
+  after: UiSnap;
+  spilled: boolean;
+}
+
+const DIR = 'e57view-undo';
+export const RAM_BUDGET = coarse ? 96e6 : 384e6;
+const SPILL_AT = 24e6;
+
+export function cloneRegion(r: Region): Region {
+  return { id: r.id, kind: r.kind, role: r.role, center: [...r.center], half: [...r.half], radius: r.radius, quat: [...r.quat], label: r.label };
+}
+export function cloneRegions(rs: Region[]): Region[] { return rs.map(cloneRegion); }
+
+export class History {
+  undo: HistEntry[] = [];
+  redo: HistEntry[] = [];
+  onChange: (() => void) | null = null;
+  private n = 0;
+
+  get ram(): number {
+    let n = 0;
+    for (const e of this.undo) if (!e.spilled) n += e.undo.bytes;
+    for (const e of this.redo) if (!e.spilled) n += e.undo.bytes;
+    return n;
+  }
+  get canUndo() { return this.undo.length > 0; }
+  get canRedo() { return this.redo.length > 0; }
+  get steps() { return { undo: this.undo.length, redo: this.redo.length, ram: this.ram }; }
+
+  snapshot(p: { cropped: boolean; cropOn: boolean; crop: Region; frac: number[]; sections: Region[]; suggestions: Region[] }): UiSnap {
+    return { cropped: p.cropped, cropOn: p.cropOn, crop: cloneRegion(p.crop), frac: p.frac.slice(), sections: cloneRegions(p.sections), suggestions: cloneRegions(p.suggestions) };
+  }
+
+  async push(partial: Omit<HistEntry, 'id' | 'spilled'>): Promise<HistEntry> {
+    await this.discard(this.redo); this.redo.length = 0;
+    const e: HistEntry = { ...partial, id: 'h' + (++this.n), spilled: false };
+    if (e.undo.bytes >= SPILL_AT || this.ram + e.undo.bytes > RAM_BUDGET) await this.spill(e);
+    this.undo.push(e);
+    await this.evict();
+    this.onChange?.();
+    return e;
+  }
+
+  peekUndo() { return this.undo[this.undo.length - 1] ?? null; }
+  peekRedo() { return this.redo[this.redo.length - 1] ?? null; }
+
+  movedToRedo(e: HistEntry) { if (this.undo[this.undo.length - 1] === e) this.undo.pop(); this.redo.push(e); this.onChange?.(); }
+  movedToUndo(e: HistEntry) { if (this.redo[this.redo.length - 1] === e) this.redo.pop(); this.undo.push(e); this.onChange?.(); }
+
+  /** Redo refilled `recs` from the GPU; count them toward the RAM budget and spill if needed. */
+  async afterRedo(e: HistEntry) {
+    e.undo.bytes = e.undo.leaves.reduce((n, l) => n + l.recs.byteLength + (l.mask?.byteLength ?? 0), 0);
+    e.spilled = !e.undo.leaves.some(l => l.recs.byteLength);
+    await this.evict();
+  }
+
+  async clear() {
+    await this.discard(this.undo); await this.discard(this.redo);
+    this.undo = []; this.redo = []; this.onChange?.();
+  }
+
+  async fetch(e: HistEntry, i: number): Promise<Uint8Array> {
+    const recs = e.undo.leaves[i]?.recs;
+    if (recs && recs.byteLength) return recs;
+    return this.readSpill(e.id, i);
+  }
+
+  private async evict() {
+    let ram = this.ram;
+    for (const e of this.undo) {
+      if (ram <= RAM_BUDGET) break;
+      if (!e.spilled) { ram -= e.undo.bytes; await this.spill(e); }
+    }
+  }
+
+  private async spill(e: HistEntry) {
+    try {
+      const root = await navigator.storage.getDirectory();
+      const d = await root.getDirectoryHandle(DIR, { create: true });
+      const ed = await d.getDirectoryHandle(e.id, { create: true });
+      for (let i = 0; i < e.undo.leaves.length; i++) {
+        const recs = e.undo.leaves[i].recs;
+        if (!recs.byteLength) continue;
+        const copy = new Uint8Array(recs.byteLength); copy.set(recs);
+        const fh = await ed.getFileHandle(i + '.bin', { create: true });
+        const w = await fh.createWritable();
+        await w.write(copy.buffer);
+        await w.close();
+        e.undo.leaves[i].recs = new Uint8Array(0);
+        if ((i & 7) === 7) await new Promise(r => setTimeout(r, 0));
+      }
+      e.spilled = true;
+    } catch (err) {
+      console.warn('undo spill failed; keeping the step in RAM', err);
+    }
+  }
+
+  private async readSpill(id: string, i: number): Promise<Uint8Array> {
+    const root = await navigator.storage.getDirectory();
+    const d = await root.getDirectoryHandle(DIR);
+    const ed = await d.getDirectoryHandle(id);
+    const fh = await ed.getFileHandle(i + '.bin');
+    return new Uint8Array(await (await fh.getFile()).arrayBuffer());
+  }
+
+  private async discard(list: HistEntry[]) {
+    if (!list.length) return;
+    try {
+      const root = await navigator.storage.getDirectory();
+      const d = await root.getDirectoryHandle(DIR);
+      for (const e of list) { try { await d.removeEntry(e.id, { recursive: true }); } catch {} }
+    } catch {}
+    for (const e of list) { for (const l of e.undo.leaves) l.recs = new Uint8Array(0); e.spilled = true; }
+  }
+}

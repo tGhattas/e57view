@@ -4,6 +4,7 @@ import { Viewer, isTouch, isIOS, type Knobs, type Station, type GizmoMode } from
 import { REC, type Region } from './cells';
 import { AgentLink } from './agent';
 import { heuristicSuggest, prepareForAI, providerSuggest, mapResult } from './ai';
+import { History, cloneRegions } from './history';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const fmt = (n: number) => Math.round(n).toLocaleString();
@@ -23,6 +24,7 @@ let axisCube: { origin: number[]; size: number } | null = null;
 let revealed = false, gotRealLeaf = false, fromCache = false, cropped = false, fromCloud: string | null = null;
 let cacheKey = '';
 let t0 = 0;
+const hist = new History();
 let cloudStreamer: import('./cloud').Streamer | null = null;
 let cloudMod: typeof import('./cloud') | null = null;
 
@@ -58,7 +60,7 @@ function modal(title: string, bodyHtml: string, buttons: { label: string; cls?: 
     $('modal-title').textContent = title; $('modal-body').innerHTML = bodyHtml;
     const b = $('modal-btns'); b.innerHTML = '';
     for (const bt of buttons) { const el = document.createElement('button'); el.textContent = bt.label; el.className = bt.cls ?? 'ghost'; el.onclick = () => { $('modal').classList.add('hidden'); res(bt.value); }; b.appendChild(el); }
-    $('modal').classList.remove('hidden'); (b.lastElementChild as HTMLButtonElement)?.focus();
+    $('modal').classList.remove('hidden'); (b.firstElementChild as HTMLButtonElement)?.focus();
   });
 }
 function busy(text: string, frac?: number) { $('busy').classList.remove('hidden'); $('busy-text').textContent = text; $('busy-bar').style.width = frac === undefined ? '0%' : `${Math.min(100, frac * 100).toFixed(0)}%`; }
@@ -76,7 +78,8 @@ function resetForLoad(name: string) {
   viewer.clear();
   histogram = new Uint32Array(256); axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)]; axisCube = null;
   sections.length = 0; suggestions.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false;
-  syncRegions(); updateMeasureList(); setTool('none'); renderSectionList(); renderAiList();
+  void hist.clear();
+  syncRegions(); updateMeasureList(); setTool('none'); renderSectionList(); renderAiList(); updateHistUI();
   worker?.terminate(); worker = null;
   t0 = performance.now();
 }
@@ -154,10 +157,10 @@ function onDone(stats: any, how: string) {
   $('tb-points').textContent = `${fmt(stats.kept)} pts · ${how} in ${secs.toFixed(1)}s`;
   $('v-loaded').textContent = `${fmt(stats.kept)} of ${fmt(total)} in memory (${((stats.kept/total)*100).toFixed(0)}%) · ${stats.leaves} cells` + (stats.droppedInvalid ? ` · ${fmt(stats.droppedInvalid)} invalid skipped` : '');
   $('loading').classList.add('hidden');
-  drawHistogram(); viewer.fit(); applyPendingView(); updateCropUI(true);
+  drawHistogram(); viewer.fit(); applyPendingView(); applyUrlCommands(); updateCropUI(true);
   worker?.terminate(); worker = null;
   if (currentHandle) idbPut(cacheKey, currentHandle);
-  updateCacheUI(); updateCloudUI();
+  updateCacheUI(); updateCloudUI(); updateHistUI();
   if (!fromCache && !fromCloud && localStorage.getItem('nocache:' + cacheKey) !== '1') setTimeout(offerCache, 600);
 }
 function revealViewport() {
@@ -225,7 +228,7 @@ for (const id of ['k-imin', 'k-imax']) $(id).addEventListener('input', () => {
 for (const id of ['k-zmin', 'k-zmax']) $(id).addEventListener('input', () => { syncZLabels(); push(); });
 $('k-top').addEventListener('click', () => viewer.topDown());
 $('k-fit').addEventListener('click', () => viewer.fit());
-$('k-reload').addEventListener('click', () => { if (fromCloud) openCloud(fromCloud); else if (currentFile) openFile(currentFile, currentHandle); });
+$('k-reload').addEventListener('click', () => reloadScan());
 
 // ------------------------------------------------------------------ modes & tools
 function setMode(fly: boolean) {
@@ -271,14 +274,25 @@ document.querySelectorAll<HTMLButtonElement>('#joy button').forEach(b => {
   const up = () => viewer.fly.keys.delete(k);
   b.addEventListener('pointerdown', down); b.addEventListener('pointerup', up); b.addEventListener('pointercancel', up); b.addEventListener('pointerleave', up);
 });
-$('tb-panel').addEventListener('click', () => { if (isSheet()) { toggleSheet(); return; } $('panel').classList.toggle('hidden'); setTimeout(() => viewer.fit(), 30); });
+$('tb-panel').addEventListener('click', () => { if (isSheet()) { toggleSheet(); return; } $('panel').classList.toggle('hidden'); viewer.resize(); viewer.touch(); });
 addEventListener('keydown', (e: KeyboardEvent) => {
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
-  if (!$('modal').classList.contains('hidden')) return;
-  if (e.key === 'Tab') { e.preventDefault(); $('panel').classList.toggle('hidden'); }
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
+  if (!$('modal').classList.contains('hidden')) {
+    if (e.key === 'Escape') { e.preventDefault(); ($('modal-btns').querySelector('button') as HTMLButtonElement | null)?.click(); }
+    return;
+  }
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redoEdit() : undoEdit(); return; }
+  if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redoEdit(); return; }
+  if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveCurrent(); return; }
+  if (e.key === 'Tab') {
+    const inUi = (e.target as HTMLElement | null)?.closest?.('#panel, #labels, #modal, #topbar, button, a');
+    if (inUi) return;
+    e.preventDefault(); $('panel').classList.toggle('hidden'); viewer.resize(); viewer.touch();
+  }
   else if (e.key === 'f' || e.key === 'F') setMode(!viewer.fly.enabled);
   else if (e.key === 'm' || e.key === 'M') setTool(viewer.tool === 'measure' ? 'none' : 'measure');
-  else if (e.key === 'Escape') { if (viewer.bubble) viewer.exitBubble(); else if (viewer.tool !== 'none') setTool('none'); else viewer.setActiveRegion(null); }
+  else if (e.key === 'Escape') cancelStarted();
   else if (e.key === 'Home') viewer.fit();
 });
 
@@ -329,23 +343,183 @@ for (const [id, i] of [['k-cropsize', 0], ['k-cropsy', 1], ['k-cropsz', 2]] as [
 $('k-cropcentre').addEventListener('click', () => { cropState.center = viewer.controls.target.toArray() as any; cropUI.on = true; $<HTMLInputElement>('k-cropon').checked = true; updateCropUI(); });
 const gizmoBtn = (id: string, m: GizmoMode) => $(id).addEventListener('click', () => { viewer.setGizmoMode(m); for (const b of ['k-cropmove', 'k-croprotate', 'k-cropresize']) $(b).classList.toggle('on', b === id); });
 gizmoBtn('k-cropmove', 'translate'); gizmoBtn('k-croprotate', 'rotate'); gizmoBtn('k-cropresize', 'scale');
+function cancelCrop() {
+  cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false;
+  if (viewer.activeRegion === 'crop') viewer.setActiveRegion(null);
+  updateCropUI();
+}
+function cancelStarted() {
+  if (viewer.bubble) { viewer.exitBubble(); return; }
+  if (viewer.tool !== 'none') { setTool('none'); return; }
+  if (cropUI.on) { cancelCrop(); return; }
+  viewer.setActiveRegion(null); renderSectionList(); renderAiList();
+}
 async function applyKeep() {
   const keeps = allRegions().filter(r => r.role === 'keep');
   if (!viewer.loaded || !keeps.length) return null;
   const est = viewer.cells.estimateKept(keeps);
   const what = keeps.length === 1 ? `the ${keeps[0].kind}` : `${keeps.length} keep regions`;
-  const ans = await modal('Apply crop?', `<p>Everything outside ${what} will be dropped from memory — roughly <b>${fmt(est)}</b> of ${fmt(viewer.loaded)} points kept.</p><p>The file on disk is not touched. <b>Reload</b> brings everything back. Use <b>Export</b> afterwards to save the crop.</p>`,
+  const ans = await modal('Apply crop?', `<p>Everything outside ${what} will be dropped from memory — roughly <b>${fmt(est)}</b> of ${fmt(viewer.loaded)} points kept.</p><p>The file on disk is not touched. <b>Undo</b> puts the points back. <b>Save as…</b> writes a copy. AI suggestion tags are cleared (they come back if you undo). <b>Escape</b> cancels.</p>`,
     [{ label: 'Cancel', value: 'no' }, { label: 'Drop outside points', value: 'yes', cls: 'danger' }]);
   if (ans !== 'yes') return null;
-  busy('Cropping…'); await tick();
-  const res = viewer.applyRegions(keeps);
-  cropped = true; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; sections.length = 0;
-  hideBusy();
-  $('v-loaded').textContent = `${fmt(res.kept)} points in memory after crop · ${fmt(res.dropped)} dropped`; $('tb-points').textContent = `${fmt(res.kept)} pts · cropped`;
-  updateCropUI(true); renderSectionList(); syncZLabels(); updateCacheUI(); viewer.fit();
-  return res;
+  return commitApply(keeps, 'crop', `Crop · dropped ${fmt(viewer.loaded - est)}`, () => {
+    cropped = true; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; sections.length = 0; suggestions.length = 0;
+    viewer.setActiveRegion(null);
+  });
 }
 $('k-cropapply').addEventListener('click', () => { if (!cropUI.on && !sections.length) { cropUI.on = true; $<HTMLInputElement>('k-cropon').checked = true; updateCropUI(); } applyKeep(); });
+$('k-cropcancel').addEventListener('click', () => cancelCrop());
+
+function snapUi() {
+  return hist.snapshot({ cropped, cropOn: cropUI.on, crop: cropState, frac: cropUI.frac, sections, suggestions });
+}
+function restoreUi(s: ReturnType<History['snapshot']>) {
+  cropped = s.cropped;
+  cropUI.on = s.cropOn; cropUI.frac = s.frac.slice();
+  cropState.kind = s.crop.kind; cropState.role = s.crop.role;
+  cropState.center = [...s.crop.center]; cropState.half = [...s.crop.half];
+  cropState.radius = s.crop.radius; cropState.quat = [...s.crop.quat];
+  $<HTMLInputElement>('k-cropon').checked = cropUI.on;
+  $<HTMLSelectElement>('k-cropshape').value = cropState.kind;
+  $<HTMLInputElement>('k-cropsize').value = String(cropUI.frac[0]);
+  $<HTMLInputElement>('k-cropsy').value = String(cropUI.frac[1] ?? cropUI.frac[0]);
+  $<HTMLInputElement>('k-cropsz').value = String(cropUI.frac[2] ?? cropUI.frac[0]);
+  sections.length = 0; sections.push(...cloneRegions(s.sections));
+  suggestions.length = 0; suggestions.push(...cloneRegions(s.suggestions));
+  syncRegions(); renderSectionList(); renderAiList(); cropReadouts();
+  if (cropUI.on) viewer.setActiveRegion('crop'); else if (viewer.activeRegion === 'crop') viewer.setActiveRegion(null);
+  syncZLabels(); updateCacheUI(); updateHistUI(); viewer.touch();
+}
+async function commitApply(regions: Region[], kind: 'crop' | 'clean', label: string, after: () => void) {
+  if (!regions.length || !viewer.loaded) return { kept: viewer.loaded, dropped: 0, undo: null };
+  const before = snapUi();
+  const robust = viewer.robust ? viewer.robust.clone() : viewer.cells.bounds.clone();
+  busy(kind === 'crop' ? 'Cropping…' : 'Removing…'); await tick();
+  const res = viewer.applyRegions(regions, true);
+  if (!res.dropped) { hideBusy(); return res; }
+  after();
+  syncRegions(); renderAiList();
+  const afterSnap = snapUi();
+  if (res.undo) await hist.push({ kind, label, dropped: res.dropped, kept: res.kept, undo: res.undo, robust, before, after: afterSnap });
+  hideBusy();
+  $('v-loaded').textContent = `${fmt(res.kept)} points in memory · ${fmt(res.dropped)} dropped`;
+  $('tb-points').textContent = `${fmt(res.kept)} pts · ${kind === 'crop' ? 'cropped' : 'cleaned'}`;
+  if (kind === 'crop') updateCropUI(true); else updateCropUI();
+  renderSectionList(); renderAiList(); syncZLabels(); updateCacheUI(); updateHistUI(); viewer.fit();
+  return res;
+}
+function updateHistUI() {
+  const u = hist.canUndo, r = hist.canRedo, loaded = !!viewer.loaded;
+  for (const id of ['k-undo', 'tb-undo']) { const b = $(id) as HTMLButtonElement; b.disabled = !u; b.title = u ? `Undo: ${hist.peekUndo()!.label}` : 'Nothing to undo'; }
+  for (const id of ['k-redo', 'tb-redo']) { const b = $(id) as HTMLButtonElement; b.disabled = !r; b.title = r ? `Redo: ${hist.peekRedo()!.label}` : 'Nothing to redo'; }
+  for (const id of ['k-save', 'tb-save']) { const b = $(id) as HTMLButtonElement; b.disabled = !loaded || !meta; }
+  const bits: string[] = [];
+  if (u || r) bits.push(`${hist.undo.length} undo · ${hist.redo.length} redo` + (hist.ram ? ` · ${mb(hist.ram)} in RAM` : hist.peekUndo()?.spilled || hist.peekRedo()?.spilled ? ' · spilled to disk' : ''));
+  else if (loaded) bits.push('no edits to undo');
+  $('v-hist').textContent = bits.join(' · ') || '—';
+}
+async function undoEdit() {
+  const e = hist.peekUndo(); if (!e || !viewer.loaded) return null;
+  busy('Undoing…'); await tick();
+  try {
+    await viewer.undoRegions(e.undo, i => hist.fetch(e, i));
+    viewer.restoreBounds(e.robust);
+    restoreUi(e.before);
+    hist.movedToRedo(e);
+    $('v-loaded').textContent = `${fmt(viewer.loaded)} points in memory`;
+    $('tb-points').textContent = `${fmt(viewer.loaded)} pts · undone`;
+    updateHistUI(); viewer.fit(); viewer.touch();
+    return e;
+  } finally { hideBusy(); }
+}
+async function redoEdit() {
+  const e = hist.peekRedo(); if (!e || !viewer.loaded) return null;
+  busy('Redoing…'); await tick();
+  try {
+    const res = viewer.redoRegions(e.undo);
+    viewer.restoreBounds(null);
+    restoreUi(e.after);
+    hist.movedToUndo(e);
+    await hist.afterRedo(e);
+    $('v-loaded').textContent = `${fmt(res.kept)} points in memory · ${fmt(res.dropped)} dropped`;
+    $('tb-points').textContent = `${fmt(res.kept)} pts · redone`;
+    updateHistUI(); viewer.fit(); viewer.touch();
+    return e;
+  } finally { hideBusy(); }
+}
+function exportFormat(): 'e57' | 'las' | 'ply' {
+  const fromFile = (currentFile?.name ?? meta?.scans?.[0]?.name ?? '').toLowerCase().split('.').pop();
+  if (fromFile === 'e57' || fromFile === 'las' || fromFile === 'ply') return fromFile;
+  const sel = $<HTMLSelectElement>('k-fmt')?.value;
+  if (sel === 'e57' || sel === 'las' || sel === 'ply') return sel;
+  return 'e57';
+}
+async function pickSaveHandle(name: string, fmtSel: string): Promise<any | null | undefined> {
+  const anyWin = window as any;
+  if (!anyWin.showSaveFilePicker) return undefined; // no picker: caller will trigger a download
+  try {
+    return await anyWin.showSaveFilePicker({
+      suggestedName: name,
+      types: [{ description: fmtSel.toUpperCase() + ' point cloud', accept: { 'application/octet-stream': ['.' + fmtSel] } }],
+    });
+  } catch { return null; } // user cancelled
+}
+async function writeOutFile(r: { file: File; name: string; scratch: string }, handle: any | undefined) {
+  if (handle) { const w = await handle.createWritable(); await r.file.stream().pipeTo(w); io.postMessage({ type: 'export-cleanup', name: r.scratch }); }
+  else {
+    const url = URL.createObjectURL(r.file); const a = document.createElement('a'); a.href = url; a.download = r.name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => { URL.revokeObjectURL(url); io.postMessage({ type: 'export-cleanup', name: r.scratch }); }, 10 * 60 * 1000);
+  }
+}
+async function saveCurrent() {
+  if (!viewer.loaded || !meta) {
+    await modal('Nothing to save', '<p>Load a scan first. Save as writes a copy of the points now in memory — including any crop or clean-up — to a file you choose.</p>', [{ label: 'OK', value: 'ok', cls: 'primary' }]);
+    return;
+  }
+  const fmtSel = exportFormat();
+  const nU = hist.undo.length, nR = hist.redo.length;
+  const parts = [
+    `<p>Writes the <b>${fmt(viewer.loaded)}</b> points in memory to a <b>${fmtSel.toUpperCase()}</b> file you choose. The original file on disk is never overwritten.</p>`,
+    (nU || nR) ? `<p><b>Undo (${nU}) and redo (${nR})</b> will be emptied after a successful save.</p>` : '',
+    currentFile ? `<p>If this scan is cached on this device, that cache is updated to match.</p>` : '',
+  ].filter(Boolean).join('');
+  const ans = await modal('Save as…', parts, [{ label: 'Cancel', value: 'no' }, { label: 'Choose location…', value: 'yes', cls: 'primary' }]);
+  if (ans !== 'yes') return;
+  const base = (currentFile?.name ?? meta?.scans?.[0]?.name ?? 'scan').replace(/\.(e57|ply|las)$/i, '');
+  const suggested = `${base}${cropped ? '-crop' : ''}.${fmtSel}`;
+  const handle = await pickSaveHandle(suggested, fmtSel);
+  if (handle === null) return;
+  busy('Preparing file…');
+  try {
+    const r = await runExport(fmtSel, 1);
+    busy('Saving…');
+    await writeOutFile(r, handle);
+    if (currentFile) { try { await writeCache(); } catch {} }
+    await hist.clear();
+    updateHistUI(); updateCacheUI();
+    $('v-export').textContent = `saved ${r.name} · ${fmt(r.count)} points · ${mb(r.bytes)}`;
+    $('tb-points').textContent = `${fmt(r.count)} pts · saved`;
+    if (currentFile) $('v-cache').textContent = fromCache ? `saved ${r.name} · cache updated · undo cleared` : `saved ${r.name} · undo cleared`;
+  } catch (e: any) { fail('Could not save: ' + (e?.message ?? e)); }
+  finally { hideBusy(); }
+}
+async function reloadScan() {
+  if (!fromCloud && !currentFile) return;
+  if (hist.canUndo || hist.canRedo) {
+    const ans = await modal('Reload the scan?', `<p>There is unsaved history (${hist.undo.length} undo, ${hist.redo.length} redo). Reload discards it and reads the scan again from ${fromCache ? 'the cache on this device' : fromCloud ? 'the cloud' : 'disk'}.</p>`,
+      [{ label: 'Cancel', value: 'no' }, { label: 'Reload anyway', value: 'yes', cls: 'danger' }]);
+    if (ans !== 'yes') return;
+  }
+  await hist.clear();
+  if (fromCloud) openCloud(fromCloud); else if (currentFile) openFile(currentFile, currentHandle);
+}
+hist.onChange = () => updateHistUI();
+$('k-undo').addEventListener('click', () => undoEdit());
+$('k-redo').addEventListener('click', () => redoEdit());
+$('k-save').addEventListener('click', () => saveCurrent());
+$('tb-undo').addEventListener('click', () => undoEdit());
+$('tb-redo').addEventListener('click', () => redoEdit());
+$('tb-save').addEventListener('click', () => saveCurrent());
 
 function addSection(center?: number[]) {
   const md = maxDim(); const c = center ?? viewer.controls.target.toArray();
@@ -372,17 +546,17 @@ $('k-aiprov').dispatchEvent(new Event('change'));
 $<HTMLInputElement>('k-aikey').value = localStorage.getItem('aikey') ?? '';
 $('k-aikey').addEventListener('change', () => localStorage.setItem('aikey', $<HTMLInputElement>('k-aikey').value));
 let lastAi: { prep: any; result: any } | null = null;
-async function runAi(provider: 'heuristic' | 'openai' | 'xai', model?: string, kinds?: string[]) {
+async function runAi(provider: 'heuristic' | 'openai' | 'xai', model?: string, kinds?: string[], want?: string[]) {
   if (!viewer.loaded) throw new Error('nothing loaded');
   const t0 = performance.now();
   let found: Region[] = []; let via = 'local';
-  if (provider === 'heuristic') found = heuristicSuggest(viewer);
+  if (provider === 'heuristic') found = heuristicSuggest(viewer, { kinds });
   else {
     busy('Finding candidates and rendering views…'); await tick();
-    const prep = await prepareForAI(viewer);
+    const prep = await prepareForAI(viewer, { kinds });
     busy(`Asking ${provider === 'openai' ? 'OpenAI' : 'Grok'} about ${prep.candidates.length} candidates…`);
     const key = $<HTMLInputElement>('k-aikey').value.trim() || null;
-    const r = await providerSuggest(provider, model || undefined, key, prep.images, { extentX: prep.frame.extentX, extentY: prep.frame.extentY, zMin: 0, zMax: prep.frame.zMax - prep.frame.zMin, kinds, candidates: prep.candCtx, closeups: prep.closeups }, callAiFn);
+    const r = await providerSuggest(provider, model || undefined, key, prep.images, { extentX: prep.frame.extentX, extentY: prep.frame.extentY, zMin: 0, zMax: prep.frame.zMax - prep.frame.zMin, kinds: want ?? kinds, candidates: prep.candCtx, closeups: prep.closeups }, callAiFn);
     found = mapResult(r, prep, viewer);
     const confirmed = r.candidates.filter(c => c.remove).length;
     via = `${r.via} · ${r.model} · ${(r.ms / 1000).toFixed(1)}s · ${confirmed}/${prep.candidates.length} candidates confirmed, ${r.additional.length} added, ${r.sections.length} sections`;
@@ -396,9 +570,11 @@ async function runAi(provider: 'heuristic' | 'openai' | 'xai', model?: string, k
 }
 $('k-aianalyse').addEventListener('click', async () => {
   const provider = $<HTMLSelectElement>('k-aiprov').value as any;
-  const kinds = Array.from(document.querySelectorAll<HTMLInputElement>('#k-aikinds input:checked')).map(i => i.value);
+  const boxes = Array.from(document.querySelectorAll<HTMLInputElement>('#k-aikinds input:checked'));
+  const kinds = boxes.map(i => i.dataset.kind || i.value);
+  const want = boxes.map(i => i.value);
   busy('Analysing…'); await tick();
-  try { await runAi(provider, $<HTMLInputElement>('k-aimodel').value.trim(), kinds); }
+  try { await runAi(provider, $<HTMLInputElement>('k-aimodel').value.trim(), kinds, want); }
   catch (e: any) { $('v-ai').textContent = 'failed: ' + (e?.message ?? e); }
   hideBusy();
 });
@@ -413,16 +589,14 @@ $('k-airejectall').addEventListener('click', () => { for (let i = suggestions.le
 async function applyApproved() {
   const dels = suggestions.filter(s => s.role === 'delete'); if (!dels.length) return null;
   const est = viewer.loaded - viewer.cells.estimateKept(dels);
-  const ans = await modal('Remove approved suggestions?', `<p>${dels.length} region${dels.length > 1 ? 's' : ''} approved — roughly <b>${fmt(est)}</b> points will be dropped from memory.</p><p>The file on disk is not touched. <b>Reload</b> brings everything back.</p>`,
+  const ans = await modal('Remove approved suggestions?', `<p>${dels.length} region${dels.length > 1 ? 's' : ''} approved — roughly <b>${fmt(est)}</b> points will be dropped from memory.</p><p>The file on disk is not touched. <b>Undo</b> puts them back. <b>Save as…</b> writes a copy of the result.</p>`,
     [{ label: 'Cancel', value: 'no' }, { label: 'Remove', value: 'yes', cls: 'danger' }]);
   if (ans !== 'yes') return null;
-  busy('Removing…'); await tick();
-  const res = viewer.applyRegions(dels);
-  for (const d of dels) suggestions.splice(suggestions.indexOf(d), 1);
-  cropped = true; hideBusy(); syncRegions(); renderAiList();
-  $('v-loaded').textContent = `${fmt(res.kept)} points in memory · ${fmt(res.dropped)} removed by AI clean`; $('tb-points').textContent = `${fmt(res.kept)} pts · cleaned`;
-  updateCacheUI(); viewer.touch();
-  return res;
+  const gone = dels.slice();
+  return commitApply(dels, 'clean', `Clean · ${dels.length} region${dels.length > 1 ? 's' : ''}`, () => {
+    for (const d of gone) { const i = suggestions.indexOf(d); if (i >= 0) suggestions.splice(i, 1); }
+    cropped = true;
+  });
 }
 $('k-aiapply').addEventListener('click', () => applyApproved());
 function renderAiList() {
@@ -478,15 +652,14 @@ async function runExport(fmtSel: 'e57' | 'las' | 'ply', stride: number): Promise
 $('k-export').addEventListener('click', async () => {
   if (!viewer.loaded || !meta) return;
   const fmtSel = $<HTMLSelectElement>('k-fmt').value as any, stride = Number($<HTMLSelectElement>('k-expstride').value) || 1;
-  let saveHandle: any = null; const anyWin = window as any;
   const base = (currentFile?.name ?? 'scan').replace(/\.(e57|ply|las)$/i, '');
-  if (anyWin.showSaveFilePicker) { try { saveHandle = await anyWin.showSaveFilePicker({ suggestedName: `${base}${cropped ? '-crop' : ''}.${fmtSel}`, types: [{ description: fmtSel.toUpperCase() + ' point cloud', accept: { 'application/octet-stream': ['.' + fmtSel] } }] }); } catch { return; } }
+  const handle = await pickSaveHandle(`${base}${cropped ? '-crop' : ''}.${fmtSel}`, fmtSel);
+  if (handle === null) return;
   busy('Preparing export…');
   try {
     const r = await runExport(fmtSel, stride);
     busy('Saving…');
-    if (saveHandle) { const w = await saveHandle.createWritable(); await r.file.stream().pipeTo(w); io.postMessage({ type: 'export-cleanup', name: r.scratch }); }
-    else { const url = URL.createObjectURL(r.file); const a = document.createElement('a'); a.href = url; a.download = r.name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => { URL.revokeObjectURL(url); io.postMessage({ type: 'export-cleanup', name: r.scratch }); }, 10 * 60 * 1000); }
+    await writeOutFile(r, handle);
     $('v-export').textContent = `saved ${r.name} · ${fmt(r.count)} points · ${mb(r.bytes)}`;
   } catch (e: any) { fail('Could not save the export: ' + (e?.message ?? e)); }
   finally { hideBusy(); }
@@ -520,8 +693,8 @@ async function writeCache() {
 function updateCacheUI() {
   const btn = $('k-cache'), rm = $('k-cacheremove');
   if (!currentFile) { $('v-cache').textContent = fromCloud ? 'streamed from the cloud' : '—'; btn.classList.add('hidden'); rm.classList.add('hidden'); return; }
-  if (fromCache) { $('v-cache').textContent = 'this scan is cached on this device'; btn.classList.add('hidden'); rm.classList.remove('hidden'); }
-  else if (cropped) { $('v-cache').textContent = 'reload the full scan to cache it'; btn.classList.add('hidden'); rm.classList.add('hidden'); }
+  if (fromCache) { $('v-cache').textContent = cropped ? 'cache holds the current (edited) points' : 'this scan is cached on this device'; btn.classList.add('hidden'); rm.classList.remove('hidden'); }
+  else if (cropped) { $('v-cache').textContent = 'not cached — Save writes the current points here'; btn.classList.add('hidden'); rm.classList.add('hidden'); }
   else { $('v-cache').textContent = `not cached · would take ${mb(viewer.loaded * REC)}`; btn.classList.remove('hidden'); rm.classList.add('hidden'); }
 }
 $('k-cache').addEventListener('click', () => writeCache());
@@ -573,6 +746,19 @@ $('k-viewlink').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(u.toString()); $('v-cache').textContent = 'view link copied'; } catch {}
 });
 function applyPendingView() { if (!pendingView) return; try { viewer.setView(pendingView); if (pendingView.c !== undefined) { knobs.colorMode = pendingView.c; $<HTMLSelectElement>('k-color').value = String(pendingView.c); push(); } } catch {} pendingView = null; }
+function applyUrlCommands() {
+  const q = new URLSearchParams(location.search);
+  const view = q.get('view');
+  if (view === 'top') viewer.topDown();
+  else if (view === 'fit') viewer.fit();
+  const az = q.get('az'), el = q.get('el');
+  if (az != null && el != null && isFinite(+az) && isFinite(+el)) viewer.setOrbit(+az, +el, q.get('dist') ? +q.get('dist')! : undefined);
+  const ai = q.get('ai');
+  if (ai === 'heuristic' || ai === 'openai' || ai === 'xai') {
+    const kinds = (q.get('kinds') || '').split(',').map(s => s.trim()).filter(Boolean);
+    runAi(ai, q.get('model') || undefined, kinds.length ? kinds : undefined).catch(e => { $('v-ai').textContent = 'failed: ' + (e?.message ?? e); });
+  }
+}
 try { if (location.hash.length > 2) pendingView = JSON.parse(atob(location.hash.slice(1))); } catch {}
 
 // ------------------------------------------------------------------ cloud mode
@@ -657,6 +843,7 @@ function pumpRefine() {
 const agent = new AgentLink({
   state: () => ({
     file: currentFile?.name ?? (fromCloud ? `cloud:${fromCloud}` : null), points: viewer.loaded, cells: viewer.cells.leafCount, cropped, fromCache, fromCloud,
+    history: hist.steps,
     view: viewer.getView(), knobs, regions: allRegions(), measurements: viewer.measureList.map(m => ({ a: m.a.toArray(), b: m.b.toArray(), dist: m.dist })),
     suggestions: suggestions.map(s => ({ id: s.id, label: s.label, role: s.role, kind: s.kind, center: s.center, half: s.half })),
     stations: viewer.stations.length, bubble: viewer.bubble?.index ?? null, cached: cachedItems.map(c => ({ key: c.key, name: c.name, points: c.points })),
@@ -681,7 +868,15 @@ const agent = new AgentLink({
       syncRegions(); renderSectionList(); renderAiList(); viewer.setActiveRegion(r.id); viewer.render(); return r;
     }
     if (a.op === 'remove') { for (const pool of [sections, suggestions]) { const i = pool.findIndex(x => x.id === a.id); if (i >= 0) pool.splice(i, 1); } if (a.id === 'crop') cropUI.on = false; syncRegions(); renderSectionList(); renderAiList(); viewer.render(); return allRegions(); }
-    if (a.op === 'apply') { const keeps = allRegions().filter(r => r.role === 'keep'); const dels = allRegions().filter(r => r.role === 'delete'); const res = viewer.applyRegions([...keeps, ...dels]); cropped = true; sections.length = 0; for (const d of dels) suggestions.splice(suggestions.indexOf(d), 1); cropUI.on = false; syncRegions(); renderSectionList(); renderAiList(); viewer.fit(); viewer.render(); return res; }
+    if (a.op === 'apply') {
+      const keeps = allRegions().filter(r => r.role === 'keep');
+      const dels = allRegions().filter(r => r.role === 'delete');
+      return commitApply([...keeps, ...dels], keeps.length ? 'crop' : 'clean', 'Agent apply', () => {
+        cropped = true; sections.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false;
+        if (keeps.length) suggestions.length = 0;
+        else for (const d of dels) { const i = suggestions.indexOf(d); if (i >= 0) suggestions.splice(i, 1); }
+      });
+    }
     throw new Error('bad op');
   },
   pick: (a) => viewer.pickWorld(a.x, a.y)?.toArray() ?? null,
@@ -711,14 +906,63 @@ const agent = new AgentLink({
     if (a.op === 'accept') decide(a.id, true); else if (a.op === 'reject') decide(a.id, false);
     else if (a.op === 'accept_all') { for (const s of suggestions) s.role = 'delete'; syncRegions(); renderAiList(); }
     else if (a.op === 'reject_all' || a.op === 'clear') { suggestions.length = 0; syncRegions(); renderAiList(); }
-    else if (a.op === 'apply') { for (const s of suggestions) if (s.role === 'pending') s.role = 'delete'; const dels = suggestions.filter(s => s.role === 'delete'); const res = viewer.applyRegions(dels); suggestions.length = 0; cropped = true; syncRegions(); renderAiList(); viewer.render(); return res; }
+    else if (a.op === 'apply') {
+      for (const s of suggestions) if (s.role === 'pending') s.role = 'delete';
+      const dels = suggestions.filter(s => s.role === 'delete');
+      const gone = dels.slice();
+      return commitApply(dels, 'clean', 'Agent clean', () => {
+        for (const d of gone) { const i = suggestions.indexOf(d); if (i >= 0) suggestions.splice(i, 1); }
+        cropped = true;
+      });
+    }
     viewer.render(); return suggestions;
+  },
+  history: async (a) => {
+    if (a.op === 'status') return hist.steps;
+    if (a.op === 'undo') return undoEdit().then(e => e ? { undone: e.label, points: viewer.loaded } : { undone: null });
+    if (a.op === 'redo') return redoEdit().then(e => e ? { redone: e.label, points: viewer.loaded } : { redone: null });
+    if (a.op === 'save') { await saveCurrent(); return { points: viewer.loaded, cached: fromCache, history: hist.steps }; }
+    throw new Error('bad op');
   },
   stations: async (a) => { if (a.enter === -1) viewer.exitBubble(); else if (a.enter !== undefined) await enterStation(a.enter); viewer.render(); return { stations: viewer.stationPositions(), bubble: viewer.bubble?.index ?? null }; },
 });
 agent.onStatus = (s) => { $('v-agent').textContent = s; };
 $('k-agent').addEventListener('change', e => { const on = (e.target as HTMLInputElement).checked; localStorage.setItem('agent', on ? '1' : '0'); on ? agent.start() : agent.stop(); });
 if (new URLSearchParams(location.search).get('agent') === '1' || localStorage.getItem('agent') === '1') { $<HTMLInputElement>('k-agent').checked = true; agent.start(); }
+
+async function dispatchAgent(cmd: string, args: any = {}) {
+  const wantShot = cmd === 'screenshot' || args?.shot === true || (args?.shot !== false && cmd !== 'state' && cmd !== 'pick');
+  const result = await agent.run(cmd, args);
+  const out: any = { result };
+  if (wantShot) {
+    const url = viewer.snapshot(Math.min(1280, Number(args?.width) || 1024), 'jpeg');
+    const b64 = url.split(',')[1] || '';
+    if (b64.length < 700_000) { out.shot = b64; out.mime = 'image/jpeg'; }
+  }
+  return JSON.parse(JSON.stringify(out, (_k, v) => (typeof v === 'number' && !isFinite(v) ? null : v)));
+}
+let stopSession: (() => void) | null = null;
+async function startRemoteSession(sid: string) {
+  const m = cloudMod ?? await import('./cloud'); cloudMod = m;
+  await m.ensureAuth();
+  stopSession?.();
+  stopSession = m.watchAgentSession(sid, dispatchAgent, s => { $('v-agenturl').textContent = s; });
+}
+$('k-agenturl').addEventListener('click', async () => {
+  try {
+    const m = cloudMod ?? await import('./cloud'); cloudMod = m;
+    const sid = await m.createAgentSession(fromCloud);
+    await startRemoteSession(sid);
+    const page = new URL(location.href);
+    page.searchParams.set('session', sid);
+    if (fromCloud) page.searchParams.set('cloud', fromCloud);
+    const blob = `${page}\n\nPOST ${location.origin}/agent\n${JSON.stringify({ session: sid, cmd: 'state' })}`;
+    await navigator.clipboard.writeText(blob);
+    $('v-agenturl').textContent = `copied session ${sid} · keep this tab open`;
+  } catch (e: any) { $('v-agenturl').textContent = 'failed: ' + (e?.message ?? e); }
+});
+const sessionParam = new URLSearchParams(location.search).get('session');
+if (sessionParam) import('./cloud').then(m => { cloudMod = m; startRemoteSession(sessionParam); }).catch(e => { $('v-agenturl').textContent = 'session: ' + ((e as any)?.message ?? e); });
 
 // ------------------------------------------------------------------ entry
 async function pickFile() {
@@ -755,7 +999,7 @@ addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('drag'
 })();
 const panelEl = $('panel');
 const isSheet = () => getComputedStyle(panelEl).borderTopLeftRadius !== '0px' && isTouch;
-function toggleSheet(force?: boolean) { const peek = force !== undefined ? !force : !panelEl.classList.contains('peek'); panelEl.classList.toggle('peek', peek); setTimeout(() => viewer.fit(), 260); }
+function toggleSheet(force?: boolean) { const peek = force !== undefined ? !force : !panelEl.classList.contains('peek'); panelEl.classList.toggle('peek', peek); viewer.resize(); viewer.touch(); }
 $('grabber').addEventListener('click', () => toggleSheet());
 { let y0 = 0, moved = false; const g = $('grabber');
   g.addEventListener('touchstart', e => { y0 = e.touches[0].clientY; moved = false; }, { passive: true });
@@ -765,7 +1009,7 @@ addEventListener('orientationchange', () => setTimeout(() => { viewer.resize(); 
 document.querySelectorAll<HTMLElement>('#panel .grp').forEach((g, i) => {
   const h = g.querySelector('h3'); if (!h) return;
   const name = g.dataset.grp ?? h.textContent ?? String(i); const key = 'grp:' + name;
-  const defaultClosed = ['Tone', 'Clipping', 'Performance', 'measure', 'export', 'cache', 'sections', 'ai', 'cloud', 'agent'].includes(name);
+  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'ai', 'cloud', 'agent'].includes(name);
   const stored = localStorage.getItem(key); g.classList.toggle('closed', stored ? stored === '1' : defaultClosed);
   h.addEventListener('click', () => { g.classList.toggle('closed'); localStorage.setItem(key, g.classList.contains('closed') ? '1' : '0'); });
 });
@@ -783,4 +1027,4 @@ const cloudParam = new URLSearchParams(location.search).get('cloud');
 if (cloudParam) openCloud(cloudParam);
 (function loop() { viewer.render(); requestAnimationFrame(loop); })();
 (window as any).__viewer = viewer;
-(window as any).__app = { openFile, openCloud, openCached, writeCache, runAi, applyKeep, applyApproved, addSection, decide, clouds: () => cloudMod?.listMyClouds(), aiRenders: () => prepareForAI(viewer), get lastAi() { return lastAi; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, get suggestions() { return suggestions; } };
+(window as any).__app = { openFile, openCloud, openCached, writeCache, runAi, applyKeep, applyApproved, addSection, decide, undoEdit, redoEdit, saveCurrent, hist, clouds: () => cloudMod?.listMyClouds(), aiRenders: () => prepareForAI(viewer), get lastAi() { return lastAi; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, get suggestions() { return suggestions; } };

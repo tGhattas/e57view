@@ -98,12 +98,15 @@ void main(){
   frag = vec4(c, vLogDepth);
 }`;
 
+export interface UndoLeaf { leaf: Leaf; recs: Uint8Array; mask: Uint8Array | null; count: number; capacity: number; bmin: THREE.Vector3; bmax: THREE.Vector3; spacing: number; index: number }
+export interface UndoRecord { leaves: UndoLeaf[]; bytes: number; prevTotal: number }
+
 export interface LeafMeta {
   origin: [number, number, number]; size: number;
   bmin: [number, number, number]; bmax: [number, number, number];
 }
 
-class Leaf {
+export class Leaf {
   vao: WebGLVertexArrayObject; vbo: WebGLBuffer;
   count: number; preview: boolean;
   capacity: number;                 // full point count (cloud leaves start partially loaded)
@@ -127,20 +130,36 @@ class Leaf {
     const area = Math.max(d.x * d.y, d.y * d.z, d.x * d.z, 1e-6);
     this.spacing = Math.min(Math.max(Math.sqrt(area / Math.max(this.capacity, 1)), 1e-4), m.size * 0.5);
 
-    this.vbo = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, this.capacity * REC, gl.STATIC_DRAW);
+    ({ vbo: this.vbo, vao: this.vao } = Leaf.alloc(gl, this.capacity, blocks));
+  }
+  private static alloc(gl: WebGL2RenderingContext, capacity: number, blocks: ArrayBufferView[] | ArrayBuffer[]) {
+    const vbo = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, Math.max(capacity, 1) * REC, gl.STATIC_DRAW);
     let off = 0;
-    for (const b of blocks) { gl.bufferSubData(gl.ARRAY_BUFFER, off, new Uint8Array(b)); off += b.byteLength; }
-    this.vao = gl.createVertexArray()!;
-    gl.bindVertexArray(this.vao);
+    for (const b of blocks) { const u = b instanceof ArrayBuffer ? new Uint8Array(b) : new Uint8Array(b.buffer, b.byteOffset, b.byteLength); gl.bufferSubData(gl.ARRAY_BUFFER, off, u); off += u.byteLength; }
+    const vao = gl.createVertexArray()!;
+    gl.bindVertexArray(vao);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, REC, 0);
     gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, REC, 6);
     gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.BYTE, true, REC, 10);
     gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    return { vbo, vao };
   }
-  dispose(gl: WebGL2RenderingContext) { gl.deleteVertexArray(this.vao); gl.deleteBuffer(this.vbo); }
+  dispose(gl: WebGL2RenderingContext) { gl.deleteVertexArray(this.vao); gl.deleteBuffer(this.vbo); this.disposed = true; }
+  disposed = false;
+
+  /** Put a leaf back the way it was (undo): fresh buffers if it was disposed, original capacity, bounds and spacing. */
+  restore(gl: WebGL2RenderingContext, recs: Uint8Array, count: number, capacity: number, bmin: THREE.Vector3, bmax: THREE.Vector3, spacing: number) {
+    if (!this.disposed) { gl.deleteVertexArray(this.vao); gl.deleteBuffer(this.vbo); }
+    ({ vbo: this.vbo, vao: this.vao } = Leaf.alloc(gl, Math.max(capacity, count), [recs.subarray(0, count * REC)]));
+    this.disposed = false; this.fetching = false;
+    this.count = count; this.capacity = Math.max(capacity, count);
+    this.bmin.copy(bmin); this.bmax.copy(bmax); this.spacing = spacing;
+    this.center.copy(bmin).add(bmax).multiplyScalar(0.5);
+    this.radius = Math.max(bmax.distanceTo(bmin) * 0.5, 1e-3);
+  }
 
   /** More records for a partially loaded (cloud) leaf. */
   append(gl: WebGL2RenderingContext, recs: Uint8Array, n: number) {
@@ -222,6 +241,12 @@ function insideLocal(l: THREE.Vector3, r: Region): boolean {
   if (r.kind === 'slab') return Math.abs(l.z) <= r.half[2];
   if (r.kind === 'sphere') return l.lengthSq() <= r.radius * r.radius;
   return Math.abs(l.x) <= r.half[0] && Math.abs(l.y) <= r.half[1] && Math.abs(l.z) <= r.half[2];
+}
+const _pin = new THREE.Vector3(), _plin = new THREE.Vector3();
+export function pointInRegion(p: [number, number, number] | THREE.Vector3, r: Region): boolean {
+  const inv = new THREE.Matrix3().fromArray(Array.from(invRot(r.quat)));
+  const pt = p instanceof THREE.Vector3 ? p : _pin.set(p[0], p[1], p[2]);
+  return insideLocal(toLocal(pt, r, inv, _plin), r);
 }
 /** Conservative cell test: true = fully inside, false = fully outside, null = straddles. */
 function classifyRegion(bmin: THREE.Vector3, bmax: THREE.Vector3, r: Region, inv: THREE.Matrix3): boolean | null {
@@ -361,41 +386,113 @@ export class CellRenderer {
     return Math.round(n);
   }
 
-  /** Drop every point outside the keep set or inside a delete region. Returns { kept, dropped }. */
-  applyRegions(regions: Region[]): { kept: number; dropped: number } {
+  /** Drop every point outside the keep set or inside a delete region. Returns { kept, dropped } and,
+   *  when `record` is set, everything needed to put the points back: per changed leaf the dropped
+   *  records in their original order plus a bit mask (1 = dropped) over the original record order,
+   *  so undo re-interleaves exactly and the shuffled LOD prefix stays uniform. */
+  applyRegions(regions: Region[], record = false): { kept: number; dropped: number; undo: UndoRecord | null } {
     const gl = this.gl;
     const sets = this.sets(regions);
-    if (!sets.keep.length && !sets.del.length) return { kept: this.total, dropped: 0 };
+    if (!sets.keep.length && !sets.del.length) return { kept: this.total, dropped: 0, undo: null };
     const keep: Leaf[] = [];
+    const undo: UndoRecord | null = record ? { leaves: [], bytes: 0, prevTotal: this.total } : null;
     let kept = 0, dropped = 0;
     const p = new THREE.Vector3(), l = new THREE.Vector3();
-    for (const lf of this.leaves) {
-      if (lf.preview) { lf.dispose(gl); continue; }
+    const snap = (lf: Leaf, index: number, recs: Uint8Array, mask: Uint8Array | null) => {
+      if (!undo) return;
+      undo.leaves.push({ leaf: lf, recs, mask, count: lf.count, capacity: lf.capacity, bmin: lf.bmin.clone(), bmax: lf.bmax.clone(), spacing: lf.spacing, index });
+      undo.bytes += recs.byteLength + (mask?.byteLength ?? 0);
+    };
+    this.leaves.forEach((lf, index) => {
+      if (lf.preview) { lf.dispose(gl); return; }
       let keepCls: boolean | null = sets.keep.length ? false : true;
       for (const k of sets.keep) { const c = classifyRegion(lf.bmin, lf.bmax, k.r, k.inv); if (c === true) { keepCls = true; break; } if (c === null) keepCls = null; }
       let delCls: boolean | null = false;
       for (const d of sets.del) { const c = classifyRegion(lf.bmin, lf.bmax, d.r, d.inv); if (c === true) { delCls = true; break; } if (c === null) delCls = null; }
-      if (keepCls === false || delCls === true) { dropped += lf.count; lf.dispose(gl); continue; }
-      if (keepCls === true && delCls === false) { keep.push(lf); kept += lf.count; continue; }
+      if (keepCls === false || delCls === true) { dropped += lf.count; if (undo) snap(lf, index, lf.readback(gl), null); lf.dispose(gl); return; }
+      if (keepCls === true && delCls === false) { keep.push(lf); kept += lf.count; return; }
       const src = lf.readback(gl);
       const u16 = new Uint16Array(src.buffer, 0, (lf.count * REC) >> 1);
       const dst = new Uint8Array(src.length);
+      const mask = undo ? new Uint8Array((lf.count + 7) >> 3) : null;
       const k = lf.size / 65536, ox = lf.origin.x, oy = lf.origin.y, oz = lf.origin.z;
       let n = 0;
       for (let i = 0; i < lf.count; i++) {
         const b = i * 7;
         p.set(ox + u16[b] * k, oy + u16[b + 1] * k, oz + u16[b + 2] * k);
         if (keepPoint(l, p, sets)) { dst.set(src.subarray(i * REC, i * REC + REC), n * REC); n++; }
+        else if (mask) mask[i >> 3] |= 1 << (i & 7);
       }
-      dropped += lf.count - n;
-      if (n === 0) { lf.dispose(gl); continue; }
+      const gone = lf.count - n;
+      dropped += gone;
+      if (undo && gone) {
+        // dropped records in original order, compacted into their own buffer
+        const out = new Uint8Array(gone * REC); let o = 0;
+        for (let i = 0; i < lf.count; i++) if (mask![i >> 3] & (1 << (i & 7))) { out.set(src.subarray(i * REC, i * REC + REC), o); o += REC; }
+        snap(lf, index, out, n === 0 ? null : mask);
+        if (n === 0) undo.leaves[undo.leaves.length - 1].recs = src;   // whole leaf went: keep it verbatim
+      }
+      if (n === 0) { lf.dispose(gl); return; }
       lf.replace(gl, dst, n); keep.push(lf); kept += n;
-    }
+    });
     this.leaves = keep;
     this.total = kept;
+    this.recomputeBounds();
+    return { kept, dropped, undo };
+  }
+  private recomputeBounds() {
     this.bounds.makeEmpty();
-    for (const lf of keep) { this.bounds.expandByPoint(lf.bmin); this.bounds.expandByPoint(lf.bmax); }
-    return { kept, dropped };
+    for (const lf of this.leaves) { this.bounds.expandByPoint(lf.bmin); this.bounds.expandByPoint(lf.bmax); }
+  }
+
+  /** Put every leaf of an undo record back. `fetch(i)` supplies the dropped records of entry i (RAM or disk). */
+  async undoApply(rec: UndoRecord, fetch: (i: number) => Promise<Uint8Array> | Uint8Array): Promise<number> {
+    const gl = this.gl;
+    const order = rec.leaves.map((e, i) => i).sort((a, b) => rec.leaves[a].index - rec.leaves[b].index);
+    for (const i of order) {
+      const e = rec.leaves[i];
+      const gone = await fetch(i);
+      let full: Uint8Array;
+      if (!e.mask) full = gone;
+      else {
+        const cur = e.leaf.disposed ? new Uint8Array(0) : e.leaf.readback(gl);
+        full = new Uint8Array(e.count * REC);
+        let a = 0, b = 0;
+        for (let j = 0; j < e.count; j++) {
+          if (e.mask[j >> 3] & (1 << (j & 7))) { full.set(gone.subarray(b, b + REC), j * REC); b += REC; }
+          else { full.set(cur.subarray(a, a + REC), j * REC); a += REC; }
+        }
+      }
+      e.leaf.restore(gl, full, e.count, e.capacity, e.bmin, e.bmax, e.spacing);
+      if (!this.leaves.includes(e.leaf)) this.leaves.splice(Math.min(e.index, this.leaves.length), 0, e.leaf);
+    }
+    this.total = this.leaves.reduce((n, l) => n + (l.preview ? 0 : l.count), 0);
+    this.recomputeBounds();
+    return this.total;
+  }
+
+  /** Apply an undone record again using its masks (no re-classification). Refills `recs` so the record can be undone once more. */
+  redoApply(rec: UndoRecord): { kept: number; dropped: number } {
+    const gl = this.gl;
+    let dropped = 0; rec.bytes = 0;
+    for (const e of rec.leaves) {
+      const src = e.leaf.readback(gl);
+      if (!e.mask) { e.recs = src; dropped += e.leaf.count; e.leaf.dispose(gl); const i = this.leaves.indexOf(e.leaf); if (i >= 0) this.leaves.splice(i, 1); }
+      else {
+        const dst = new Uint8Array(src.length); let n = 0, gone = 0;
+        for (let j = 0; j < e.count; j++) if (e.mask[j >> 3] & (1 << (j & 7))) gone++;
+        const out = new Uint8Array(gone * REC); let o = 0;
+        for (let j = 0; j < e.count; j++) {
+          const r = src.subarray(j * REC, j * REC + REC);
+          if (e.mask[j >> 3] & (1 << (j & 7))) { out.set(r, o); o += REC; } else { dst.set(r, n * REC); n++; }
+        }
+        e.recs = out; dropped += gone; e.leaf.replace(gl, dst, n);
+      }
+      rec.bytes += e.recs.byteLength + (e.mask?.byteLength ?? 0);
+    }
+    this.total = this.leaves.reduce((n, l) => n + (l.preview ? 0 : l.count), 0);
+    this.recomputeBounds();
+    return { kept: this.total, dropped };
   }
 
   /** Points inside a region (any role) counted from a sample of cells — for suggestion sizing. */

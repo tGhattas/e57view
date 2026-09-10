@@ -9,6 +9,13 @@
     ],
     "rewrites": [
       {
+        "source": "/agent",
+        "function": {
+          "functionId": "agent",
+          "region": "europe-west1"
+        }
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }

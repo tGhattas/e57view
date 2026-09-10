@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "MCP server that lets an AI agent drive a running e57view tab (crop, clean, screenshot) over a localhost WebSocket.",
   "bin": { "e57view-mcp": "./server.mjs" },
+  "keywords": ["mcp", "e57", "point-cloud", "lidar"],
+  "files": ["server.mjs"],
   "dependencies": { "@modelcontextprotocol/sdk": "^1.12.0", "ws": "^8.18.0", "zod": "^3.23.8" }
 }
