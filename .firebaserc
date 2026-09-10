@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "opensketch"
+  },
+  "targets": {
+    "opensketch": {
+      "storage": {
+        "clouds": [
+          "opensketch-clouds"
+        ]
+      }
+    }
+  }
+}

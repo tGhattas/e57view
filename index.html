@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#05090b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="e57view">
+<meta name="description" content="View E57 laser scans in the browser. Nothing is uploaded.">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<title>e57view</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2305090b'/%3E%3Ccircle cx='10' cy='12' r='2.4' fill='%2346c6d2'/%3E%3Ccircle cx='20' cy='9' r='1.8' fill='%2346c6d2'/%3E%3Ccircle cx='23' cy='19' r='2.6' fill='%232b7a84'/%3E%3Ccircle cx='13' cy='22' r='2' fill='%2346c6d2'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <div id="topbar" class="hidden">
+    <span class="name" id="tb-name">—</span>
+    <span class="dot"></span>
+    <span class="mono" id="tb-points">—</span>
+    <span class="dot"></span>
+    <span class="mono" id="tb-fps">—</span>
+    <span class="spacer"></span>
+    <span class="pill hidden" id="tb-tool"></span>
+    <button id="tb-panel" class="ghost" title="Toggle panel (Tab)">Controls</button>
+  </div>
+
+  <div id="drop">
+    <div class="card">
+      <h1>e57view</h1>
+      <p class="lede" id="drop-lede">Drop an E57 scan anywhere, or pick one. Nothing is uploaded — the file is read straight off your disk.</p>
+      <button id="pick" class="primary">Open file</button>
+      <p class="hint mono" id="drop-hint">.e57 · reads header in ~10 ms</p>
+      <div id="scan-card" class="hidden">
+        <p class="lab mono">SCAN WITH THIS DEVICE</p>
+        <p class="small">Safari cannot reach the LiDAR sensor, so capture happens in a scanning app and the scan opens here. Scaniverse, Polycam and 3D Scanner App all export <b>PLY</b>, <b>LAS</b> or <b>E57</b>, which this viewer reads directly.</p>
+        <button id="pick2" class="ghost wide">Open a scan file</button>
+      </div>
+      <div id="cached" class="hidden">
+        <p class="lab mono">CACHED ON THIS DEVICE</p>
+        <ul id="cached-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <div id="loading" class="hidden">
+    <div class="card">
+      <div class="scanrow"><span class="lab mono">SCAN</span><span id="ld-name">—</span></div>
+      <div class="scanrow"><span class="lab mono">POINTS</span><span class="mono" id="ld-points">—</span></div>
+      <div class="scanrow"><span class="lab mono">EXTENT</span><span class="mono" id="ld-extent">—</span></div>
+      <div class="scanrow"><span class="lab mono">SENSOR</span><span id="ld-sensor">—</span></div>
+      <div class="scanrow"><span class="lab mono">FIELDS</span><span id="ld-fields">—</span></div>
+      <div class="bar"><i id="ld-bar"></i></div>
+      <p class="hint mono" id="ld-stat">opening…</p>
+    </div>
+  </div>
+
+  <aside id="panel" class="hidden">
+    <div id="grabber" aria-hidden="true"><i></i></div>
+    <div class="grp">
+      <h3>Appearance</h3>
+      <label class="row"><span>Colour</span>
+        <select id="k-color">
+          <option value="0">RGB</option>
+          <option value="1">Intensity</option>
+          <option value="2">RGB × Intensity</option>
+          <option value="3">Elevation</option>
+          <option value="4">Normals</option>
+          <option value="5">Flat</option>
+        </select>
+      </label>
+      <label class="row"><span>Point size</span><input type="range" id="k-size" min="0.5" max="8" step="0.1" value="2.0"><b class="mono" id="v-size">2.0</b></label>
+      <label class="row"><span>Sizing</span>
+        <select id="k-sizemode"><option value="1">Adaptive</option><option value="0">Fixed</option></select>
+      </label>
+      <label class="row"><span>Round points</span><input type="checkbox" id="k-round" checked></label>
+    </div>
+
+    <div class="grp">
+      <h3>Lighting</h3>
+      <label class="row"><span>EDL</span><input type="checkbox" id="k-edl" checked></label>
+      <label class="row"><span>Strength</span><input type="range" id="k-edlstr" min="0" max="1.5" step="0.01" value="0.32"><b class="mono" id="v-edlstr">0.32</b></label>
+      <label class="row"><span>Radius</span><input type="range" id="k-edlrad" min="0.5" max="5" step="0.1" value="1.4"><b class="mono" id="v-edlrad">1.4</b></label>
+      <label class="row"><span>Normal shading</span><input type="checkbox" id="k-nrm"></label>
+    </div>
+
+    <div class="grp">
+      <h3>Tone</h3>
+      <label class="row"><span>Brightness</span><input type="range" id="k-bright" min="0.2" max="3" step="0.01" value="1"><b class="mono" id="v-bright">1.00</b></label>
+      <label class="row"><span>Gamma</span><input type="range" id="k-gamma" min="0.4" max="2.4" step="0.01" value="1"><b class="mono" id="v-gamma">1.00</b></label>
+      <div class="row col">
+        <span>Intensity range</span>
+        <canvas id="hist" width="240" height="42"></canvas>
+        <div class="dual">
+          <input type="range" id="k-imin" min="0" max="1" step="0.005" value="0">
+          <input type="range" id="k-imax" min="0" max="1" step="0.005" value="1">
+        </div>
+        <b class="mono" id="v-irange">0.00 – 1.00</b>
+      </div>
+    </div>
+
+    <div class="grp">
+      <h3>Clipping</h3>
+      <label class="row"><span>Height min</span><input type="range" id="k-zmin" min="0" max="1" step="0.005" value="0"><b class="mono" id="v-zmin">—</b></label>
+      <label class="row"><span>Height max</span><input type="range" id="k-zmax" min="0" max="1" step="0.005" value="1"><b class="mono" id="v-zmax">—</b></label>
+    </div>
+
+    <div class="grp">
+      <h3>Performance</h3>
+      <label class="row"><span>Points per frame</span>
+        <select id="k-budget">
+          <option value="1000000">1 M</option>
+          <option value="2000000">2 M</option>
+          <option value="4000000">4 M</option>
+          <option value="8000000" selected>8 M</option>
+          <option value="16000000">16 M</option>
+          <option value="32000000">32 M</option>
+        </select>
+      </label>
+      <label class="row"><span>Density</span><input type="range" id="k-density" min="0.3" max="4" step="0.05" value="2"><b class="mono" id="v-density">2.00</b></label>
+      <label class="row"><span>Max point px</span><input type="range" id="k-maxpx" min="2" max="24" step="0.5" value="7"><b class="mono" id="v-maxpx">7.0</b></label>
+      <label class="row"><span>While moving</span><input type="range" id="k-moving" min="0.1" max="1" step="0.05" value="0.35"><b class="mono" id="v-moving">0.35</b></label>
+      <p class="hint mono" id="v-stats">—</p>
+      <label class="row"><span>In memory</span>
+        <select id="k-load">
+          <option value="1">Everything</option>
+          <option value="2">1 in 2</option>
+          <option value="4">1 in 4</option>
+          <option value="10">1 in 10</option>
+          <option value="30">1 in 30</option>
+        </select>
+      </label>
+      <p class="hint mono" id="v-loaded">—</p>
+      <button id="k-reload" class="ghost wide">Reload</button>
+    </div>
+
+    <div class="grp" data-grp="crop">
+      <h3>Crop</h3>
+      <label class="row"><span>Shape</span>
+        <select id="k-cropshape"><option value="box">Box</option><option value="sphere">Sphere</option><option value="slab">Slab</option></select>
+      </label>
+      <label class="row"><span>Show region</span><input type="checkbox" id="k-cropon"></label>
+      <div class="seg">
+        <button id="k-cropmove" class="ghost on">Move</button>
+        <button id="k-croprotate" class="ghost">Rotate</button>
+        <button id="k-cropresize" class="ghost">Resize</button>
+      </div>
+      <label class="row"><span>Hide outside</span><input type="checkbox" id="k-crophide"></label>
+      <label class="row"><span>Size</span><input type="range" id="k-cropsize" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsize">—</b></label>
+      <label class="row box-only"><span>Depth</span><input type="range" id="k-cropsy" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsy">—</b></label>
+      <label class="row box-only"><span>Height</span><input type="range" id="k-cropsz" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsz">—</b></label>
+      <button id="k-cropcentre" class="ghost wide">Centre on orbit point</button>
+      <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. Points outside every keep region are dimmed in preview.</p>
+      <button id="k-cropapply" class="primary wide">Apply crop…</button>
+      <p class="hint mono" id="v-crop">—</p>
+    </div>
+
+    <div class="grp" data-grp="sections">
+      <h3>Sections</h3>
+      <p class="hint">Keep only what lies inside any section. Each is a slab you move, tilt and thicken with the gizmo — floors, a wall, a corridor.</p>
+      <button id="k-secadd" class="ghost wide">Add section at orbit point</button>
+      <ul id="sec-list" class="mlist"></ul>
+      <p class="hint mono" id="v-sections">—</p>
+    </div>
+
+    <div class="grp" data-grp="ai">
+      <h3>AI clean</h3>
+      <label class="row"><span>Provider</span>
+        <select id="k-aiprov">
+          <option value="heuristic">Local heuristic</option>
+          <option value="openai">OpenAI (GPT)</option>
+          <option value="xai">xAI (Grok)</option>
+        </select>
+      </label>
+      <label class="row ai-remote"><span>Model</span><input type="text" id="k-aimodel" placeholder="gpt-5.5 / grok-4.3" class="txt"></label>
+      <label class="row ai-remote"><span>Your key</span><input type="password" id="k-aikey" placeholder="optional, stays in this browser" class="txt"></label>
+      <div class="chips" id="k-aikinds">
+        <label><input type="checkbox" value="vegetation (trees, bushes, hedges)" checked> vegetation</label>
+        <label><input type="checkbox" value="vehicles"> vehicles</label>
+        <label><input type="checkbox" value="people"> people</label>
+        <label><input type="checkbox" value="floating noise and scanning artefacts"> noise</label>
+      </div>
+      <button id="k-aianalyse" class="primary wide">Analyse</button>
+      <p class="hint mono" id="v-ai">—</p>
+      <ul id="ai-list" class="mlist"></ul>
+      <div class="seg" id="ai-actions">
+        <button id="k-aiacceptall" class="ghost">Approve all</button>
+        <button id="k-airejectall" class="ghost">Decline all</button>
+      </div>
+      <button id="k-aiapply" class="primary wide">Apply approved…</button>
+      <p class="hint">Each box shows ✓ / ✗ in the view. Approved boxes turn red and are removed on Apply. Select one in the list to adjust it with the gizmo.</p>
+    </div>
+
+    <div class="grp" data-grp="cloud">
+      <h3>Cloud</h3>
+      <label class="row"><span>Cloud mode</span><input type="checkbox" id="k-cloud"></label>
+      <p class="hint">Upload once; it is converted on the server and anyone with the link streams it — no file needed on their device.</p>
+      <button id="k-cloudup" class="primary wide">Upload this scan to the cloud</button>
+      <p class="hint mono" id="v-cloud">—</p>
+      <ul id="cloud-list" class="mlist"></ul>
+    </div>
+
+    <div class="grp" data-grp="agent">
+      <h3>Agent</h3>
+      <label class="row"><span>Agent link</span><input type="checkbox" id="k-agent"></label>
+      <p class="hint mono" id="v-agent">off</p>
+      <p class="hint">Lets an AI agent drive this viewer through the e57view MCP server on this machine and see screenshots of what it changed. On the https site Chrome asks once to allow access to your local network — that is the bridge on 127.0.0.1.</p>
+    </div>
+
+    <div class="grp" data-grp="measure">
+      <h3>Measure</h3>
+      <div class="seg">
+        <button id="k-measure" class="ghost">Distance</button>
+        <button id="k-measureclear" class="ghost">Clear</button>
+      </div>
+      <p class="hint">Click two points. <b>M</b> toggles. Single-click anywhere shows coordinates.</p>
+      <ul id="measure-list" class="mlist mono"></ul>
+    </div>
+
+    <div class="grp" data-grp="export">
+      <h3>Export</h3>
+      <label class="row"><span>Format</span>
+        <select id="k-fmt">
+          <option value="e57">E57</option>
+          <option value="las">LAS 1.2</option>
+          <option value="ply">PLY (binary)</option>
+        </select>
+      </label>
+      <label class="row"><span>Keep</span>
+        <select id="k-expstride">
+          <option value="1">Every point</option>
+          <option value="2">1 in 2</option>
+          <option value="4">1 in 4</option>
+          <option value="10">1 in 10</option>
+        </select>
+      </label>
+      <button id="k-export" class="primary wide">Save a copy…</button>
+      <p class="hint">Writes what is in memory — the crop, if you applied one. The original file is never touched.</p>
+      <p class="hint mono" id="v-export">—</p>
+    </div>
+
+    <div class="grp" data-grp="stations">
+      <h3>Stations</h3>
+      <label class="row"><span>Show stations</span><input type="checkbox" id="k-stations" checked></label>
+      <p class="hint mono" id="v-stations">—</p>
+      <div id="bubble-ui" class="hidden">
+        <label class="row"><span>Points over photo</span><input type="range" id="k-blend" min="0" max="1" step="0.01" value="0.35"><b class="mono" id="v-blend">0.35</b></label>
+        <button id="k-bubble-exit" class="ghost wide">Leave photo</button>
+      </div>
+      <p class="hint">Click a station marker to look around its 360° photo. Walk away and it fades.</p>
+    </div>
+
+    <div class="grp" data-grp="cache">
+      <h3>Cache</h3>
+      <p class="hint mono" id="v-cache">—</p>
+      <button id="k-cache" class="ghost wide">Cache this scan on this device</button>
+      <button id="k-cacheremove" class="ghost wide hidden">Remove from cache</button>
+      <button id="k-viewlink" class="ghost wide">Copy view link</button>
+    </div>
+
+    <div class="grp">
+      <h3>View</h3>
+      <div class="seg">
+        <button id="k-orbit" class="ghost on">Orbit</button>
+        <button id="k-fly" class="ghost">Fly</button>
+      </div>
+      <label class="row"><span>Fly speed</span><input type="range" id="k-flyspeed" min="0.1" max="30" step="0.1" value="2"><b class="mono" id="v-flyspeed">2.0</b></label>
+      <button id="k-top" class="ghost wide">Top down</button>
+      <button id="k-fit" class="ghost wide">Fit to cloud</button>
+      <p class="hint" id="v-navhint">Drag to orbit · scroll zooms toward the cursor · <b>double-click</b> a point to orbit around it</p>
+    </div>
+  </aside>
+
+  <div id="toolbar" class="hidden">
+    <button data-tool="orbit" class="on">Orbit</button>
+    <button data-tool="fly">Fly</button>
+    <button data-tool="measure">Measure</button>
+    <button data-tool="crop">Crop</button>
+    <button data-tool="photo" class="hidden">Leave photo</button>
+  </div>
+  <div id="joy" class="hidden">
+    <div class="pad">
+      <button data-key="w" class="up">▲</button>
+      <button data-key="a" class="left">◀</button>
+      <button data-key="d" class="right">▶</button>
+      <button data-key="s" class="down">▼</button>
+    </div>
+    <div class="vert"><button data-key="e">up</button><button data-key="q">down</button></div>
+  </div>
+  <div id="coord" class="mono hidden"></div>
+  <div id="labels"></div>
+  <div id="modal" class="hidden"><div class="card"><h2 id="modal-title"></h2><div id="modal-body"></div><div class="btns" id="modal-btns"></div></div></div>
+  <div id="busy" class="hidden"><div class="card"><p id="busy-text">Working…</p><div class="bar"><i id="busy-bar"></i></div></div></div>
+  <div id="err" class="hidden"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

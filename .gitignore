@@ -1,0 +1,19 @@
+target/
+node_modules/
+pkg/
+*.wasm
+dist/
+.firebase/
+functions/node_modules/
+functions/.env
+mcp/node_modules/
+
+# built WebAssembly that the app and the Cloud Function ship (rebuild: see README)
+!src/wasm/*.wasm
+!functions/wasm/*.wasm
+# test output
+shots/
+renders/
+output/
+tmp/
+.DS_Store
