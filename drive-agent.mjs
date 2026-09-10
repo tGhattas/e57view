@@ -91,4 +91,25 @@ await p.click('#k-agentstop');
 await p.waitForTimeout(1500);
 r = await call({ session: sid, cmd: 'state' }, auth);
 ok('stopped session revoked', r.status === 401, `http ${r.status}`);
+
+// closing the window must kill the token by itself
+const p2 = await ctx.newPage();
+await p2.goto(URL_, { waitUntil: 'networkidle' });
+await p2.setInputFiles('#file-input', ply);
+await p2.waitForFunction(() => /loaded in/.test(document.getElementById('tb-points')?.textContent || ''), null, { timeout: 90000 });
+await p2.waitForTimeout(900);
+try { await p2.click('#modal-btns button:has-text("Not now")', { timeout: 3000 }); } catch {}
+await p2.evaluate(() => document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed')));
+await p2.bringToFront();
+await p2.click('#k-agenturl');
+await p2.waitForFunction(() => /copied with its token/.test(document.getElementById('v-agenturl')?.textContent || ''), null, { timeout: 30000 });
+const blob2 = await p2.evaluate(() => navigator.clipboard.readText());
+const sid2 = blob2.match(/"session":"([a-z0-9]+)"/)[1];
+const auth2 = { Authorization: `Bearer ${blob2.match(/Bearer ([a-f0-9]+)/)[1]}` };
+r = await call({ session: sid2, cmd: 'state' }, auth2);
+ok('second session works before close', r.status === 200, `http ${r.status}`);
+await p2.close();
+await new Promise(r => setTimeout(r, 2500));
+r = await call({ session: sid2, cmd: 'state' }, auth2);
+ok('token dies when the window closes', r.status === 401, `http ${r.status}`);
 await b.close();

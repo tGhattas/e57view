@@ -40,7 +40,9 @@ Responses carry result JSON and, for most commands, shot (JPEG base64).
 ## Limits
 
 - The session id is a name, not a credential. Without the token every request is 401.
-- Sessions expire 8 hours after they are created. Stop session revokes one immediately.
+- The session dies with the browser window: the tab revokes its own token as it closes.
+  It also expires 8 hours after creation, and Stop session revokes it by hand.
+- A command taking over 50 s answers 202 {pending: N}; collect it with GET /agent?s=S&n=N.
 - Sessions are read-only by default. Commands that drop points, write a file, load another
   scan or call a paid model (regions/suggestions apply, history undo|redo|save, open,
   ai_suggest with openai or xai) return 403 until the viewer tab ticks Allow edits.
@@ -48,7 +50,16 @@ Responses carry result JSON and, for most commands, shot (JPEG base64).
 
 ## Local MCP (agent on the same machine as the tab)
 
-claude mcp add e57view -- node /path/to/e57view/mcp/server.mjs
-Then open the viewer with ?agent=1
+The MCP server is one self-contained file. Download it, then register it. Node 20+, nothing
+to install, no clone:
 
-MCP needs no network exposure and is the safer choice when the agent runs beside the browser.
+curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
+claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"
+
+Then open the viewer with ?agent=1 and allow local network access when Chrome asks.
+The server listens on ws://127.0.0.1:7337 and the tab connects out to it; nothing is exposed
+off the machine, which makes this the safer option when the agent runs beside the browser.
+
+Tools: viewer_state, viewer_screenshot, viewer_set_view, viewer_set, viewer_regions,
+viewer_pick, viewer_measure, viewer_export, viewer_open, viewer_ai_suggest,
+viewer_suggestions, viewer_history, viewer_stations.

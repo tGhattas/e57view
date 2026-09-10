@@ -106,8 +106,18 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
   range requests. No file on the viewer's device, no rendering server.
 - **Agent link + MCP server.** `mcp/server.mjs` exposes the viewer to AI agents (Claude
   Code, Claude Desktop, Cursor…): state, screenshots, camera, settings, regions, measure,
-  export to a local path, AI suggestions, stations. Switch on *Agent link* in the panel
-  (or open with `?agent=1`); the server relays over a localhost WebSocket.
+  export to a local path, AI suggestions, history, stations. It ships as one self-contained
+  file, so there is nothing to clone or install:
+
+  ```
+  curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
+  claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"
+  ```
+
+  Then switch on *Local MCP* in the panel (or open with `?agent=1`). The server listens on
+  `ws://127.0.0.1:7337` and the tab connects out to it, so nothing is exposed off the
+  machine. A web page cannot start this process itself; browsers have no way to launch a
+  local program, which is exactly why the HTTP endpoint below exists for the remote case.
 - **HTTP agent endpoint.** `POST /agent` drives the same commands from anywhere, without
   MCP. *Copy agent URL* mints a session: the page link carries only the session id, while
   the bearer token is copied alongside it and never enters the URL, so a leaked link grants

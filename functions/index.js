@@ -97,7 +97,10 @@ const AGENT_HELP = {
     { cmd: 'ai_suggest', args: { provider: 'heuristic', kinds: ['noise'] } },
     { cmd: 'suggestions', args: { op: 'apply' } },
     { cmd: 'history', args: { op: 'undo' } },
+    { cmd: 'revoke' },
   ],
+  slow: 'A command that takes more than 50 s returns 202 { pending: N }. Collect it later with GET /agent?s=SESSION&n=N.',
+  lifetime: 'The session dies with the browser window: the tab revokes its own token as it closes. It also expires 8 hours after it is created, and Stop session revokes it by hand.',
   note: 'Commands that drop points, write a file, load another scan or call a paid model need Allow edits ticked in the viewer tab.',
 };
 
@@ -141,9 +144,16 @@ export const agent = onRequest({ cors: true, timeoutSeconds: 120, memory: '256Mi
     return;
   }
   if (req.method === 'GET') {
+    // ?n=N collects the answer to a command whose HTTP wait already timed out.
+    const want = Number(req.query.n);
+    if (Number.isFinite(want) && want > 0) {
+      if (d.res?.n === want) res.json(d.res);
+      else res.status(202).json({ pending: want, of: d.n ?? 0, hint: 'the viewer has not answered yet; poll this again' });
+      return;
+    }
     res.json({
       session: sid, cloudId: d.cloudId || null,
-      viewer: Date.now() - (d.viewerAt || 0) < 20_000 ? 'online' : 'offline — open the viewer page and keep it open',
+      viewer: Date.now() - (d.viewerAt || 0) < 60_000 ? 'online' : 'quiet — the tab may be backgrounded, commands still queue',
       mode: d.allowEdits ? 'edits allowed' : 'read-only',
       expiresAt: d.expiresAt ?? null, help: AGENT_HELP,
     });
@@ -152,6 +162,8 @@ export const agent = onRequest({ cors: true, timeoutSeconds: 120, memory: '256Mi
 
   const cmd = req.body?.cmd || req.body?.op;
   if (!cmd || typeof cmd !== 'string') { res.status(400).json({ error: 'JSON body { session, cmd, args? }' }); return; }
+  // The tab beacons this as it closes, so the token dies with the window it belonged to.
+  if (cmd === 'revoke') { await ref.delete(); res.json({ revoked: sid }); return; }
   const args = req.body.args ?? {};
   if (needsEdit(cmd, args) && !d.allowEdits) {
     res.status(403).json({ error: `"${cmd}" changes the scan or spends credit. This session is read-only: tick "Allow edits" in the viewer's Agent panel.` });
@@ -161,10 +173,12 @@ export const agent = onRequest({ cors: true, timeoutSeconds: 120, memory: '256Mi
   // mergeFields replaces these fields outright. A deep merge would leave arguments from
   // earlier commands behind, and a stale "preset" silently overrode later poses.
   await ref.set({ n, cmd: { n, name: cmd, args }, res: null }, { mergeFields: ['n', 'cmd', 'res'] });
+  // Firebase Hosting gives up on a rewrite at 60 s, so answer before that and let the
+  // caller collect a slow result instead of losing it to a proxy error page.
   let unsub = () => {};
   try {
     const out = await new Promise((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error('timeout')), 100_000);
+      const t = setTimeout(() => reject(new Error('timeout')), 50_000);
       unsub = ref.onSnapshot(s => {
         const r = s.data()?.res;
         if (r?.n === n) { clearTimeout(t); resolve(r); }
@@ -172,6 +186,9 @@ export const agent = onRequest({ cors: true, timeoutSeconds: 120, memory: '256Mi
     });
     res.json(out);
   } catch {
-    res.status(504).json({ error: 'the viewer did not answer. Keep the page with ?session=' + sid + ' open.' });
+    res.status(202).json({
+      pending: n,
+      hint: `the viewer is still working (a backgrounded tab is throttled by the browser). The command was queued and will run. Collect the answer with GET /agent?s=${sid}&n=${n}`,
+    });
   } finally { unsub(); }
 });

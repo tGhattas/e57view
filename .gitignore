@@ -17,3 +17,6 @@ renders/
 output/
 tmp/
 .DS_Store
+
+# built by npm run build:mcp
+public/mcp.mjs

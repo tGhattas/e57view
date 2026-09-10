@@ -4,9 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run build:mcp && vite build",
     "preview": "vite preview",
-    "wasm": "cargo build --release --target wasm32-unknown-unknown --manifest-path crates/e57-wasm/Cargo.toml && wasm-bindgen --target web --out-dir src/wasm crates/e57-wasm/target/wasm32-unknown-unknown/release/e57_wasm.wasm"
+    "wasm": "cargo build --release --target wasm32-unknown-unknown --manifest-path crates/e57-wasm/Cargo.toml && wasm-bindgen --target web --out-dir src/wasm crates/e57-wasm/target/wasm32-unknown-unknown/release/e57_wasm.wasm",
+    "build:mcp": "esbuild mcp/server.mjs --bundle --platform=node --format=esm --target=node20 --outfile=public/mcp.mjs --external:bufferutil --external:utf-8-validate --log-level=warning --banner:js=\"import{createRequire as __e57cr}from'node:module';const require=__e57cr(import.meta.url);\""
   },
   "devDependencies": {
     "@types/three": "^0.169.0",

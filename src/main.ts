@@ -1047,6 +1047,7 @@ async function dispatchAgent(cmd: string, args: any = {}) {
 }
 let stopSession: (() => void) | null = null;
 let agentSid: string | null = null;
+let agentToken: string | null = null;      // memory + sessionStorage only, so the tab can revoke itself
 let agentSticky = 0;                                   // hold a message the watcher must not overwrite
 function agentStatus(text: string, sticky = 0) {
   if (!sticky && Date.now() < agentSticky) return;
@@ -1062,6 +1063,7 @@ async function startRemoteSession(sid: string) {
   await m.ensureAuth();
   stopSession?.();
   agentSid = sid;
+  if (!agentToken) { try { agentToken = sessionStorage.getItem('agent-token:' + sid); } catch {} }
   stopSession = m.watchAgentSession(sid, dispatchAgent, s => agentStatus(s));
   updateAgentUI();
 }
@@ -1070,6 +1072,8 @@ $('k-agenturl').addEventListener('click', async () => {
     const m = cloudMod ?? await import('./cloud'); cloudMod = m;
     const edits = $<HTMLInputElement>('k-agentedits').checked;
     const { sid, token, expiresAt } = await m.createAgentSession(fromCloud, edits);
+    agentToken = token;
+    try { sessionStorage.setItem('agent-token:' + sid, token); } catch {}
     await startRemoteSession(sid);
     // The page URL carries the session id only. The token goes to the agent alone, so a
     // leaked link (history, referrer, analytics) grants nothing.
@@ -1095,7 +1099,9 @@ $('k-agenturl').addEventListener('click', async () => {
 $('k-agentstop').addEventListener('click', async () => {
   if (!agentSid) return;
   const sid = agentSid;
-  stopSession?.(); stopSession = null; agentSid = null; updateAgentUI();
+  stopSession?.(); stopSession = null; agentSid = null; agentToken = null;
+  try { sessionStorage.removeItem('agent-token:' + sid); } catch {}
+  updateAgentUI();
   try { await cloudMod?.stopAgentSession(sid); agentStatus('session stopped · its token no longer works', 8000); }
   catch (e: any) { agentStatus('stopped locally, but the record remains: ' + (e?.message ?? e), 8000); }
 });
@@ -1104,6 +1110,18 @@ $('k-agentedits').addEventListener('change', async e => {
   if (agentSid) { try { await cloudMod?.setAgentEdits(agentSid, on); } catch {} }
 });
 updateAgentUI();
+// Close the window, lose the token. A beacon survives unload where a normal request does
+// not; bfcache (persisted) is a pause, not a close, so it must not revoke.
+addEventListener('pagehide', (e) => {
+  if ((e as PageTransitionEvent).persisted || !agentSid) return;
+  const sid = agentSid;
+  try {
+    if (agentToken && navigator.sendBeacon) {
+      const body = JSON.stringify({ session: sid, token: agentToken, cmd: 'revoke' });
+      navigator.sendBeacon('/agent', new Blob([body], { type: 'application/json' }));
+    } else cloudMod?.stopAgentSession(sid);
+  } catch {}
+});
 const sessionParam = new URLSearchParams(location.search).get('session');
 if (sessionParam) import('./cloud').then(m => { cloudMod = m; startRemoteSession(sessionParam); }).catch(e => agentStatus('session: ' + ((e as any)?.message ?? e)));
 
