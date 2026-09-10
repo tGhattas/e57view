@@ -8,7 +8,7 @@ export function buildPrompt(ctx) {
   const { extentX, extentY, zMin, zMax, candidates = [], kinds, closeups = 0 } = ctx;
   const want = kinds?.length ? kinds.join(', ') : 'vegetation (trees, bushes, hedges), vehicles, people, scanning artefacts and floating noise, temporary objects';
   const cand = candidates.length
-    ? `Orange boxes labelled C1…C${candidates.length} in image 1 are candidate removals found by a local vegetation detector:\n` +
+    ? `Orange boxes labelled C1…C${candidates.length} in image 1 are candidate removals found by a local detector (honouring the selected kinds):\n` +
       candidates.map(c => `  ${c.id}: ${c.area.toFixed(0)} m² footprint, ${c.height.toFixed(1)} m tall, at x=${c.x.toFixed(0)} y=${c.y.toFixed(0)} m`).join('\n') +
       `\nFor EACH candidate say whether to remove it and what it is.` +
       (closeups ? `\nImages 3 to ${2 + closeups} are close-ups of C1 to C${closeups} in that order, each with its box drawn in orange; judge mainly from the close-up whether the box holds vegetation or other removable stuff, or a piece of a building (roof, wall, terrace, balcony).` : '')

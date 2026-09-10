@@ -14,6 +14,12 @@ export class AgentLink {
   start() { this.wanted = true; this.onStatus?.('connecting to the MCP server on this machine… (Chrome may ask to allow local network access — click Allow)'); this.connect(); }
   stop() { this.wanted = false; clearTimeout(this.timer); this.ws?.close(); this.ws = null; this.connected = false; this.onStatus?.('off'); }
 
+  async run(cmd: string, args: any = {}) {
+    const h = this.handlers[cmd];
+    if (!h) throw new Error(`unknown command ${cmd}`);
+    return h(args ?? {});
+  }
+
   private connect() {
     if (!this.wanted) return;
     try { this.ws = new WebSocket(`ws://127.0.0.1:${this.port}`); }

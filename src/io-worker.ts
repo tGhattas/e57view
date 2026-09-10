@@ -13,6 +13,7 @@ const ensureWasm = () => (wasmReady ??= init({ module_or_path: wasmUrl }));
 const REC = 14;
 const CACHE_DIR = 'e57view-cache';
 const EXPORT_DIR = 'e57view-export';
+const UNDO_DIR = 'e57view-undo';
 
 async function dir(name: string, create = true) {
   const root = await navigator.storage.getDirectory();
@@ -266,6 +267,36 @@ async function exportCleanup(m: any) {
   try { const d = await dir(EXPORT_DIR, false); await d.removeEntry(m.name); } catch {}
 }
 
+// ------------------------------------------------------------------- undo spill (OPFS via createSyncAccessHandle — works on Safari)
+async function undoWrite(m: any) {
+  const d = await dir(UNDO_DIR);
+  const ed = await d.getDirectoryHandle(m.id, { create: true });
+  const fh = await ed.getFileHandle(m.i + '.bin', { create: true });
+  const sink = await fh.createSyncAccessHandle();
+  sink.truncate(0);
+  writeAt(sink, 0, new Uint8Array(m.recs));
+  sink.flush(); sink.close();
+  post({ type: 'undo-written', id: m.id, i: m.i });
+}
+async function undoRead(m: any) {
+  const d = await dir(UNDO_DIR, false);
+  const ed = await d.getDirectoryHandle(m.id);
+  const fh = await ed.getFileHandle(m.i + '.bin');
+  const sink = await fh.createSyncAccessHandle();
+  const buf = new ArrayBuffer(sink.getSize());
+  sink.read(new Uint8Array(buf), { at: 0 });
+  sink.close();
+  post({ type: 'undo-chunk', id: m.id, i: m.i, recs: buf }, [buf]);
+}
+async function undoDrop(m: any) {
+  try { const d = await dir(UNDO_DIR, false); await d.removeEntry(m.id, { recursive: true }); } catch {}
+  post({ type: 'undo-dropped', id: m.id });
+}
+async function undoClear() {
+  try { const root = await navigator.storage.getDirectory(); await root.removeEntry(UNDO_DIR, { recursive: true }); } catch {}
+  post({ type: 'undo-cleared' });
+}
+
 self.onmessage = async (ev: MessageEvent) => {
   const m = ev.data;
   try {
@@ -282,6 +313,10 @@ self.onmessage = async (ev: MessageEvent) => {
       case 'cache-delete': await cacheDelete(m); break;
       case 'cache-read': await cacheRead(m); break;
       case 'image': await image(m); break;
+      case 'undo-write': await undoWrite(m); break;
+      case 'undo-read': await undoRead(m); break;
+      case 'undo-drop': await undoDrop(m); break;
+      case 'undo-clear': await undoClear(); break;
     }
   } catch (e: any) {
     post({ type: 'error', op: m.type, message: String(e?.message ?? e) });

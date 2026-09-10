@@ -74,7 +74,7 @@ const regionShape = z.object({
   center: z.array(z.number()).length(3), half: z.array(z.number()).length(3).optional(), radius: z.number().optional(),
   quat: z.array(z.number()).length(4).optional().describe('x y z w'), label: z.string().optional(),
 });
-server.tool('viewer_regions', 'List, add, update, remove or clear crop/delete regions (box, sphere, slab). role keep = crop to it; delete = remove inside. apply drops points accordingly (irreversible in memory; reload restores).', {
+server.tool('viewer_regions', 'List, add, update, remove or clear crop/delete regions (box, sphere, slab). role keep = crop to it; delete = remove inside. apply drops points accordingly (undoable until Save).', {
   op: z.enum(['list', 'add', 'update', 'remove', 'clear', 'apply']), region: regionShape.optional(), id: z.string().optional(),
 }, async (a) => withShot(await call('regions', a, 120000), a.op !== 'list'));
 
@@ -104,9 +104,13 @@ server.tool('viewer_ai_suggest', 'Ask an AI provider what to clean (vegetation, 
   provider: z.enum(['heuristic', 'openai', 'xai']).default('heuristic'), model: z.string().optional(), kinds: z.array(z.string()).optional(),
 }, async (a) => withShot(await call('ai_suggest', a, 300000), true));
 
-server.tool('viewer_suggestions', 'Accept/reject AI suggestions by id or all, or apply the accepted ones.', {
+server.tool('viewer_suggestions', 'Accept/reject AI suggestions by id or all, or apply the accepted ones (undoable until Save).', {
   op: z.enum(['list', 'accept', 'reject', 'accept_all', 'reject_all', 'apply', 'clear']), id: z.string().optional(),
 }, async (a) => withShot(await call('suggestions', a, 120000), a.op !== 'list'));
+
+server.tool('viewer_history', 'Undo or redo the last crop/clean, save the in-memory cloud into the device cache (clears undo/redo), or report stack status.', {
+  op: z.enum(['undo', 'redo', 'save', 'status']),
+}, async (a) => withShot(await call('history', a, 180000), a.op !== 'status'));
 
 server.tool('viewer_stations', 'List panorama stations, or enter one by index to look around its 360° photo (exit with index -1).', { enter: z.number().int().optional() },
   async (a) => withShot(await call('stations', a, 60000), a.enter !== undefined));

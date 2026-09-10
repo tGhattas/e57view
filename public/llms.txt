@@ -1,0 +1,34 @@
+# e57view
+
+Browser viewer for E57 / PLY / LAS point clouds. Humans open a scan; agents drive it.
+
+## Open a scan (no MCP)
+
+https://opensketch.web.app/?cloud=CLOUD_ID
+https://opensketch.web.app/?cloud=CLOUD_ID&view=top
+https://opensketch.web.app/?cloud=CLOUD_ID&view=fit&ai=heuristic&kinds=noise
+
+Query args: cloud, view (fit|top), az, el, dist, ai (heuristic|openai|xai), kinds (comma list: veg,vehicle,people,noise), session, agent=1 (local MCP bridge).
+
+## Drive without configuring MCP
+
+1. In the viewer, Agent → Copy agent URL (or open the scan with ?session=SESSION). Keep that tab open.
+2. POST https://opensketch.web.app/agent
+   Content-Type: application/json
+
+{"session":"SESSION","cmd":"state"}
+{"session":"SESSION","cmd":"screenshot","args":{"width":1024}}
+{"session":"SESSION","cmd":"set_view","args":{"preset":"top"}}
+{"session":"SESSION","cmd":"ai_suggest","args":{"provider":"heuristic","kinds":["noise"]}}
+{"session":"SESSION","cmd":"suggestions","args":{"op":"apply"}}
+{"session":"SESSION","cmd":"history","args":{"op":"undo"}}
+
+GET https://opensketch.web.app/agent  — command list
+GET https://opensketch.web.app/agent?s=SESSION  — is the tab online?
+
+Responses include result JSON and, for most cmds, shot (JPEG base64). The original file on disk is never overwritten.
+
+## Local MCP (same machine as the tab)
+
+claude mcp add e57view -- node /path/to/e57view/mcp/server.mjs
+Then open the viewer with ?agent=1

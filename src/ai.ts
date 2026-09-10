@@ -24,7 +24,7 @@ const pct = (c: number) => `${(c * 100).toFixed(0)}%`;
 
 // ------------------------------------------------------------ grid statistics
 /** Per-metre-cell statistics of a uniform sample: occupancy, greenness, normal chaos, height range. */
-export interface VegGrid { b: THREE.Box3; cell: number; nx: number; ny: number; cnt: Float32Array; green: Float32Array; veg: Uint8Array; chaos: Uint8Array; zmin: Float32Array; zmax: Float32Array; anyNormals: boolean }
+export interface VegGrid { b: THREE.Box3; cell: number; nx: number; ny: number; cnt: Float32Array; green: Float32Array; veg: Uint8Array; chaos: Uint8Array; noise: Uint8Array; zmin: Float32Array; zmax: Float32Array; anyNormals: boolean }
 export interface Comp { cells: number[]; x0: number; y0: number; x1: number; y1: number; z0: number; z1: number; pts: number }
 
 export function analyzeGrid(viewer: Viewer, opts: { cell?: number; perLeaf?: number } = {}): VegGrid {
@@ -35,7 +35,7 @@ export function analyzeGrid(viewer: Viewer, opts: { cell?: number; perLeaf?: num
   const cnt = new Float32Array(N), green = new Float32Array(N), nz1 = new Float32Array(N), nz2 = new Float32Array(N);
   const zmin = new Float32Array(N).fill(Infinity), zmax = new Float32Array(N).fill(-Infinity);
   let anyNormals = false;
-  if (b.isEmpty()) return { b, cell, nx, ny, cnt, green, veg: new Uint8Array(N), chaos: new Uint8Array(N), zmin, zmax, anyNormals };
+  if (b.isEmpty()) return { b, cell, nx, ny, cnt, green, veg: new Uint8Array(N), chaos: new Uint8Array(N), noise: new Uint8Array(N), zmin, zmax, anyNormals };
   // sample per leaf in proportion to its footprint (about 30 records per metre cell), so sparse
   // outer leaves — where the trees are — get as much say as the dense interior
   const per = opts.perLeaf ? () => opts.perLeaf! : (l: { size: number }) => Math.min(60_000, Math.max(800, Math.round((l.size / cell) ** 2 * 30)));
@@ -58,7 +58,7 @@ export function analyzeGrid(viewer: Viewer, opts: { cell?: number; perLeaf?: num
   }
   // veg: green + rough + tall.  chaos: rough + tall regardless of colour (overexposed canopies
   // come out white in sunny scans); used to snap boxes the model adds.
-  const veg = new Uint8Array(N), chaos = new Uint8Array(N);
+  const veg = new Uint8Array(N), chaos = new Uint8Array(N), noise = new Uint8Array(N);
   for (let g = 0; g < N; g++) {
     if (cnt[g] < 6) continue;
     const gf = green[g] / cnt[g];
@@ -69,7 +69,29 @@ export function analyzeGrid(viewer: Viewer, opts: { cell?: number; perLeaf?: num
     if (rough && tall) chaos[g] = 1;
     if (gf >= 0.35 && rough && tall) veg[g] = 1;
   }
-  return { b, cell, nx, ny, cnt, green, veg, chaos, zmin, zmax, anyNormals };
+  // Noise: isolated / sparse clumps and cells that sit well above the local ground,
+  // not the large green+tall vegetation blobs (those stay on the veg mask).
+  const occ = (g: number) => cnt[g] >= 4;
+  for (let gy = 0; gy < ny; gy++) for (let gx = 0; gx < nx; gx++) {
+    const g = gy * nx + gx;
+    if (cnt[g] < 2) continue;
+    let near8 = 0; const zs: number[] = [];
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      if (!dx && !dy) continue;
+      const x = gx + dx, y = gy + dy; if (x < 0 || y < 0 || x >= nx || y >= ny) continue;
+      const h = y * nx + x;
+      if (occ(h)) { zs.push(zmin[h]); if (Math.abs(dx) <= 1 && Math.abs(dy) <= 1) near8++; }
+    }
+    zs.sort((a, b) => a - b);
+    const med = zs.length ? zs[zs.length >> 1] : zmin[g];
+    const floating = zs.length >= 3 && zmin[g] > med + 1.5;
+    const isolated = near8 <= 1;
+    const sparse = cnt[g] < 14;
+    const grounded = !floating && near8 >= 4 && (zmax[g] - zmin[g]) < 6 && cnt[g] >= 18;
+    if (grounded) continue;
+    if (floating || (isolated && sparse) || (isolated && cnt[g] < 8)) noise[g] = 1;
+  }
+  return { b, cell, nx, ny, cnt, green, veg, chaos, noise, zmin, zmax, anyNormals };
 }
 
 /** 4-connected components of cells passing `mask` (default: vegetation), largest first. */
@@ -107,11 +129,65 @@ function compRegion(c: Comp, label: string, margin = 0.4): Region {
     half: [(c.x1 - c.x0) / 2 + margin, (c.y1 - c.y0) / 2 + margin, (c.z1 - c.z0) / 2 + margin], radius: 0, quat: [0, 0, 0, 1] };
 }
 
+export type KindFlags = { veg: boolean; vehicle: boolean; people: boolean; noise: boolean };
+export function parseKinds(kinds?: string[]): KindFlags {
+  if (!kinds?.length) return { veg: true, vehicle: true, people: true, noise: true };
+  const hit = (re: RegExp) => kinds.some(k => re.test(String(k).toLowerCase().trim()));
+  // data-kind tokens from the checkboxes win; long prompt phrases still match
+  return {
+    veg: hit(/^(veg|vegetation)\b/) || hit(/tree|bush|hedge|plant/),
+    vehicle: hit(/^(vehicle|vehicles|car)s?\b/) || hit(/\b(van|truck)\b/),
+    people: hit(/^(people|person|pedestrian)/),
+    noise: hit(/^(noise|artefact|artifact|float|ghost)/) || hit(/scanning artefact/),
+  };
+}
+
+function suggestFromGrid(grid: VegGrid, flags: KindFlags, max = 24): Region[] {
+  const out: Region[] = [];
+  const area = (c: Comp) => Math.max(0.01, (c.x1 - c.x0) * (c.y1 - c.y0));
+  const h = (c: Comp) => c.z1 - c.z0;
+  if (flags.veg) {
+    out.push(...components(grid, g => grid.veg[g] === 1).slice(0, max).map(c => compRegion(c, `vegetation · ${c.cells.length} m²`)));
+  }
+  if (flags.vehicle) {
+    const comps = components(grid, g => grid.chaos[g] === 1 && grid.veg[g] === 0, 2).filter(c => {
+      const a = area(c), ht = h(c); return a >= 2 && a <= 28 && ht >= 0.8 && ht <= 3.2;
+    });
+    out.push(...comps.slice(0, 12).map(c => compRegion(c, `vehicle · ${area(c).toFixed(0)} m²`)));
+  }
+  if (flags.people) {
+    const comps = components(grid, g => grid.cnt[g] >= 8 && grid.veg[g] === 0, 1).filter(c => {
+      const a = area(c), ht = h(c); return a < 1.8 && ht >= 1.2 && ht <= 2.3;
+    });
+    out.push(...comps.slice(0, 8).map(c => compRegion(c, `person · ${h(c).toFixed(1)} m`)));
+  }
+  if (flags.noise) {
+    const comps = components(grid, g => grid.noise[g] === 1, 1).filter(c => {
+      const a = area(c), ht = h(c);
+      // even with vegetation unchecked, skip tree-sized blobs
+      if (a > 14 && ht > 3.5) return false;
+      return a <= 45;
+    });
+    out.push(...comps.slice(0, max).map(c => {
+      const floating = c.z0 - grid.b.min.z > 1.2 && h(c) < 6;
+      return compRegion(c, `${floating ? 'floating' : 'noise'} · ${c.cells.length} m²`);
+    }));
+  }
+  // de-dupe overlapping boxes (keep first / more specific)
+  const kept: Region[] = [];
+  for (const r of out) {
+    const hit = kept.some(k => Math.abs(k.center[0] - r.center[0]) < Math.max(k.half[0], r.half[0]) && Math.abs(k.center[1] - r.center[1]) < Math.max(k.half[1], r.half[1]));
+    if (!hit) kept.push(r);
+    if (kept.length >= max) break;
+  }
+  return kept;
+}
+
 // ------------------------------------------------------------ heuristic
-/** Vegetation from colour and surface chaos on a uniform sample; returns pending boxes. */
-export function heuristicSuggest(viewer: Viewer, opts: { cell?: number; perLeaf?: number; max?: number } = {}): Region[] {
+/** Local (no network) suggestions honoring the kind checkboxes. */
+export function heuristicSuggest(viewer: Viewer, opts: { cell?: number; perLeaf?: number; max?: number; kinds?: string[] } = {}): Region[] {
   const grid = analyzeGrid(viewer, opts);
-  return components(grid).slice(0, opts.max ?? 24).map(c => compRegion(c, `vegetation · ${c.cells.length} m²`));
+  return suggestFromGrid(grid, parseKinds(opts.kinds), opts.max ?? 24);
 }
 
 // ------------------------------------------------------------ renders for the model
@@ -186,9 +262,10 @@ export async function closeup(viewer: Viewer, r: Region, tag: string, px = 640):
 }
 
 /** Everything the provider call needs: candidates from the data, annotated renders, close-ups, the frame. */
-export async function prepareForAI(viewer: Viewer, opts: { maxCandidates?: number; closeups?: number } = {}): Promise<AiPrep> {
+export async function prepareForAI(viewer: Viewer, opts: { maxCandidates?: number; closeups?: number; kinds?: string[] } = {}): Promise<AiPrep> {
   const grid = analyzeGrid(viewer);
-  const candidates = components(grid).slice(0, opts.maxCandidates ?? 16).map((c, i) => ({ ...compRegion(c, `vegetation · ${c.cells.length} m²`), id: `C${i + 1}` }));
+  const found = suggestFromGrid(grid, parseKinds(opts.kinds), opts.maxCandidates ?? 16);
+  const candidates = found.map((r, i) => ({ ...r, id: `C${i + 1}` }));
   const { images, frame } = renderForAI(viewer);
   images[0].dataUrl = await annotateTopDown(images[0].dataUrl, frame, candidates);
   images[0].detail = 'high'; images[1].detail = 'low';
