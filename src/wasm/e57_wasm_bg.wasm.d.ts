@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_e57export_free: (a: number, b: number) => void;
 export const __wbg_e57handle_free: (a: number, b: number) => void;
+export const __wbg_meshbuilder_free: (a: number, b: number) => void;
 export const __wbg_pointsink_free: (a: number, b: number) => void;
 export const e57export_add_points: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
 export const e57export_finish: (a: number) => [number, number, number];
@@ -11,6 +12,14 @@ export const e57handle_image_blob: (a: number, b: number) => [number, number, nu
 export const e57handle_meta: (a: number) => [number, number];
 export const e57handle_new: (a: any, b: number) => [number, number, number];
 export const e57handle_stream: (a: number, b: number, c: number, d: number, e: number, f: any, g: any, h: any) => [number, number, number];
+export const meshbuilder_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+export const meshbuilder_bricks: (a: number) => number;
+export const meshbuilder_build: (a: number, b: number, c: number) => [number, number];
+export const meshbuilder_colors: (a: number) => [number, number];
+export const meshbuilder_indices: (a: number) => [number, number];
+export const meshbuilder_new: (a: number, b: number, c: number) => number;
+export const meshbuilder_normals: (a: number) => [number, number];
+export const meshbuilder_positions: (a: number) => [number, number];
 export const pointsink_finish: (a: number, b: any, c: any, d: any) => [number, number, number];
 export const pointsink_new: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const pointsink_push: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: any) => [number, number];

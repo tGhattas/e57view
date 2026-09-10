@@ -4,6 +4,7 @@ import { Viewer, isTouch, isIOS, type Knobs, type Station, type GizmoMode } from
 import { REC, type Region } from './cells';
 import { AgentLink } from './agent';
 import { History, cloneRegions } from './history';
+import type { MeshData } from './meshview';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const fmt = (n: number) => Math.round(n).toLocaleString();
@@ -133,7 +134,8 @@ function resetForLoad(name: string) {
   $('ld-name').textContent = name; $('ld-stat').textContent = 'opening…'; $('ld-bar').style.width = '0%'; $('err').classList.add('hidden');
   viewer.clear();
   histogram = new Uint32Array(256); axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)]; axisCube = null;
-  sections.length = 0; deletes.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false;
+  sections.length = 0; deletes.length = 0; cropUI.on = false;
+  meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh'); $<HTMLInputElement>('k-cropon').checked = false;
   void hist.clear();
   syncRegions(); updateMeasureList(); setTool('none'); renderSectionList(); updateHistUI();
   worker?.terminate(); worker = null;
@@ -606,6 +608,141 @@ function renderSectionList() {
   }
 }
 
+// ------------------------------------------------------------------ surface reconstruction
+const meshWorker = new Worker(new URL('./mesh-worker.ts', import.meta.url), { type: 'module' });
+const meshWaiters = new Map<string, (m: any) => void>();
+let meshData: MeshData | null = null;
+let meshAlive = true;
+let meshError: string | null = null;
+meshWorker.onmessage = (ev: MessageEvent) => {
+  const m = ev.data;
+  if (m.type === 'progress') { busy(`Building the field… ${m.leaves} cells · ${mb(m.bytes)}`); return; }
+  if (m.type === 'error') {
+    // The worker can give up mid-stream, when nothing is awaiting it. Remember why, so the
+    // next wait fails with the real reason instead of hanging forever.
+    meshError = m.message ?? 'mesher failed';
+    meshAlive = false;
+    const rej = meshWaiters.get('error');
+    meshWaiters.clear();
+    rej?.(m);
+    return;
+  }
+  const w = meshWaiters.get(m.type);
+  if (w) { meshWaiters.delete(m.type); meshWaiters.delete('error'); w(m); }
+};
+function meshOnce(type: string): Promise<any> {
+  if (meshError) return Promise.reject(new Error(meshError));
+  return new Promise((res, rej) => {
+    meshWaiters.set(type, res);
+    meshWaiters.set('error', (m: any) => rej(new Error(m.message ?? 'mesher failed')));
+  });
+}
+/** A voxel finer than the scan's own point spacing only reconstructs noise, so default to it. */
+function defaultVoxelCm() {
+  const sp = viewer.loaded ? viewer.cells.medianSpacing : 0.06;
+  return Math.round(Math.min(60, Math.max(1, sp * 200)) * 2) / 2;
+}
+const MIN_W = 0.15;   // how much accumulated weight a voxel needs before it counts as surface
+const meshUi = { voxel: 6, smooth: 2, trunc: 2 };
+function syncMeshLabels() {
+  $('v-mvox').textContent = `${meshUi.voxel.toFixed(1)} cm`;
+  $('v-msmooth').textContent = String(meshUi.smooth);
+  $('v-mtrunc').textContent = meshUi.trunc.toFixed(1);
+}
+for (const [id, key, f] of [['k-mvox', 'voxel', 1], ['k-msmooth', 'smooth', 1], ['k-mtrunc', 'trunc', 1]] as [string, 'voxel' | 'smooth' | 'trunc', number][]) {
+  $(id).addEventListener('input', e => { (meshUi as any)[key] = Number((e.target as HTMLInputElement).value) * f; syncMeshLabels(); });
+}
+$('k-mflat').addEventListener('change', e => { viewer.meshFlat = (e.target as HTMLInputElement).checked; viewer.touch(); });
+function setDisplay(d: 'points' | 'mesh' | 'both') {
+  viewer.setDisplay(d);
+  for (const [id, v] of [['k-disppoints', 'points'], ['k-dispmesh', 'mesh'], ['k-dispboth', 'both']] as [string, string][])
+    $(id).classList.toggle('on', viewer.display === v);
+  viewer.touch();
+}
+$('k-disppoints').addEventListener('click', () => setDisplay('points'));
+$('k-dispmesh').addEventListener('click', () => setDisplay('mesh'));
+$('k-dispboth').addEventListener('click', () => setDisplay('both'));
+
+async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number; minW?: number; confirm?: boolean } = {}) {
+  if (!viewer.loaded) throw new Error('nothing loaded');
+  const voxel = (opts.voxel ?? meshUi.voxel) / 100;
+  const smooth = opts.smooth ?? meshUi.smooth;
+  const trunc = opts.trunc ?? meshUi.trunc;
+  // Averaging many points per voxel is what removes noise; past a few hundred per voxel
+  // the extra points change nothing, so thin them and keep the wait sane.
+  const target = isTouch ? 4e6 : 14e6;
+  const stride = Math.max(1, Math.ceil(viewer.loaded / target));
+  const used = Math.floor(viewer.loaded / stride);
+  // Rough field size: each point covers about spacing², the band is a few voxels thick, and
+  // bricks are only part full. Enough to warn before a minute of work ends in a dead tab.
+  const sp = viewer.cells.medianSpacing;
+  const area = used * sp * sp;
+  const estBytes = (area / (voxel * voxel)) * (2 * trunc + 1) * 7 / 0.45;
+  const budget = isTouch ? 260e6 : 900e6;
+  if (opts.confirm !== false) {
+    const ans = await modal('Build a surface?',
+      `<p>Reconstructs a triangle surface from <b>${fmt(used)}</b> of ${fmt(viewer.loaded)} points at a <b>${(voxel * 100).toFixed(1)} cm</b> voxel.</p>` +
+      `<p>The points stay exactly as they are; the surface is a separate object you can show, hide or save. Expect a few seconds to a minute.</p>` +
+      (estBytes > budget
+        ? `<p><b>This is likely to be too fine.</b> The field would need roughly <b>${mb(estBytes)}</b>, over the ${mb(budget)} this device allows. Raise Detail, or crop to a smaller area and build that.</p>`
+        : `<p class="mono">field ≈ ${mb(estBytes)}</p>`),
+      [{ label: 'Cancel', value: 'no' }, { label: 'Build', value: 'yes', cls: 'primary' }]);
+    if (ans !== 'yes') return null;
+  }
+  const t0 = performance.now();
+  busy('Starting the mesher…'); await tick();
+  try {
+    meshAlive = true; meshError = null;
+    meshWorker.postMessage({ type: 'start', voxel, trunc, minWeight: opts.minW ?? MIN_W, stride, maxBytes: budget });
+    await meshOnce('ready');
+    let n = 0;
+    const total = viewer.cells.leafCount;
+    for (const { leaf, recs } of viewer.cells.records()) {
+      if (!meshAlive) break;                       // the worker gave up; stop reading cells back
+      const buf = recs.buffer as ArrayBuffer;
+      meshWorker.postMessage({ type: 'leaf', origin: leaf.origin.toArray(), size: leaf.size, recs: buf }, [buf]);
+      if (++n % 8 === 0) { busy(`Reading cells… ${n} of ${total}`, n / Math.max(total, 1)); await tick(); }
+    }
+    busy('Extracting the surface…'); await tick();
+    meshWorker.postMessage({ type: 'build', smooth, iso: 1.0 });
+    const done = await meshOnce('mesh');
+    meshData = { pos: done.pos, nrm: done.nrm, col: done.col, idx: done.idx };
+    viewer.setMesh(meshData);
+    document.body.classList.toggle('has-mesh', !!meshData.idx.length);
+    setDisplay(meshData.idx.length ? 'mesh' : 'points');
+    const st = done.stats;
+    const mode = st.oriented > st.unoriented * 4 ? 'from normals' : 'density (no usable normals)';
+    $('v-mesh').textContent = meshData.idx.length
+      ? `${fmt(st.triangles)} triangles · ${fmt(st.vertices)} vertices · ${mb(viewer.mesh.bytes)} · ${mode} · ${((performance.now() - t0) / 1000).toFixed(1)}s`
+      : 'no surface found — try a coarser Detail or more Fill gaps';
+    return st;
+  } catch (e: any) {
+    $('v-mesh').textContent = 'failed: ' + (e?.message ?? e);
+    throw e;
+  } finally { hideBusy(); }
+}
+$('k-mbuild').addEventListener('click', () => buildMesh().catch(e => { $('v-mesh').textContent = 'failed: ' + (e?.message ?? e); }));
+$('k-mclear').addEventListener('click', () => {
+  meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
+  setDisplay('points'); $('v-mesh').textContent = '—';
+});
+$('k-msave').addEventListener('click', async () => {
+  if (!meshData) return;
+  const fmtSel = $<HTMLSelectElement>('k-mfmt').value as 'ply' | 'obj';
+  const base = (currentFile?.name ?? 'scan').replace(/\.(e57|ply|las)$/i, '') + '-surface';
+  const handle = await pickSaveHandle(`${base}.${fmtSel}`, fmtSel);
+  if (handle === null) return;
+  busy('Writing the surface…'); await tick();
+  try {
+    const t = (meta?.scans?.[0]?.translation ?? [0, 0, 0]) as [number, number, number];
+    const blob = fmtSel === 'ply' ? viewer.mesh.toPly(meshData, t) : viewer.mesh.toObj(meshData, t);
+    const file = new File([blob], `${base}.${fmtSel}`);
+    await writeOutFile({ file, name: file.name, scratch: '' }, handle);
+    $('v-mesh').textContent = `saved ${file.name} · ${mb(blob.size)}`;
+  } catch (e: any) { fail('Could not save the surface: ' + (e?.message ?? e)); }
+  finally { hideBusy(); }
+});
+
 // ------------------------------------------------------------------ export
 let exportTotal = 0;
 function* leafPoints(stride: number) {
@@ -810,6 +947,16 @@ const agent = new AgentLink({
     await new Promise<void>(res => { const iv = setInterval(() => { if (/(loaded|from cache|streamed) in/.test($('tb-points').textContent || '')) { clearInterval(iv); res(); } }, 200); });
     return { points: viewer.loaded };
   },
+  surface: async (a) => {
+    if (a.op === 'clear') { meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh'); setDisplay('points'); viewer.render(); return { triangles: 0 }; }
+    if (a.op === 'show') { setDisplay(a.mode === 'mesh' || a.mode === 'both' ? a.mode : 'points'); viewer.render(); return { display: viewer.display, triangles: viewer.mesh.triangles }; }
+    if (a.op === 'build') {
+      const st = await buildMesh({ voxel: a.voxelCm, smooth: a.smooth, trunc: a.fillGaps, confirm: false });
+      viewer.render();
+      return st ? { triangles: st.triangles, vertices: st.vertices, display: viewer.display } : { triangles: 0 };
+    }
+    throw new Error('bad op');
+  },
   history: async (a) => {
     if (a.op === 'status') return hist.steps;
     if (a.op === 'undo') return undoEdit().then(e => e ? { undone: e.label, points: viewer.loaded } : { undone: null });
@@ -838,6 +985,7 @@ if (new URLSearchParams(location.search).get('agent') === '1' || localStorage.ge
 function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   if (cmd === 'open') return true;
   if (cmd === 'regions') return a.op === 'apply';
+  if (cmd === 'surface') return a.op === 'build';
   if (cmd === 'history') return a.op !== 'status';
   return false;
 }
@@ -1006,7 +1154,7 @@ addEventListener('orientationchange', () => setTimeout(() => { viewer.resize(); 
 document.querySelectorAll<HTMLElement>('#panel .grp').forEach((g, i) => {
   const h = g.querySelector('h3'); if (!h) return;
   const name = g.dataset.grp ?? h.textContent ?? String(i); const key = 'grp:' + name;
-  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent'].includes(name);
+  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface'].includes(name);
   const stored = localStorage.getItem(key); g.classList.toggle('closed', stored ? stored === '1' : defaultClosed);
   h.addEventListener('click', () => { g.classList.toggle('closed'); localStorage.setItem(key, g.classList.contains('closed') ? '1' : '0'); });
 });
@@ -1020,4 +1168,4 @@ push();
 refreshCachedList();
 (function loop() { viewer.render(); requestAnimationFrame(loop); })();
 (window as any).__viewer = viewer;
-(window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); } };
+(window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, get meshData() { return meshData; } };

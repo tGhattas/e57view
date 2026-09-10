@@ -24,13 +24,16 @@ curl -s https://opensketch.web.app/agent \
   -H 'Content-Type: application/json' \
   -d '{"session":"SESSION","cmd":"state"}'
 
-Commands: state, screenshot, set_view, set, regions, pick, measure, history, stations, open.
+Commands: state, screenshot, set_view, set, regions, pick, measure, surface, history,
+stations, open.
 
 {"session":"S","cmd":"screenshot","args":{"width":1024}}
 {"session":"S","cmd":"set_view","args":{"preset":"top"}}
 {"session":"S","cmd":"set_view","args":{"pose":{"p":[10,10,5],"t":[0,0,0]}}}
 {"session":"S","cmd":"regions","args":{"op":"add","region":{"kind":"box","role":"delete","center":[10,4,2],"half":[2,2,2]}}}
 {"session":"S","cmd":"regions","args":{"op":"apply"}}
+{"session":"S","cmd":"surface","args":{"op":"build","voxelCm":6,"smooth":2}}
+{"session":"S","cmd":"surface","args":{"op":"show","mode":"both"}}
 {"session":"S","cmd":"history","args":{"op":"undo"}}
 
 GET /agent                     command list
@@ -45,7 +48,8 @@ Responses carry result JSON and, for most commands, shot (JPEG base64).
   It also expires 8 hours after creation, and Stop session revokes it by hand.
 - A command taking over 50 s answers 202 {pending: N}; collect it with GET /agent?s=S&n=N.
 - Sessions are read-only by default. Commands that drop points, write a file, load another
-  scan (regions apply, history undo|redo|save, open) return 403 until the tab ticks Allow edits.
+  scan, or take real time (regions apply, history undo|redo|save, open, surface build)
+  return 403 until the tab ticks Allow edits.
 - The original file on disk is never overwritten.
 
 ## Local MCP (agent on the same machine as the tab)
@@ -61,4 +65,5 @@ The server listens on ws://127.0.0.1:7337 and the tab connects out to it; nothin
 off the machine, which makes this the safer option when the agent runs beside the browser.
 
 Tools: viewer_state, viewer_screenshot, viewer_set_view, viewer_set, viewer_regions,
-viewer_pick, viewer_measure, viewer_export, viewer_open, viewer_history, viewer_stations.
+viewer_pick, viewer_measure, viewer_export, viewer_open, viewer_surface, viewer_history,
+viewer_stations.

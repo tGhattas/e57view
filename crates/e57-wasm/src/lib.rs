@@ -1,6 +1,7 @@
 pub mod fast;
 pub mod octree;
 pub mod core;
+pub mod mesh;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
@@ -457,3 +458,44 @@ mod wasm_export {
 pub use wasm_api::*;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_export::*;
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_mesh {
+    use crate::mesh::{Mesh, Mesher};
+    use wasm_bindgen::prelude::*;
+
+    /// Surface reconstruction, driven from a worker: feed it the viewer's own leaf records,
+    /// then pull the triangles back out. Buffers are moved, not copied, on the way out.
+    #[wasm_bindgen]
+    pub struct MeshBuilder {
+        inner: Mesher,
+        out: Option<Mesh>,
+    }
+
+    #[wasm_bindgen]
+    impl MeshBuilder {
+        #[wasm_bindgen(constructor)]
+        pub fn new(voxel: f32, trunc_voxels: f32, min_weight: f32) -> MeshBuilder {
+            MeshBuilder { inner: Mesher::new(voxel, trunc_voxels, min_weight), out: None }
+        }
+        /// One octree leaf: its cube origin and size, plus the packed 14-byte records.
+        pub fn add_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8], stride: u32) {
+            self.inner.add_records([ox, oy, oz], size, recs, stride as usize);
+        }
+        pub fn bricks(&self) -> u32 { self.inner.brick_count() as u32 }
+        /// Extract the surface. Returns a JSON summary; the buffers follow.
+        pub fn build(&mut self, smooth: u32, density_iso: f32) -> String {
+            let (mesh, st) = self.inner.extract(smooth, density_iso);
+            let json = format!(
+                "{{\"points\":{},\"voxels\":{},\"vertices\":{},\"triangles\":{},\"oriented\":{},\"unoriented\":{}}}",
+                st.points_used, st.voxels, st.vertices, st.triangles, st.oriented, st.unoriented
+            );
+            self.out = Some(mesh);
+            json
+        }
+        pub fn positions(&mut self) -> Vec<f32> { self.out.as_mut().map(|m| std::mem::take(&mut m.pos)).unwrap_or_default() }
+        pub fn normals(&mut self) -> Vec<f32> { self.out.as_mut().map(|m| std::mem::take(&mut m.nrm)).unwrap_or_default() }
+        pub fn colors(&mut self) -> Vec<u8> { self.out.as_mut().map(|m| std::mem::take(&mut m.col)).unwrap_or_default() }
+        pub fn indices(&mut self) -> Vec<u32> { self.out.as_mut().map(|m| std::mem::take(&mut m.idx)).unwrap_or_default() }
+    }
+}

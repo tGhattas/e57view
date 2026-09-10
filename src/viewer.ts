@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { EDL_FS, QUAD_VS } from './shaders';
 import { CellRenderer, pointInRegion, type DrawStats, type LeafMeta, type Region, type UndoRecord } from './cells';
+import { MeshView, type MeshData } from './meshview';
 
 const BG = new THREE.Color(0x05090b);
 const TEAL = 0x46c6d2;
@@ -23,6 +24,7 @@ export type Knobs = {
   flySpeed: number;
 };
 export type Tool = 'none' | 'measure';
+export type Display = 'points' | 'mesh' | 'both';
 export type GizmoMode = 'translate' | 'rotate' | 'scale';
 
 function occlusion(): { right: number; bottom: number } {
@@ -117,6 +119,11 @@ export class Viewer {
   controls: OrbitControls;
   fly: Fly;
   cells: CellRenderer;
+  mesh!: MeshView;
+  meshTris = 0;
+  display: Display = 'points';
+  meshFlat = false;
+  meshShade = true;
   canvas: HTMLCanvasElement;
   private rt!: THREE.WebGLRenderTarget;
   private rtType: THREE.TextureDataType = THREE.FloatType;
@@ -207,6 +214,7 @@ export class Viewer {
 
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     this.cells = new CellRenderer(gl);
+    this.mesh = new MeshView(gl);
 
     this.edlMat = new THREE.ShaderMaterial({
       vertexShader: QUAD_VS, fragmentShader: EDL_FS,
@@ -346,6 +354,18 @@ export class Viewer {
     else { const s = this.slabSpan(); r.half = [s, s, g.scale.z / 2]; g.scale.set(s, s, g.scale.z); }
     this.dirty = true;
     this.onRegionChange?.(r);
+  }
+
+  /** Replace the reconstructed surface. Passing null drops it. */
+  setMesh(m: MeshData | null) {
+    if (!m) { this.mesh.clear(); if (this.display !== 'points') this.setDisplay('points'); }
+    else this.mesh.upload(m);
+    this.dirty = true;
+  }
+  setDisplay(d: Display) {
+    this.display = this.mesh.hasMesh || d === 'points' ? d : 'points';
+    this.mesh.visible = this.display !== 'points';
+    this.dirty = true;
   }
 
   applyRegions(list: Region[], record = false) {
@@ -651,6 +671,17 @@ export class Viewer {
     this.renderer.setClearColor(BG, 0); this.renderer.clear(true, true, false);
     this.renderer.render(this.emptyScene, this.camera);
     this.camera.updateMatrixWorld(); this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
+    // Surface first, points on top: both write depth into the same target, so the closer
+    // one wins per pixel and the eye-dome pass shades whatever ends up visible.
+    const k2 = this.knobs;
+    this.meshTris = this.display === 'points' ? 0 : this.mesh.draw(this.camera, {
+      colorMode: k2.colorMode, zMin: this.zRange[0], zMax: this.zRange[1],
+      clipZMin: k2.clipZMin, clipZMax: k2.clipZMax, bright: k2.bright, gamma: k2.gamma,
+      flat: this.meshFlat, shade: this.meshShade,
+    });
+    if (this.display === 'mesh') {
+      this.stats = { leavesVisible: 0, leavesDrawn: 0, pointsDrawn: 0, pointsTotal: this.cells.total };
+    } else
     this.stats = this.cells.draw(this.camera, {
       budget, density: k.density, ptSize: k.size, sizeMode: k.sizeMode, minPx: 1, maxPx: k.maxPx,
       colorMode: k.colorMode, zMin: this.zRange[0], zMax: this.zRange[1], iMin: k.iMin, iMax: k.iMax,

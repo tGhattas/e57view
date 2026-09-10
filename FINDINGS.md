@@ -426,3 +426,72 @@ undoably. The MCP server is bundled by `npm run build` into one 876 KB file serv
 site, so registering it is a `curl` and a `claude mcp add` with no clone and no install; the
 Agent panel has a Download server button and the two commands ready to copy. A web page
 cannot start a local process, which is the whole reason the HTTP endpoint exists alongside.
+
+## Surface reconstruction
+
+Poisson is the usual answer and the wrong one here: it solves a global system, and these
+scans already carry per-point normals from the `nor` extension, which is most of what the
+solve is for. Each point is a small oriented plane, so the truncated signed distance field
+can be splatted directly — walk each normal across the truncation band, accumulate the
+signed distance with trilinear weights. Averaging every point that reaches a voxel is what
+removes scanner noise, so the field is smoother than the cloud that made it.
+
+Extraction is naive surface nets rather than marching cubes, chosen for a reason that has
+nothing to do with quality: marching cubes needs a 256x16 triangle table, and a table
+transcribed from memory is a silent, hard-to-spot corruption. Surface nets needs no table
+at all — one vertex per sign-changing cell at the centroid of its crossings, one quad
+around each sign-changing edge — and is manifold by construction. Cells with no data emit
+no quad, so an open scan stays open instead of being capped with invented geometry.
+Taubin smoothing (lambda then a slightly larger negative mu) drops ripple without the
+shrinkage repeated Laplacian passes cause.
+
+`cargo run --bin meshtest` checks the geometry instead of a render, against shapes whose
+true surface is known. On a 2 m sphere from 400k points at a 5 cm voxel: mean vertex error
+**0.9 mm**, worst 3.1 mm, surface area within **0.0%** of 4πr², zero boundary edges, zero
+non-manifold edges, 100% of normals facing outward. A flat plane comes back flat to
+**0.0 mm** and keeps its border rather than closing into a slab.
+
+Two bugs the test caught that a screenshot would not have. The quad winding was inverted, so
+every normal pointed into the surface — the render still looked plausible. And the density
+fallback for clouds without normals produced 1,825 vertices and zero triangles, because
+voxels below the weight threshold were rejected as invalid: in density mode empty space is
+not missing data, it is the outside, and without it the field never crosses zero.
+
+### On the real scan
+
+18.4M points (1 in 4 of the NavVis file), reconstructed in the browser:
+
+| Voxel | Triangles | Build | Draw | Heap |
+|---|---|---|---|---|
+| 12 cm | 1,785,012 | 7.0 s | 1467 fps | 149 MB |
+| 6 cm | 4,303,346 | 12.7 s | 1001 fps | 197 MB |
+| 5 cm | 7,713,006 | 16.3 s | — | — |
+
+The weight threshold — how much accumulated evidence a voxel needs before it counts as
+surface — mattered more than anything else, and the first guess was badly wrong. At 0.6 the
+render was peppered with pinholes, because a cell needs all eight of its corners valid and
+one weak corner kills it. Measuring boundary edges per triangle across a sweep put the knee
+at 0.3 and the floor at 0.15:
+
+| Threshold | Triangles | Hole perimeter per triangle |
+|---|---|---|
+| 0.6 | 4,706,528 | 0.221 |
+| 0.3 | 6,462,436 | 0.157 |
+| 0.15 | 7,713,006 | 0.148 |
+| 0.05 | 9,331,992 | 0.149 |
+
+0.15 is the default. What holes remain sit in foliage, which is correct: a tree has no
+coherent surface to find.
+
+A 2 cm voxel over the whole site wants more than 1.2 GB of field and took the tab down. The
+mesher now checks its own footprint every eight cells and gives up with a message naming the
+size, and the confirmation dialog estimates the field from the point spacing before any work
+starts. Refusing at 2 cm leaves the page healthy: the points are untouched and a 10 cm build
+straight afterwards succeeds.
+
+Two rendering bugs worth recording. The surface drew washed out to pale yellow because
+blending was still enabled from the previous pass, and this target holds (colour, log depth)
+rather than premultiplied colour — the depth in the alpha channel was scaling the colour and
+saturating it. And the build hung forever the first time because the worker was asked for a
+result that was never requested: the message that starts extraction was missing, so both
+sides waited politely for each other.

@@ -589,6 +589,11 @@ export class CellRenderer {
     for (const l of this.leaves) { if (l.preview) continue; yield { leaf: l, recs: l.readback(this.gl) }; }
   }
   get leafCount() { return this.leaves.filter(l => !l.preview).length; }
+  /** Median of the per-cell point spacing estimates — the natural scale of this scan. */
+  get medianSpacing(): number {
+    const s = this.leaves.filter(l => !l.preview && l.count > 64).map(l => l.spacing).sort((a, b) => a - b);
+    return s.length ? s[s.length >> 1] : 0.05;
+  }
 
   /** Cull, budget, draw. Assumes the target framebuffer and viewport are already bound. */
   draw(camera: THREE.PerspectiveCamera, p: DrawParams): DrawStats {

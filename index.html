@@ -197,6 +197,27 @@
       <p class="hint mono" id="v-sections">—</p>
     </div>
 
+    <div class="grp" data-grp="surface">
+      <h3>Surface</h3>
+      <div class="seg">
+        <button id="k-disppoints" class="ghost on">Points</button>
+        <button id="k-dispmesh" class="ghost">Surface</button>
+        <button id="k-dispboth" class="ghost">Both</button>
+      </div>
+      <label class="row"><span>Detail</span><input type="range" id="k-mvox" min="0.5" max="60" step="0.5" value="6"><b class="mono" id="v-mvox">6 cm</b></label>
+      <label class="row"><span>Smoothing</span><input type="range" id="k-msmooth" min="0" max="6" step="1" value="2"><b class="mono" id="v-msmooth">2</b></label>
+      <label class="row"><span>Fill gaps</span><input type="range" id="k-mtrunc" min="1" max="4" step="0.5" value="2"><b class="mono" id="v-mtrunc">2.0</b></label>
+      <label class="row"><span>Flat shading</span><input type="checkbox" id="k-mflat"></label>
+      <button id="k-mbuild" class="primary wide">Build surface…</button>
+      <p class="hint mono" id="v-mesh">—</p>
+      <label class="row mesh-have"><span>Save as</span>
+        <select id="k-mfmt"><option value="ply">PLY (binary)</option><option value="obj">OBJ</option></select>
+      </label>
+      <button id="k-msave" class="ghost wide mesh-have">Save surface…</button>
+      <button id="k-mclear" class="ghost wide mesh-have">Discard surface</button>
+      <p class="hint">Builds a triangle surface from the points and their normals. <b>Detail</b> is the voxel size: smaller is finer and slower, and below the scanner's own point spacing it only adds noise. <b>Fill gaps</b> widens the band each point writes, closing small holes at the cost of rounding sharp edges.</p>
+    </div>
+
     <div class="grp" data-grp="agent">
       <h3>Agent</h3>
       <label class="row"><span>Local MCP</span><input type="checkbox" id="k-agent"></label>

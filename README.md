@@ -72,6 +72,18 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
   scan was already cached, and history is cleared after a warning. Large undo steps spill
   to the origin-private file system so a multi-million-point crop does not pin hundreds of
   megabytes in RAM.
+- **Surface reconstruction** — builds a triangle mesh from the points and their normals.
+  Each point is a small piece of oriented plane, so a truncated signed distance field can be
+  splatted directly instead of solved for: the field averages every point that reaches a
+  voxel, which is what removes scanner noise, and surface nets turn it into triangles.
+  Taubin smoothing drops the remaining ripple without shrinking the shape. *Detail* is the
+  voxel size and defaults to the scan's own point spacing, because anything finer only
+  reconstructs noise; *Fill gaps* widens the band each point writes, closing small holes at
+  the cost of rounding sharp edges. The surface draws into the same pass as the points, so
+  it is occluded by them correctly and picks up the same eye-dome shading, and
+  *Points / Surface / Both* switches between them. Clouds with no normals fall back to a
+  density isosurface. Save as binary PLY (colour and normals) or OBJ. The points are never
+  modified.
 - **View link** — copies a URL that restores the camera and colour mode when the same file
   is opened again.
 

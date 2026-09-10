@@ -39,6 +39,29 @@ export class E57Handle {
 }
 
 /**
+ * Surface reconstruction, driven from a worker: feed it the viewer's own leaf records,
+ * then pull the triangles back out. Buffers are moved, not copied, on the way out.
+ */
+export class MeshBuilder {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * One octree leaf: its cube origin and size, plus the packed 14-byte records.
+     */
+    add_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array, stride: number): void;
+    bricks(): number;
+    /**
+     * Extract the surface. Returns a JSON summary; the buffers follow.
+     */
+    build(smooth: number, density_iso: number): string;
+    colors(): Uint8Array;
+    indices(): Uint32Array;
+    constructor(voxel: number, trunc_voxels: number, min_weight: number);
+    normals(): Float32Array;
+    positions(): Float32Array;
+}
+
+/**
  * Octree sink for points that don't come from an E57: PLY, LAS, a device scan.
  * Same cells, same preview, same leaf hand-over as `E57Handle::stream`.
  */
@@ -64,6 +87,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_e57export_free: (a: number, b: number) => void;
     readonly __wbg_e57handle_free: (a: number, b: number) => void;
+    readonly __wbg_meshbuilder_free: (a: number, b: number) => void;
     readonly __wbg_pointsink_free: (a: number, b: number) => void;
     readonly e57export_add_points: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly e57export_finish: (a: number) => [number, number, number];
@@ -72,6 +96,14 @@ export interface InitOutput {
     readonly e57handle_meta: (a: number) => [number, number];
     readonly e57handle_new: (a: any, b: number) => [number, number, number];
     readonly e57handle_stream: (a: number, b: number, c: number, d: number, e: number, f: any, g: any, h: any) => [number, number, number];
+    readonly meshbuilder_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly meshbuilder_bricks: (a: number) => number;
+    readonly meshbuilder_build: (a: number, b: number, c: number) => [number, number];
+    readonly meshbuilder_colors: (a: number) => [number, number];
+    readonly meshbuilder_indices: (a: number) => [number, number];
+    readonly meshbuilder_new: (a: number, b: number, c: number) => number;
+    readonly meshbuilder_normals: (a: number) => [number, number];
+    readonly meshbuilder_positions: (a: number) => [number, number];
     readonly pointsink_finish: (a: number, b: any, c: any, d: any) => [number, number, number];
     readonly pointsink_new: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly pointsink_push: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: any) => [number, number];

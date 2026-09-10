@@ -100,6 +100,11 @@ server.tool('viewer_open', 'Open a scan: a cached scan by key (as listed by view
   cached: z.string().optional(), cloud: z.string().optional(), stride: z.number().int().min(1).optional(),
 }, async (a) => withShot(await call('open', a, 15 * 60 * 1000), true));
 
+server.tool('viewer_surface', 'Reconstruct a triangle surface from the points and their normals, show or hide it, or discard it. build takes voxelCm (detail, smaller is finer), smooth (0-6) and fillGaps (1-4). The points are never modified.', {
+  op: z.enum(['build', 'show', 'clear']), voxelCm: z.number().optional(), smooth: z.number().int().optional(),
+  fillGaps: z.number().optional(), mode: z.enum(['points', 'mesh', 'both']).optional(),
+}, async (a) => withShot(await call('surface', a, 600000), true));
+
 server.tool('viewer_history', 'Undo or redo the last edit, save a copy of the in-memory cloud (clears undo/redo), or report stack status.', {
   op: z.enum(['undo', 'redo', 'save', 'status']),
 }, async (a) => withShot(await call('history', a, 180000), a.op !== 'status'));

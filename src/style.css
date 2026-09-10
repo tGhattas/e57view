@@ -238,3 +238,7 @@ input.txt{background:#0a1216;color:var(--ink);border:1px solid var(--line);borde
 .snip{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;line-height:1.5;color:var(--ink);
   background:#0a1216;border:1px solid var(--line);border-radius:4px;padding:8px 9px;margin:0 0 8px;
   white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
+
+.mesh-have{display:none}
+body.has-mesh .mesh-have{display:flex}
+body.has-mesh button.mesh-have{display:block}

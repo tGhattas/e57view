@@ -155,6 +155,110 @@ export class E57Handle {
 if (Symbol.dispose) E57Handle.prototype[Symbol.dispose] = E57Handle.prototype.free;
 
 /**
+ * Surface reconstruction, driven from a worker: feed it the viewer's own leaf records,
+ * then pull the triangles back out. Buffers are moved, not copied, on the way out.
+ */
+export class MeshBuilder {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        MeshBuilderFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_meshbuilder_free(ptr, 0);
+    }
+    /**
+     * One octree leaf: its cube origin and size, plus the packed 14-byte records.
+     * @param {number} ox
+     * @param {number} oy
+     * @param {number} oz
+     * @param {number} size
+     * @param {Uint8Array} recs
+     * @param {number} stride
+     */
+    add_leaf(ox, oy, oz, size, recs, stride) {
+        const ptr0 = passArray8ToWasm0(recs, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.meshbuilder_add_leaf(this.__wbg_ptr, ox, oy, oz, size, ptr0, len0, stride);
+    }
+    /**
+     * @returns {number}
+     */
+    bricks() {
+        const ret = wasm.meshbuilder_bricks(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * Extract the surface. Returns a JSON summary; the buffers follow.
+     * @param {number} smooth
+     * @param {number} density_iso
+     * @returns {string}
+     */
+    build(smooth, density_iso) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.meshbuilder_build(this.__wbg_ptr, smooth, density_iso);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @returns {Uint8Array}
+     */
+    colors() {
+        const ret = wasm.meshbuilder_colors(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @returns {Uint32Array}
+     */
+    indices() {
+        const ret = wasm.meshbuilder_indices(this.__wbg_ptr);
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {number} voxel
+     * @param {number} trunc_voxels
+     * @param {number} min_weight
+     */
+    constructor(voxel, trunc_voxels, min_weight) {
+        const ret = wasm.meshbuilder_new(voxel, trunc_voxels, min_weight);
+        this.__wbg_ptr = ret;
+        MeshBuilderFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * @returns {Float32Array}
+     */
+    normals() {
+        const ret = wasm.meshbuilder_normals(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @returns {Float32Array}
+     */
+    positions() {
+        const ret = wasm.meshbuilder_positions(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+}
+if (Symbol.dispose) MeshBuilder.prototype[Symbol.dispose] = MeshBuilder.prototype.free;
+
+/**
  * Octree sink for points that don't come from an E57: PLY, LAS, a device scan.
  * Same cells, same preview, same leaf hand-over as `E57Handle::stream`.
  */
@@ -351,6 +455,9 @@ const E57ExportFinalization = (typeof FinalizationRegistry === 'undefined')
 const E57HandleFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_e57handle_free(ptr, 1));
+const MeshBuilderFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_meshbuilder_free(ptr, 1));
 const PointSinkFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_pointsink_free(ptr, 1));
@@ -361,9 +468,19 @@ function addToExternrefTable0(obj) {
     return idx;
 }
 
+function getArrayF32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 function getArrayU8FromWasm0(ptr, len) {
@@ -379,6 +496,14 @@ function getDataViewMemory0() {
     return cachedDataViewMemory0;
 }
 
+let cachedFloat32ArrayMemory0 = null;
+function getFloat32ArrayMemory0() {
+    if (cachedFloat32ArrayMemory0 === null || cachedFloat32ArrayMemory0.byteLength === 0) {
+        cachedFloat32ArrayMemory0 = new Float32Array(wasm.memory.buffer);
+    }
+    return cachedFloat32ArrayMemory0;
+}
+
 let cachedFloat64ArrayMemory0 = null;
 function getFloat64ArrayMemory0() {
     if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
@@ -389,6 +514,14 @@ function getFloat64ArrayMemory0() {
 
 function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
+}
+
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
 }
 
 let cachedUint8ArrayMemory0 = null;
@@ -500,7 +633,9 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedFloat32ArrayMemory0 = null;
     cachedFloat64ArrayMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     wasm.__wbindgen_start();
     return wasm;
