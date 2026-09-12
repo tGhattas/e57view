@@ -51,7 +51,8 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
 ## Tools
 
 - **Crop** — a box, sphere or slab you drag around with a gizmo (arrows move it, handles
-  resize it), or place on the orbit centre and size with sliders. It cuts either way:
+  resize it), or place on the orbit centre and size with sliders — and the same for a sphere, a
+  slab or a drawn prism, any number of them unioned in the Sections list. It cuts either way:
   **Keep inside** drops everything outside it, **Remove inside** drops what is inside it, and
   the preview dims whichever half is going so what you see is what Apply will leave. The
   confirmation counts both sides — *"roughly 6,050 points removed, 6,050 kept"*. The file on
@@ -81,11 +82,17 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
   scan was already cached, and history is cleared after a warning. Large undo steps spill
   to the origin-private file system so a multi-million-point crop does not pin hundreds of
   megabytes in RAM.
-- **Freehand selection** — press <b>S</b>, trace a shape over the view, then keep what is
-  inside or outside it. The test runs in screen space, so what you draw is exactly what you
-  get from whatever angle you are looking, and the result undoes like any other edit. Half a
-  second over 18.4 million points, because each leaf's quantisation is folded into the
-  view-projection matrix and a leaf whose projected box misses the shape is never read back.
+- **Draw a region** — press <b>S</b>, trace a shape over the view, then **Create region**.
+  The outline becomes a **prism**: extruded along the direction you drew it from, scaled to
+  metres at the orbit centre so it lands on the points you were looking at. From then on it is
+  a bounding shape like the box — drawn in 3D so you can orbit around it and see exactly what
+  it holds, moved and rotated with the gizmo, adjustable in depth, switchable between *Keep*
+  and *Remove*, unioned with the other regions, and cut only when you press Apply. The count
+  it holds does not change when the camera does, which is the entire point. Up to four drawn
+  regions of 24 sides can be active at once. *Keep inside now* and *Remove inside now* remain
+  for a one-shot screen-space cut: half a second over 18.4 million points, because each leaf's
+  quantisation is folded into the view-projection matrix and a leaf whose projected box misses
+  the shape is never read back.
 - **Analysis** — one neighbourhood search, reused five ways. *Compute normals* fits a plane
   to each point's neighbours and *Orient* makes neighbours agree then turns them outward,
   which matters because surface reconstruction is only as good as the normals feeding it.
