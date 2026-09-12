@@ -1120,3 +1120,50 @@ used. OBJ and STL have no such ambiguity. STL has no vertices at all — only lo
 so its corners are welded back together on import at a ten-millionth of the model's extent,
 because without shared vertices smoothing, decimation and the boundary-edge count are all
 meaningless.
+
+## A script is a way of not waiting nineteen times
+
+Driving a viewer from an agent is mostly waiting. A modelling session is twenty or so calls,
+each one crossing a relay, and nineteen of them are decided entirely by the previous answer:
+fit a plane in a box built from the bounds the last call reported, count points at the height
+the last fit found, contour at that height. The commands were never the slow part.
+
+So `script` takes the whole plan — an array of `{cmd, args, save?, label?}` — and runs it in
+the tab, with each step's result available to the next. The reply is one record per step in
+order, with its result, its error and its milliseconds, whatever happened.
+
+The variables are deliberately small, and the restraint is the design:
+
+- `$last` — the previous step's result.
+- `$layers`, `$active` — recomputed **before every step**, because a step can add, remove or
+  activate a layer and a stale list would be worse than none.
+- `$name` — bound by a step's own `save`, or passed in by the caller as `vars`.
+
+Dotted paths index in, array indices included: `$last.area`, `$layers.0.id`,
+`$s.bounds.local.centre`. A string that is *exactly* `"$path"` is replaced by the value with
+its own type, so an array stays an array and a number stays a number; `${path}` inside a longer
+string interpolates as text. Those are two different operations and conflating them is how a
+box centre ends up as the string `"3.025,2.025,0"`.
+
+What it deliberately does not have: conditionals, loops, arithmetic. Every one of those is a
+step toward a badly-specified programming language embedded in JSON, and the agent calling it
+already has a real one. A script is a batch, not a program. It also cannot run a script —
+checked explicitly, because the alternative is a stack overflow in someone's browser tab.
+
+Three smaller decisions that each came from a concrete failure mode:
+
+- **A step's picture is not shipped.** `screenshot` and `view` answer with base64, and a
+  five-step script with two views is megabytes in a reply that is capped at 700,000 characters.
+  Step results have `png` and `image.data` replaced with a note saying how big they were and to
+  ask for the picture with its own call.
+- **A failing step names what was available.** `no variable $nope. Available: $layers, $active,
+  $last` is the difference between a typo you fix in five seconds and one you fix by reading the
+  documentation again.
+- **A script is exactly as privileged as its steps.** The edit gate runs over the step list
+  before anything executes, in the tab and in the relay both, so a read-only session cannot get
+  an editing command through by wrapping it.
+
+`drive-script.mjs` runs one end to end — fit a floor inside a box built from the cloud's own
+bounds, count what is on it at the height the fit found, measure the diagonal from two
+whole-array variables — and then checks the failure paths: an unknown command stops the run, a
+bad variable is named, `stopOnError:false` finishes anyway, and a nested script is refused.

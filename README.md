@@ -248,6 +248,13 @@ of the same room register to **0.000 mm** and their distance field reads **0.00 
   **−1.98%** for plain Laplacian); *Decimate* is **vertex clustering** with a quadric-optimal
   representative per cell, which is linear and fast but takes a cell size rather than a
   triangle target. Saves as PLY, OBJ or STL with the transform and the global shift baked in.
+- **Scripts** — *Run script…* in the Agent group, and a `script` command over the agent link,
+  take a JSON array of `{cmd, args}` steps and run them in order on the tab, with each step's
+  result available to the next as `$last`, or under a name it chose with `save`. `$layers` and
+  `$active` are refreshed before every step, dotted paths index in (`$last.area`,
+  `$layers.0.id`), and `stopOnError` decides whether a failure ends the run. The round trip is
+  the expensive part of driving a viewer and most steps are decided entirely by the previous
+  answer, so this is the difference between twenty waits and one.
 - **View link** — copies a URL that restores the camera and colour mode when the same file
   is opened again.
 

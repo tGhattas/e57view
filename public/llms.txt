@@ -209,6 +209,57 @@ against 64.274 m³, -0.11%.**
 The viewer's own Raster group does the same things with a draped grid you can see, plus PNG
 and world-file export, contours at an interval, and DXF or GeoJSON out in the global frame.
 
+## Scripts: several commands in one call
+
+{"session":"S","cmd":"script","args":{"steps":[{"cmd":"state","save":"s"},{"cmd":"view","args":{"preset":"top"}}]}}
+
+The round trip is the expensive part of driving a viewer, and most steps are decided entirely
+by the previous answer. A `script` sends the whole plan once. Each step is
+`{cmd, args, save?, label?}`; `args` may hold variables, resolved before the step runs:
+
+- `$last` — the previous step's result
+- `$layers`, `$active` — the layer list and the active layer's id, refreshed before every step
+- `$name` — whatever an earlier step bound with `save:"name"`, or a name passed in `vars`
+
+Dotted paths index in (`$last.area`, `$layers.0.id`, `$s.bounds.local.centre`). A string that
+is *exactly* `"$path"` becomes that value with its own type — an array stays an array — while
+`${path}` inside a longer string interpolates as text. The reply lists every step in order with
+its result, its error and its milliseconds; `stopOnError` defaults to true, and `false` runs the
+rest anyway. Up to 80 steps, and a script cannot run a script. A step that answers with a
+picture reports its size instead of its bytes, so ask for pictures with their own `view` call.
+
+**Measure a floor without knowing where it is:**
+
+{"cmd":"script","args":{"steps":[
+  {"cmd":"set_view","args":{"preset":"fit"}},
+  {"cmd":"state","save":"s"},
+  {"cmd":"fitplane","args":{"box":{"center":["${s.bounds.local.centre.0}","${s.bounds.local.centre.1}","$s.bounds.local.min.2"],"half":[2.9,1.9,0.03]}},"save":"floor"},
+  {"cmd":"inside","args":{"box":{"center":["$s.bounds.local.centre.0","$s.bounds.local.centre.1","$floor.centroid.2"],"half":[2.9,1.9,0.03]}}},
+  {"cmd":"contour","args":{"z":"$floor.centroid.2","thickness":0.3}}
+]}}
+
+**Compare a scan against a design mesh, end to end:**
+
+{"cmd":"script","args":{"steps":[
+  {"cmd":"entities","args":{"op":"list"},"save":"l"},
+  {"cmd":"entities","args":{"op":"activate","id":"$l.entities.0.id"}},
+  {"cmd":"mesh","args":{"op":"list"},"save":"m"},
+  {"cmd":"mesh","args":{"op":"distance","mesh":"$m.meshes.0.id","signed":true}},
+  {"cmd":"view","args":{"preset":"top","width":1024}}
+]}}
+
+**Isolate an object and measure it:**
+
+{"cmd":"script","args":{"steps":[
+  {"cmd":"regions","args":{"op":"place","at":[3.0,2.5,0.8],"shape":"sphere"},"save":"r"},
+  {"cmd":"regions","args":{"op":"fit","id":"$r.id"}},
+  {"cmd":"fit","args":{"shape":"sphere"},"save":"ball"},
+  {"cmd":"measure","args":{"a":"$ball.centre","b":[0,0,0]}}
+]}}
+
+The viewer's own Agent group has **Run script…**, which takes the same JSON, remembers the last
+one, and shows a row per step.
+
 ## Meshes are layers
 
 {"session":"S","cmd":"mesh","args":{"op":"list"}}

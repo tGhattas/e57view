@@ -3263,7 +3263,7 @@ function boundsRecord() {
   const b = viewer.bounds();
   if (b.isEmpty()) return null;
   return {
-    local: { min: arr6(b.min.toArray()), max: arr6(b.max.toArray()), size: arr6(b.getSize(new THREE.Vector3()).toArray()) },
+    local: { min: arr6(b.min.toArray()), max: arr6(b.max.toArray()), size: arr6(b.getSize(new THREE.Vector3()).toArray()), centre: arr6(b.getCenter(new THREE.Vector3()).toArray()) },
     global: { min: toGlobal(b.min.toArray()), max: toGlobal(b.max.toArray()) },
   };
 }
@@ -3676,6 +3676,145 @@ function fitPlaneCmd(a: any) {
   };
 }
 
+
+// ------------------------------------------------------------------ scripts
+//
+// A script is a list of `{cmd, args}` steps run in order against this tab, with each step's
+// result available to the next. It exists because the round trip is the expensive part: an
+// agent measuring a building makes twenty calls that each wait on a relay, and nineteen of
+// them are decided entirely by the previous answer. Sending the whole plan once turns that
+// into one wait.
+//
+// The variables are deliberately small: `$last` is the previous step's result, `$layers` and
+// `$active` are the layer list and the active id refreshed before every step, and a step with
+// `save: "name"` binds its own result under that name. Dotted paths index into them, so
+// `$last.bounds.min.2` is a number and `$layers.1.id` is a layer. That is enough to write the
+// scripts people actually want and not enough to be a programming language, which is the
+// right side of that line to be on.
+const SCRIPT_MAX_STEPS = 80;
+
+/** Follow a dotted path into a result. Array indices are plain numbers: `layers.0.id`. */
+function scriptPath(root: any, path: string, whole: string) {
+  let v = root;
+  for (const part of path ? path.split('.') : []) {
+    if (v === null || v === undefined) throw new Error(`${whole} does not exist: "${part}" has nothing before it`);
+    v = Array.isArray(v) && /^\d+$/.test(part) ? v[Number(part)] : v[part];
+  }
+  if (v === undefined) throw new Error(`${whole} is not in the result`);
+  return v;
+}
+/** Replace `$name.path` (whole value) and `${name.path}` (inside text) throughout an argument. */
+function scriptSubst(v: any, vars: Record<string, any>): any {
+  if (typeof v === 'string') {
+    const whole = /^\$([A-Za-z_][\w]*)((?:\.[\w]+)*)$/.exec(v);
+    const look = (name: string, rest: string, src: string) => {
+      if (!(name in vars)) throw new Error(`no variable $${name}. Available: ${Object.keys(vars).map(k => '$' + k).join(', ')}`);
+      return scriptPath(vars[name], rest.replace(/^\./, ''), src);
+    };
+    if (whole) return look(whole[1], whole[2], v);
+    return v.replace(/\$\{([A-Za-z_][\w]*)((?:\.[\w]+)*)\}/g, (_m, n, r) => {
+      const got = look(n, r, `\${${n}${r}}`);
+      return typeof got === 'object' ? JSON.stringify(got) : String(got);
+    });
+  }
+  if (Array.isArray(v)) return v.map(x => scriptSubst(x, vars));
+  if (v && typeof v === 'object') {
+    const out: any = {};
+    for (const [k, x] of Object.entries(v)) out[k] = scriptSubst(x, vars);
+    return out;
+  }
+  return v;
+}
+/** A step's own picture would be megabytes of base64 in a reply that is meant to be numbers. */
+function scriptTrim(r: any): any {
+  if (!r || typeof r !== 'object') return r;
+  const out: any = { ...r };
+  if (typeof out.png === 'string') out.png = `<${out.png.length} characters of PNG, omitted: ask for the picture with its own view or screenshot call>`;
+  if (out.image && typeof out.image.data === 'string') out.image = { ...out.image, data: `<${out.image.data.length} characters, omitted>` };
+  return out;
+}
+
+/** Run a list of steps in order. Returns one record per step, in order, whatever happened. */
+async function runScript(a: any): Promise<any> {
+  const raw = a?.steps ?? a?.script ?? a;
+  const steps: any[] = Array.isArray(raw) ? raw : [];
+  if (!steps.length) throw new Error('script needs steps: an array of { cmd, args } objects');
+  if (steps.length > SCRIPT_MAX_STEPS) throw new Error(`${steps.length} steps is over the ${SCRIPT_MAX_STEPS} a script may hold`);
+  const stopOnError = a?.stopOnError !== false;
+  const vars: Record<string, any> = { ...(a?.vars ?? {}) };
+  const out: any[] = [];
+  let failed = 0;
+  const t0 = performance.now();
+  for (let i = 0; i < steps.length; i++) {
+    const st = steps[i] ?? {};
+    const cmd = String(st.cmd ?? '');
+    const label = st.label ? String(st.label) : undefined;
+    const rec: any = { i, cmd, ...(label ? { label } : {}) };
+    const s0 = performance.now();
+    try {
+      if (!cmd) throw new Error('a step needs a cmd');
+      if (cmd === 'script') throw new Error('a script cannot run a script');
+      // refreshed every step, because a step can add, remove or activate a layer
+      vars.layers = entityList(); vars.active = viewer.activeId;
+      const args = scriptSubst(st.args ?? {}, vars);
+      const r = slim(await agent.run(cmd, args));
+      vars.last = r;
+      if (st.save) vars[String(st.save)] = r;
+      rec.ok = true;
+      rec.result = scriptTrim(r);
+    } catch (e: any) {
+      rec.ok = false;
+      rec.error = String(e?.message ?? e);
+      failed++;
+    }
+    rec.ms = Math.round(performance.now() - s0);
+    out.push(rec);
+    if (!rec.ok && stopOnError) { rec.stopped = true; break; }
+  }
+  viewer.render();
+  const ran = out.length;
+  $('v-script').textContent = `${ran} of ${steps.length} step${steps.length === 1 ? '' : 's'} · ${failed ? `${failed} failed` : 'all ok'} · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+  return {
+    ok: failed === 0, ran, of: steps.length, failed, stopOnError,
+    ms: Math.round(performance.now() - t0),
+    steps: out,
+    variables: Object.keys(vars).map(k => '$' + k),
+    note: failed && stopOnError ? 'stopped at the first failure; pass stopOnError:false to run the rest anyway' : undefined,
+  };
+}
+
+const SCRIPT_EXAMPLE = `[
+  { "cmd": "set_view", "args": { "preset": "fit" } },
+  { "cmd": "state", "args": {}, "save": "s" },
+  { "cmd": "fitplane", "args": { "box": { "center": "$s.bounds.local.centre", "half": [20, 20, 0.08] } } }
+]`;
+$('k-script').addEventListener('click', async () => {
+  const prev = localStorage.getItem('script') ?? SCRIPT_EXAMPLE;
+  const ans = await modal('Run a script',
+    `<p>A JSON array of <b>{ "cmd", "args" }</b> steps, run in order against this tab. A step may carry <b>"save": "name"</b>; later steps read <b>$last</b>, <b>$layers</b>, <b>$active</b> and any saved name, with dotted paths — <span class="mono">$last.area</span>, <span class="mono">$layers.0.id</span>.</p>`
+    + `<textarea id="sc-text" rows="12" spellcheck="false" style="width:100%;font:12px ui-monospace,monospace">${prev.replace(/</g, '&lt;')}</textarea>`
+    + `<label class="row"><span>Stop at the first error</span><input type="checkbox" id="sc-stop" checked></label>`,
+    [{ label: 'Cancel', value: 'no' }, { label: 'Run', value: 'yes', cls: 'primary' }]);
+  const text = ($('sc-text') as HTMLTextAreaElement | null)?.value ?? '';
+  const stop = ($('sc-stop') as HTMLInputElement | null)?.checked ?? true;
+  if (ans !== 'yes') return;
+  localStorage.setItem('script', text);
+  let steps: any;
+  try { steps = JSON.parse(text); } catch (e: any) { $('v-script').textContent = 'that is not valid JSON: ' + (e?.message ?? e); return; }
+  busy('Running the script…'); await tick();
+  let r: any;
+  try { r = await runScript({ steps, stopOnError: stop }); }
+  catch (e: any) { hideBusy(); $('v-script').textContent = 'script failed: ' + (e?.message ?? e); return; }
+  finally { hideBusy(); }
+  const rows = r.steps.map((s: any) => `<tr><td class="mono">${s.i}</td><td class="mono">${s.cmd}</td><td>${s.ok ? 'ok' : `<b>${String(s.error).replace(/</g, '&lt;')}</b>`}</td><td class="mono">${s.ms} ms</td></tr>`).join('');
+  await modal(r.ok ? 'Script finished' : 'Script stopped',
+    `<p>${r.ran} of ${r.of} steps · ${r.failed ? `${r.failed} failed` : 'all ok'} · ${(r.ms / 1000).toFixed(1)}s</p>`
+    + `<div class="cols"><table>${rows}</table></div>`
+    + `<p class="hint">The full result of every step is in the console as <span class="mono">__lastScript</span>.</p>`,
+    [{ label: 'Close', value: 'ok', cls: 'primary' }]);
+  (window as any).__lastScript = r;
+});
+
 // ------------------------------------------------------------------ agent link
 const agent = new AgentLink({
   state: () => stateRecord(),
@@ -4065,6 +4204,7 @@ const agent = new AgentLink({
     viewer.render();
     return transformState();
   },
+  script: (a) => runScript(a),
   stations: async (a) => { if (a.enter === -1) viewer.exitBubble(); else if (a.enter !== undefined) await enterStation(a.enter); viewer.render(); return { stations: viewer.stationPositions(), bubble: viewer.bubble?.index ?? null }; },
 });
 agent.onStatus = (s) => { $('v-agent').textContent = s; };
@@ -4095,6 +4235,11 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   // reading a mesh's numbers is free; editing it, sampling it into a new layer or measuring a
   // cloud against it is not
   if (cmd === 'mesh') return !['list', 'measure', 'show'].includes(String(a.op ?? 'measure'));
+  // a script is exactly as privileged as the steps in it
+  if (cmd === 'script') {
+    const steps = Array.isArray(a?.steps) ? a.steps : Array.isArray(a) ? a : [];
+    return steps.some((st: any) => agentNeedsEdit(String(st?.cmd ?? ''), st?.args ?? {}));
+  }
   return false;
 }
 /** An agent reply is written into a Firestore document, so it must be small and plain.
@@ -4320,7 +4465,7 @@ refreshCachedList();
   matchCentres, matchScales, runIcp, distanceToReference, removeLayer, addFile,
   get entities() { return viewer.entities; }, get activeId() { return viewer.activeId; },
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; },
-  agentRun: (cmd: string, args: any) => agent.run(cmd, args),
+  agentRun: (cmd: string, args: any) => agent.run(cmd, args), runScript,
   importMesh, measureActiveMesh, smoothActiveMesh, decimateActiveMesh, sampleMeshPoints, distanceToMesh,
   replaceMesh, flipMesh, meshEntities, meshBlob, saveMesh, refreshMeshUI, setDisplay,
   get meshFile() { return meshFile; }, get meshInfo() { return meshInfo; } };

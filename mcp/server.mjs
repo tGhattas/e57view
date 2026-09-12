@@ -192,6 +192,17 @@ server.tool('viewer_surface', 'Reconstruct a triangle surface from the points an
   return withShot(await call('surface', a, 600000), true);
 });
 
+server.tool('viewer_script', 'Run several commands in order on the tab in one call, with each step\'s result available to the next. The round trip is the expensive part of driving a viewer, and most steps are decided entirely by the previous answer, so sending the plan once turns twenty waits into one. Each step is { cmd, args, save?, label? } and args may hold variables: $last is the previous step\'s result, $layers and $active are refreshed before every step, and a step with save:"name" binds its own result under that name. Dotted paths index in — "$last.area", "$layers.0.id", "$s.bounds.local.centre" — and ${...} inside a longer string interpolates. Replies list every step in order with its result, its error and its time. stopOnError defaults to true. A step that answers with a picture reports the size instead of the bytes: ask for pictures with their own view or screenshot call.', {
+  steps: z.array(z.object({
+    cmd: z.string(),
+    args: z.record(z.any()).optional(),
+    save: z.string().optional().describe('bind this step\'s result to $name'),
+    label: z.string().optional(),
+  })).min(1).max(80),
+  stopOnError: z.boolean().optional(),
+  vars: z.record(z.any()).optional().describe('variables available to the first step'),
+}, async (a) => withShot(await call('script', a, 30 * 60 * 1000), true));
+
 server.tool('viewer_mesh', 'Triangle meshes as layers. A mesh opened in the viewer (Mesh -> Import mesh…, PLY/OBJ/STL) becomes a layer of its own, drawn alongside the clouds and moved by viewer_transform like one; every visible layer\'s triangles are drawn, not only the active one\'s. list reports the mesh layers. measure gives surface area and volume through the layer\'s transform, with the boundary edge count next to them — volume only means anything when closed is true, and an open mesh says so rather than quietly returning a number. sample scatters points over the triangles, area-weighted, into a NEW point layer with normals and colours (give count or density in points per m2). distance measures every point of the ACTIVE CLOUD to the nearest TRIANGLE of a mesh layer — point-to-triangle, not point-to-nearest-vertex — and writes it as a scalar field. flip reverses the winding. smooth is Taubin by default, which keeps the volume, or plain Laplacian with taubin:false, which shrinks it. decimate is vertex clustering at cellCm, which is fast but cannot hit an exact triangle count. save writes PLY, OBJ or STL to a path on this machine, with the layer transform and the global shift baked in.', {
   op: z.enum(['list', 'measure', 'sample', 'distance', 'flip', 'smooth', 'decimate', 'show', 'save']),
   count: z.number().int().optional().describe('op=sample: how many points in all'),
