@@ -227,7 +227,9 @@ async function cacheRead(m: any) {
   const d = await dir(CACHE_DIR, false);
   const kd = await d.getDirectoryHandle(m.key);
   const meta = JSON.parse(await (await (await kd.getFileHandle('meta.json')).getFile()).text());
-  post({ type: 'meta', meta: meta.scanMeta, openMs: 0, bytesPulled: 0, fromCache: true, histogram: meta.histogram, robust: meta.robust });
+  // `model` is the cloud's 4x4 transform, row-major, as it stood when the cache was written:
+  // a cached edited scan reopens transformed rather than snapping back to its raw records
+  post({ type: 'meta', meta: meta.scanMeta, openMs: 0, bytesPulled: 0, fromCache: true, histogram: meta.histogram, robust: meta.robust, model: meta.model ?? null });
   post({ type: 'plan', stride: meta.stride, willKeep: meta.kept });
   const fh = await kd.getFileHandle('cells.bin');
   const h = await fh.createSyncAccessHandle();

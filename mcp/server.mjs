@@ -66,7 +66,7 @@ server.tool('viewer_set_view', 'Move the camera. preset: fit | top; or give pose
   orbit: z.object({ azimuthDeg: z.number(), elevationDeg: z.number(), distance: z.number().optional() }).optional().describe('orbit around the current target'),
 }, async (a) => withShot(await call('set_view', a), true));
 
-server.tool('viewer_set', 'Change display settings. Any subset: colorMode (0 rgb,1 intensity,2 rgb×intensity,3 elevation,4 normals,5 flat), pointSize, maxPx, edl, edlStrength, normalShade, budget, density, clipZMin, clipZMax, bright, gamma.', {
+server.tool('viewer_set', 'Change display settings. Any subset: colorMode (0 rgb,1 intensity,2 rgb×intensity,3 elevation,4 normals,5 scalar field,6 flat), pointSize, maxPx, edl, edlStrength, normalShade, budget, density, clipZMin, clipZMax, bright, gamma.', {
   settings: z.record(z.union([z.number(), z.boolean()])) }, async ({ settings }) => withShot(await call('set', settings), true));
 
 const regionShape = z.object({
@@ -104,6 +104,16 @@ server.tool('viewer_surface', 'Reconstruct a triangle surface from the points an
   op: z.enum(['build', 'show', 'clear']), voxelCm: z.number().optional(), smooth: z.number().int().optional(),
   fillGaps: z.number().optional(), mode: z.enum(['points', 'mesh', 'both']).optional(),
 }, async (a) => withShot(await call('surface', a, 600000), true));
+
+server.tool('viewer_transform', 'Move, rotate, scale or level the whole cloud. The points are never rewritten: the cloud carries a 4x4 matrix applied at render, test, analysis and export time, so this is instant, lossless and undoable, and only a written file bakes it. get reports the matrix; set replaces it (16 numbers, row-major); translate/rotate/scale compose on top of it; level fits a plane to a sample and turns it horizontal; reset clears it.', {
+  op: z.enum(['get', 'set', 'translate', 'rotate', 'scale', 'level', 'reset']),
+  matrix: z.array(z.number()).length(16).optional().describe('op=set: row-major 4x4'),
+  translation: z.array(z.number()).length(3).optional().describe('op=translate: metres'),
+  axis: z.enum(['x', 'y', 'z']).optional().describe('op=rotate'),
+  degrees: z.number().optional().describe('op=rotate'),
+  about: z.enum(['centre', 'origin']).optional().describe('op=rotate/scale pivot, default the bounding-box centre'),
+  factor: z.number().optional().describe('op=scale: uniform factor'),
+}, async (a) => withShot(await call('transform', a, 120000), a.op !== 'get'));
 
 server.tool('viewer_history', 'Undo or redo the last edit, save a copy of the in-memory cloud (clears undo/redo), or report stack status.', {
   op: z.enum(['undo', 'redo', 'save', 'status']),

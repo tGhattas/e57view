@@ -199,6 +199,58 @@
       <p class="hint mono" id="v-sections">—</p>
     </div>
 
+    <div class="grp" data-grp="transform">
+      <h3>Transform</h3>
+      <p class="hint">Moves the whole cloud without touching a point. The records stay exactly as they are and a 4&times;4 matrix is applied when they are drawn, tested, analysed and exported — instant, lossless and undoable. <b>Save a copy</b> bakes it into the file.</p>
+      <p class="hint mono" id="v-transform">no transform</p>
+
+      <p class="lab mono">TRANSLATE</p>
+      <div class="trio">
+        <input type="number" id="k-tx" step="0.1" value="0" aria-label="East / X metres">
+        <input type="number" id="k-ty" step="0.1" value="0" aria-label="North / Y metres">
+        <input type="number" id="k-tz" step="0.1" value="0" aria-label="Up / Z metres">
+      </div>
+      <button id="k-tmove" class="ghost wide">Move by these metres</button>
+
+      <p class="lab mono">ROTATE</p>
+      <div class="row"><span>Axis</span>
+        <select id="k-taxis"><option value="z">Z (plan)</option><option value="x">X</option><option value="y">Y</option></select>
+      </div>
+      <div class="row"><span>Degrees</span><input type="number" id="k-tdeg" step="0.5" value="90" aria-label="degrees"></div>
+      <div class="row"><span>About</span>
+        <select id="k-tabout"><option value="centre">Bounding-box centre</option><option value="origin">Origin</option></select>
+      </div>
+      <button id="k-trot" class="ghost wide">Rotate</button>
+
+      <p class="lab mono">SCALE</p>
+      <div class="row"><span>Factor</span><input type="number" id="k-tscale" step="0.01" value="1" aria-label="uniform scale factor"></div>
+      <button id="k-tscalego" class="ghost wide">Scale about the centre</button>
+
+      <p class="lab mono">FIT</p>
+      <button id="k-tlevel" class="ghost wide">Level (make horizontal)</button>
+      <button id="k-tcentre" class="ghost wide">Move centre to origin</button>
+      <button id="k-tmincorner" class="ghost wide">Move min corner to origin</button>
+
+      <p class="lab mono">BY HAND</p>
+      <label class="row"><span>Drag to move/rotate</span><input type="checkbox" id="k-tdrag"></label>
+      <div class="seg">
+        <button id="k-tmodemove" class="ghost on">Move</button>
+        <button id="k-tmoderotate" class="ghost">Rotate</button>
+        <button id="k-tmodescale" class="ghost">Scale</button>
+      </div>
+      <p class="hint">The gizmo grabs the whole cloud at its bounding-box centre. It shares the handles with the crop region, so turning it on releases the crop gizmo and vice versa. One undo step per drag.</p>
+
+      <div class="seg">
+        <button id="k-tmatrix" class="ghost">Apply matrix…</button>
+        <button id="k-treset" class="ghost">Reset</button>
+      </div>
+
+      <p class="lab mono">GLOBAL SHIFT</p>
+      <p class="hint mono" id="v-shift">—</p>
+      <button id="k-tshift" class="ghost wide">Edit global shift…</button>
+      <p class="hint">The scan's own pose offset, added back on export and shown in the coordinate readout. It is not part of the transform above and moves nothing on screen.</p>
+    </div>
+
     <div class="grp" data-grp="analysis">
       <h3>Analysis</h3>
       <label class="row"><span title="How many nearest points each measurement looks at. Larger is smoother and slower.">Neighbours</span><input type="range" id="k-ank" min="6" max="64" step="1" value="16"><b class="mono" id="v-ank">16</b></label>

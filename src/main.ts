@@ -128,7 +128,7 @@ function fail(msg: string) { const e = $('err'); e.textContent = msg; e.classLis
 
 // ------------------------------------------------------------------ opening files
 function resetForLoad(name: string) {
-  revealed = false; gotRealLeaf = false; fromCache = false; cropped = false;
+  revealed = false; gotRealLeaf = false; fromCache = false; cropped = false; cacheNote = '';
   (document.activeElement as HTMLElement | null)?.blur?.();
   $('drop').classList.add('hidden'); $('loading').classList.remove('hidden', 'over');
   $('ld-name').textContent = name; $('ld-stat').textContent = 'opening…'; $('ld-bar').style.width = '0%'; $('err').classList.add('hidden');
@@ -136,6 +136,7 @@ function resetForLoad(name: string) {
   histogram = new Uint32Array(256); axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)]; axisCube = null;
   sections.length = 0; deletes.length = 0; cropUI.on = false;
   meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
+  viewer.setModel(new THREE.Matrix4()); viewer.setModelGizmo(false);
   sfName = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
   ($('k-color-sf') as HTMLOptionElement).disabled = true; $<HTMLInputElement>('k-cropon').checked = false;
   void hist.clear();
@@ -206,12 +207,16 @@ function onMeta(m: any) {
   $('tb-name').textContent = currentFile?.name ?? meta.scans[0].name ?? 'cloud';
   if (m.histogram) histogram = Uint32Array.from(m.histogram);
   if (m.robust) viewer.setRobustBounds(m.robust.lo, m.robust.hi);
+  // a cached scan reopens with the transform it was cached with (row-major in the meta)
+  if (m.model && m.model.length === 16) viewer.setModel(fromRowMajor(m.model as number[]));
+  updateTransformUI();
   viewer.setStations(meta.stations as Station[], s.translation);
   $('v-stations').textContent = meta.stations.length ? `${meta.stations.length} panoramas in this file` : 'No panoramas in this file';
   $('k-stations').parentElement!.classList.toggle('hidden', !meta.stations.length);
 }
 function onDone(stats: any, how: string) {
   if (!fromCache) robustBounds();
+  retightenSoon();
   revealViewport(); viewer.applyZRange(); autoRangeIntensity(); syncZLabels();
   const secs = (performance.now() - t0) / 1000, total = meta.scans[0].points;
   $('tb-points').textContent = `${fmt(stats.kept)} pts · ${how} in ${secs.toFixed(1)}s`;
@@ -244,6 +249,17 @@ function robustLoHi(): { lo: number[]; hi: number[] } | null {
   return { lo, hi };
 }
 function robustBounds() { const r = robustLoHi(); if (r) viewer.setRobustBounds(r.lo as any, r.hi as any); }
+/** A cached scan reopens with the transform it was cached with, and a percentile box carried
+ *  through a rotation is inflated. The leaves arrive through the upload queue, so measuring a
+ *  tight one has to wait for them. */
+function retightenSoon() {
+  if (viewer.cells.model.equals(new THREE.Matrix4())) return;
+  const t = setInterval(() => {
+    if (viewer.cells.pendingCount) return;
+    clearInterval(t); viewer.retightenBounds(); syncZLabels(); viewer.fit();
+  }, 120);
+  setTimeout(() => clearInterval(t), 20000);
+}
 function autoRangeIntensity() {
   const total = histogram.reduce((a, b) => a + b, 0); if (!total) return;
   let acc = 0, lo = 0, hi = 255;
@@ -267,6 +283,18 @@ function syncZLabels() {
 
 // ------------------------------------------------------------------ knobs
 function push() { viewer.setKnobs(knobs); }
+/** Select a colour mode without ever landing on an option the UI has disabled.
+ *  Mode 5 used to be Flat; Scalar field took that slot and Flat moved to 6, so a saved view
+ *  link written before then asks for 5 meaning Flat. With no field loaded, 5 is that old
+ *  link and maps to 6; with a field loaded it is what it says. Anything unselectable falls
+ *  back to RGB rather than leaving the select and the renderer disagreeing. */
+function setColorMode(c: number) {
+  const sel = $<HTMLSelectElement>('k-color');
+  if (c === 5 && !viewer.cells.hasScalarField) c = 6;
+  const opt = Array.from(sel.options).find(o => Number(o.value) === c);
+  if (!opt || opt.disabled) c = 0;
+  knobs.colorMode = c; sel.value = String(c); push();
+}
 function bindRange(id: string, label: string, apply: (v: number) => void, digits = 2) {
   const el = $<HTMLInputElement>(id);
   const on = () => { const v = Number(el.value); apply(v); const l = document.getElementById(label); if (l) l.textContent = v.toFixed(digits); push(); };
@@ -400,6 +428,7 @@ function updateCropUI(recenter = false) {
   if (recenter) { const b = viewer.bounds(); if (!b.isEmpty()) cropState.center = b.getCenter(new THREE.Vector3()).toArray() as any; }
   cropFromSliders(); syncRegions(); cropReadouts();
   if (cropUI.on) viewer.setActiveRegion('crop'); else if (viewer.activeRegion === 'crop') viewer.setActiveRegion(null);
+  updateTransformUI();
   viewer.touch();
 }
 viewer.onRegionChange = (r) => {
@@ -416,8 +445,17 @@ $('k-cropon').addEventListener('change', e => { cropUI.on = (e.target as HTMLInp
 $('k-crophide').addEventListener('change', () => { syncRegions(); viewer.touch(); });
 for (const [id, i] of [['k-cropsize', 0], ['k-cropsy', 1], ['k-cropsz', 2]] as [string, number][]) $(id).addEventListener('input', e => { cropUI.frac[i] = Number((e.target as HTMLInputElement).value); updateCropUI(); });
 $('k-cropcentre').addEventListener('click', () => { cropState.center = viewer.controls.target.toArray() as any; cropUI.on = true; $<HTMLInputElement>('k-cropon').checked = true; updateCropUI(); });
-const gizmoBtn = (id: string, m: GizmoMode) => $(id).addEventListener('click', () => { viewer.setGizmoMode(m); for (const b of ['k-cropmove', 'k-croprotate', 'k-cropresize']) $(b).classList.toggle('on', b === id); });
-gizmoBtn('k-cropmove', 'translate'); gizmoBtn('k-croprotate', 'rotate'); gizmoBtn('k-cropresize', 'scale');
+/** One gizmo mode for whichever gizmo is attached — the crop region or the whole cloud —
+ *  because only one of them is ever attached at a time. Both button rows follow it. */
+const GIZMO_BTNS: [string, GizmoMode][] = [
+  ['k-cropmove', 'translate'], ['k-croprotate', 'rotate'], ['k-cropresize', 'scale'],
+  ['k-tmodemove', 'translate'], ['k-tmoderotate', 'rotate'], ['k-tmodescale', 'scale'],
+];
+function setGizmoMode(m: GizmoMode) {
+  viewer.setGizmoMode(m);
+  for (const [id, v] of GIZMO_BTNS) $(id).classList.toggle('on', v === m);
+}
+for (const [id, m] of GIZMO_BTNS) $(id).addEventListener('click', () => setGizmoMode(m));
 function cancelCrop() {
   cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false;
   if (viewer.activeRegion === 'crop') viewer.setActiveRegion(null);
@@ -499,13 +537,23 @@ async function undoEdit() {
   const e = hist.peekUndo(); if (!e || !viewer.loaded) return null;
   busy('Undoing…'); await tick();
   try {
-    await viewer.undoRegions(e.undo, i => hist.fetch(e, i));
-    viewer.restoreBounds(e.robust);
+    if (e.kind === 'transform') {
+      viewer.setModel(new THREE.Matrix4().fromArray(e.transform!.prev));
+      $('tb-points').textContent = `${fmt(viewer.loaded)} pts · transform undone`;
+    } else if (e.kind === 'normals') {
+      // swapNormals leaves the replaced bytes behind, so redo has something to put back
+      await viewer.cells.swapNormals(e.normals!, i => hist.fetch(e, i));
+      await hist.afterRedo(e);
+      $('tb-points').textContent = `${fmt(viewer.loaded)} pts · normals restored`;
+    } else {
+      await viewer.undoRegions(e.undo!, i => hist.fetch(e, i));
+      viewer.restoreBounds(e.robust);
+      $('v-loaded').textContent = `${fmt(viewer.loaded)} points in memory`;
+      $('tb-points').textContent = `${fmt(viewer.loaded)} pts · undone`;
+    }
     restoreUi(e.before);
     hist.movedToRedo(e);
-    $('v-loaded').textContent = `${fmt(viewer.loaded)} points in memory`;
-    $('tb-points').textContent = `${fmt(viewer.loaded)} pts · undone`;
-    updateHistUI(); viewer.fit(); viewer.touch();
+    updateHistUI(); updateTransformUI(); if (e.undo) viewer.fit(); viewer.touch();
     return e;
   } finally { hideBusy(); }
 }
@@ -513,14 +561,23 @@ async function redoEdit() {
   const e = hist.peekRedo(); if (!e || !viewer.loaded) return null;
   busy('Redoing…'); await tick();
   try {
-    const res = viewer.redoRegions(e.undo);
-    viewer.restoreBounds(null);
+    if (e.kind === 'transform') {
+      viewer.setModel(new THREE.Matrix4().fromArray(e.transform!.next));
+      $('tb-points').textContent = `${fmt(viewer.loaded)} pts · ${e.label}`;
+    } else if (e.kind === 'normals') {
+      await viewer.cells.swapNormals(e.normals!, i => hist.fetch(e, i));
+      await hist.afterRedo(e);
+      $('tb-points').textContent = `${fmt(viewer.loaded)} pts · normals reapplied`;
+    } else {
+      const res = viewer.redoRegions(e.undo!);
+      viewer.restoreBounds(null);
+      await hist.afterRedo(e);
+      $('v-loaded').textContent = `${fmt(res.kept)} points in memory · ${fmt(res.dropped)} dropped`;
+      $('tb-points').textContent = `${fmt(res.kept)} pts · redone`;
+    }
     restoreUi(e.after);
     hist.movedToUndo(e);
-    await hist.afterRedo(e);
-    $('v-loaded').textContent = `${fmt(res.kept)} points in memory · ${fmt(res.dropped)} dropped`;
-    $('tb-points').textContent = `${fmt(res.kept)} pts · redone`;
-    updateHistUI(); viewer.fit(); viewer.touch();
+    updateHistUI(); updateTransformUI(); if (e.undo) viewer.fit(); viewer.touch();
     return e;
   } finally { hideBusy(); }
 }
@@ -575,6 +632,7 @@ async function saveCurrent() {
     await writeOutFile(r, handle);
     let cacheUpdated = false;
     if (currentFile && fromCache) { try { await writeCache(); cacheUpdated = true; } catch {} }
+    cacheNote = '';
     await hist.clear();
     updateHistUI(); updateCacheUI();
     $('v-export').textContent = `saved ${r.name} · ${fmt(r.count)} points · ${mb(r.bytes)}`;
@@ -624,6 +682,237 @@ function renderSectionList() {
     ul.appendChild(li);
   }
 }
+
+// ------------------------------------------------------------------ cloud transform
+// The points are never baked. They stay quantised in their original leaf cubes and the
+// cloud carries a 4x4 matrix that every consumer applies: the vertex shader, the region and
+// lasso tests, the mesher, the analyser and the exporters. So a transform costs nothing,
+// loses no precision to requantisation, and undoes with two matrices instead of a copy of
+// the cloud. Only a written file bakes it.
+
+/** Row-major, the order a human writes a matrix and the order the Rust side expects. */
+function rowMajor(m: THREE.Matrix4): number[] {
+  const e = m.elements;   // three.js stores column-major
+  return [e[0], e[4], e[8], e[12], e[1], e[5], e[9], e[13], e[2], e[6], e[10], e[14], e[3], e[7], e[11], e[15]];
+}
+function fromRowMajor(v: number[]): THREE.Matrix4 {
+  return new THREE.Matrix4().set(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]);
+}
+const modelF32 = () => new Float32Array(rowMajor(viewer.cells.model));
+
+function boundsCentre(): THREE.Vector3 {
+  const b = viewer.bounds();
+  return b.isEmpty() ? new THREE.Vector3() : b.getCenter(new THREE.Vector3());
+}
+/** `m` applied on top of whatever transform the cloud already carries. */
+const thenModel = (m: THREE.Matrix4) => m.clone().multiply(viewer.cells.model);
+/** A rotation (or any linear map) taken about a pivot rather than the origin. */
+function about(pivot: THREE.Vector3, inner: THREE.Matrix4): THREE.Matrix4 {
+  return new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z)
+    .multiply(inner)
+    .multiply(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
+}
+function rotationMatrix(axis: string, deg: number, pivot: 'centre' | 'origin'): THREE.Matrix4 {
+  const r = new THREE.Matrix4();
+  const a = deg * Math.PI / 180;
+  if (axis === 'x') r.makeRotationX(a); else if (axis === 'y') r.makeRotationY(a); else r.makeRotationZ(a);
+  return thenModel(pivot === 'origin' ? r : about(boundsCentre(), r));
+}
+
+/** Push the undo step for a transform that has **already** been applied. */
+async function pushTransformStep(prev: THREE.Matrix4, next: THREE.Matrix4, label: string) {
+  if (prev.equals(next)) return null;
+  const before = snapUi();
+  const e = await hist.push({
+    kind: 'transform', label, dropped: 0, kept: viewer.loaded, undo: null,
+    transform: { prev: prev.elements.slice(), next: next.elements.slice() },
+    robust: viewer.robust ? viewer.robust.clone() : viewer.cells.bounds.clone(),
+    before, after: snapUi(),
+  });
+  cacheNote = 'cache holds the previous transform — Save as… updates it';
+  updateTransformUI(); updateCacheUI(); updateHistUI();
+  return e;
+}
+async function commitTransform(next: THREE.Matrix4, label: string) {
+  if (!viewer.loaded) return null;
+  const prev = viewer.cells.model.clone();
+  if (prev.equals(next)) { updateTransformUI(); return null; }
+  viewer.setModel(next);
+  syncZLabels(); cropReadouts();
+  const e = await pushTransformStep(prev, next, label);
+  viewer.touch();
+  return e;
+}
+
+/** Smallest-eigenvalue eigenvector of a symmetric 3x3 matrix, by cyclic Jacobi rotations —
+ *  the normal of the plane that best fits the points the covariance came from. */
+function leastEigenvector(c: number[][]): THREE.Vector3 {
+  const a = c.map(r => r.slice());
+  const v = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let sweep = 0; sweep < 24; sweep++) {
+    let p = 0, q = 1, off = 0;
+    for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) if (Math.abs(a[i][j]) > off) { off = Math.abs(a[i][j]); p = i; q = j; }
+    if (off < 1e-16) break;
+    const theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+    const t = (theta >= 0 ? 1 : -1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+    const cs = 1 / Math.sqrt(t * t + 1), sn = t * cs;
+    for (let k = 0; k < 3; k++) { const kp = a[k][p], kq = a[k][q]; a[k][p] = cs * kp - sn * kq; a[k][q] = sn * kp + cs * kq; }
+    for (let k = 0; k < 3; k++) { const pk = a[p][k], qk = a[q][k]; a[p][k] = cs * pk - sn * qk; a[q][k] = sn * pk + cs * qk; }
+    for (let k = 0; k < 3; k++) { const kp = v[k][p], kq = v[k][q]; v[k][p] = cs * kp - sn * kq; v[k][q] = sn * kp + cs * kq; }
+  }
+  const ev = [a[0][0], a[1][1], a[2][2]];
+  let m = 0; for (let i = 1; i < 3; i++) if (ev[i] < ev[m]) m = i;
+  return new THREE.Vector3(v[0][m], v[1][m], v[2][m]).normalize();
+}
+/** Normal of the plane fitting a uniform sample of the cloud, in world space. */
+function samplePlaneNormal(): THREE.Vector3 | null {
+  let n = 0, sx = 0, sy = 0, sz = 0;
+  const chunks: Float64Array[] = [];
+  for (const { leaf, recs, n: cnt } of viewer.cells.sample(600)) {
+    const xyz = viewer.cells.transformRecordsInto(recs, cnt, leaf, new Float64Array(cnt * 3));
+    chunks.push(xyz);
+    for (let i = 0; i < cnt; i++) { sx += xyz[i * 3]; sy += xyz[i * 3 + 1]; sz += xyz[i * 3 + 2]; }
+    n += cnt;
+  }
+  if (n < 16) return null;
+  const mx = sx / n, my = sy / n, mz = sz / n;
+  const c = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (const xyz of chunks) {
+    for (let i = 0; i < xyz.length; i += 3) {
+      const d = [xyz[i] - mx, xyz[i + 1] - my, xyz[i + 2] - mz];
+      for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) c[a][b] += d[a] * d[b];
+    }
+  }
+  for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) c[a][b] /= n;
+  const nrm = leastEigenvector(c);
+  return nrm.z < 0 ? nrm.negate() : nrm;    // keep the cloud the right way up
+}
+async function levelCloud() {
+  if (!viewer.loaded) return null;
+  busy('Fitting a plane…'); await tick();
+  let nrm: THREE.Vector3 | null = null;
+  try { nrm = samplePlaneNormal(); } finally { hideBusy(); }
+  if (!nrm) { $('v-transform').textContent = 'not enough points to fit a plane'; return null; }
+  const tilt = Math.acos(Math.min(1, Math.abs(nrm.z))) * 180 / Math.PI;
+  const q = new THREE.Quaternion().setFromUnitVectors(nrm, new THREE.Vector3(0, 0, 1));
+  const r = about(boundsCentre(), new THREE.Matrix4().makeRotationFromQuaternion(q));
+  return commitTransform(thenModel(r), `Level · ${tilt.toFixed(2)}° off horizontal`);
+}
+
+function transformState() {
+  const m = viewer.cells.model;
+  const pos = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+  m.decompose(pos, q, sc);
+  const ang = 2 * Math.acos(Math.min(1, Math.abs(q.w))) * 180 / Math.PI;
+  const ax = new THREE.Vector3(q.x, q.y, q.z);
+  if (ax.lengthSq() > 1e-14) ax.normalize(); else ax.set(0, 0, 1);
+  const b = viewer.bounds();
+  return {
+    matrix: rowMajor(m).map(v => +v.toFixed(9)), identity: m.equals(new THREE.Matrix4()),
+    translation: pos.toArray().map(v => +v.toFixed(6)),
+    rotationDeg: +ang.toFixed(4), rotationAxis: ax.toArray().map(v => +v.toFixed(6)),
+    scale: sc.toArray().map(v => +v.toFixed(6)),
+    globalShift: (meta?.scans?.[0]?.translation ?? null) as number[] | null,
+    bounds: b.isEmpty() ? null : { min: b.min.toArray(), max: b.max.toArray() },
+  };
+}
+function updateTransformUI() {
+  const st = transformState();
+  const bits: string[] = [];
+  const [tx, ty, tz] = st.translation;
+  if (Math.hypot(tx, ty, tz) > 1e-6) bits.push(`shift ${tx.toFixed(3)}, ${ty.toFixed(3)}, ${tz.toFixed(3)} m`);
+  if (st.rotationDeg > 0.005) bits.push(`rotate ${st.rotationDeg.toFixed(2)}° about (${st.rotationAxis.map(v => v.toFixed(2)).join(', ')})`);
+  if (st.scale.some(v => Math.abs(v - 1) > 1e-6)) bits.push(`scale ${st.scale.map(v => v.toFixed(4)).join(' / ')}`);
+  $('v-transform').textContent = bits.length ? bits.join(' · ') : 'no transform';
+  const t = st.globalShift;
+  $('v-shift').textContent = t ? `E ${t[0].toFixed(3)}   N ${t[1].toFixed(3)}   Z ${t[2].toFixed(3)}` : '—';
+  $<HTMLInputElement>('k-tdrag').checked = viewer.modelGizmo;
+}
+
+const num = (id: string) => { const v = Number($<HTMLInputElement>(id).value); return isFinite(v) ? v : 0; };
+$('k-tmove').addEventListener('click', () => {
+  const t = new THREE.Vector3(num('k-tx'), num('k-ty'), num('k-tz'));
+  if (t.lengthSq() === 0) return;
+  commitTransform(thenModel(new THREE.Matrix4().makeTranslation(t.x, t.y, t.z)),
+    `Move ${t.x.toFixed(2)}, ${t.y.toFixed(2)}, ${t.z.toFixed(2)} m`);
+});
+$('k-trot').addEventListener('click', () => {
+  const deg = num('k-tdeg'), axis = $<HTMLSelectElement>('k-taxis').value;
+  const pivot = $<HTMLSelectElement>('k-tabout').value === 'origin' ? 'origin' : 'centre';
+  if (!deg) return;
+  commitTransform(rotationMatrix(axis, deg, pivot), `Rotate ${deg.toFixed(1)}° about ${axis.toUpperCase()}`);
+});
+$('k-tscalego').addEventListener('click', () => {
+  const f = num('k-tscale');
+  if (!(f > 0) || Math.abs(f - 1) < 1e-9) return;
+  commitTransform(thenModel(about(boundsCentre(), new THREE.Matrix4().makeScale(f, f, f))), `Scale ×${f}`);
+});
+$('k-tlevel').addEventListener('click', () => { levelCloud(); });
+$('k-tcentre').addEventListener('click', () => {
+  const c = boundsCentre();
+  commitTransform(thenModel(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z)), 'Move centre to origin');
+});
+$('k-tmincorner').addEventListener('click', () => {
+  const b = viewer.bounds(); if (b.isEmpty()) return;
+  commitTransform(thenModel(new THREE.Matrix4().makeTranslation(-b.min.x, -b.min.y, -b.min.z)), 'Move min corner to origin');
+});
+$('k-treset').addEventListener('click', () => commitTransform(new THREE.Matrix4(), 'Reset transform'));
+$('k-tdrag').addEventListener('change', e => {
+  viewer.setModelGizmo((e.target as HTMLInputElement).checked);
+  if (viewer.modelGizmo) { cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; updateCropUI(); }
+  updateTransformUI();
+});
+viewer.onModelDrag = (done, base) => {
+  updateTransformUI();
+  if (!done) { cropReadouts(); return; }
+  syncZLabels();
+  void pushTransformStep(base, viewer.cells.model.clone(), `Drag · ${viewer.gizmoMode}`);
+};
+
+/** Type a matrix in. Row-major because that is how one is written down and printed. */
+async function matrixModal() {
+  for (;;) {
+    const cur = rowMajor(viewer.cells.model);
+    const txt = [0, 4, 8, 12].map(i => cur.slice(i, i + 4).map(v => v.toFixed(6).padStart(12)).join(' ')).join('\n');
+    const ans = await modal('Apply a matrix',
+      `<p>Sixteen numbers, <b>row-major</b>: three rows of rotation/scale with a translation on the right, then <span class="mono">0 0 0 1</span>. Whitespace or commas, newlines optional. This replaces the current transform rather than adding to it.</p>` +
+      `<textarea id="tm-txt" rows="5" spellcheck="false">${txt}</textarea>` +
+      `<p class="hint mono">The points are not rewritten — this is the matrix they are drawn through.</p>`,
+      [{ label: 'Cancel', value: 'no' }, { label: 'Copy matrix', value: 'copy' }, { label: 'Apply', value: 'yes', cls: 'primary' }]);
+    const raw = ($('tm-txt') as HTMLTextAreaElement | null)?.value ?? '';
+    if (ans === 'copy') { try { await navigator.clipboard.writeText(txt); } catch {} continue; }
+    if (ans !== 'yes') return;
+    const v = raw.trim().split(/[\s,;]+/).filter(Boolean).map(Number);
+    if (v.length !== 16 || v.some(x => !isFinite(x))) {
+      await modal('That is not a 4×4 matrix', `<p>Sixteen finite numbers are needed; this has <b>${v.length}</b>${v.some(x => !isFinite(x)) ? ', and some are not numbers' : ''}.</p>`,
+        [{ label: 'Back', value: 'ok', cls: 'primary' }]);
+      continue;
+    }
+    await commitTransform(fromRowMajor(v), 'Apply matrix');
+    return;
+  }
+}
+$('k-tmatrix').addEventListener('click', () => matrixModal());
+
+/** The scan's own pose offset. Not a transform: it changes exported coordinates and the
+ *  readout, and nothing on screen, because the viewer always works shifted to local. */
+async function shiftModal() {
+  const s = meta?.scans?.[0];
+  if (!s) return;
+  const t = (s.translation ?? [0, 0, 0]) as number[];
+  const ans = await modal('Global shift',
+    `<p>The offset added back to every point when a file is written, and the number shown as <b>E / N / Z</b> in the coordinate readout. The viewer draws everything shifted to local metres, so changing this moves nothing on screen.</p>` +
+    `<div class="trio"><input id="gs-x" type="number" step="0.001" value="${t[0]}" aria-label="Easting"><input id="gs-y" type="number" step="0.001" value="${t[1]}" aria-label="Northing"><input id="gs-z" type="number" step="0.001" value="${t[2]}" aria-label="Z"></div>` +
+    `<p class="hint mono">E · N · Z, metres. This is not undoable.</p>`,
+    [{ label: 'Cancel', value: 'no' }, { label: 'Set', value: 'yes', cls: 'primary' }]);
+  if (ans !== 'yes') return;
+  const v = ['gs-x', 'gs-y', 'gs-z'].map(id => Number(($(id) as HTMLInputElement).value));
+  if (v.some(x => !isFinite(x))) return;
+  s.translation = v;
+  cacheNote = fromCache ? 'cache holds the previous global shift — Save as… updates it' : cacheNote;
+  updateTransformUI(); updateCacheUI();
+}
+$('k-tshift').addEventListener('click', () => shiftModal());
 
 // ------------------------------------------------------------------ freehand selection
 // A polygon traced on screen, then kept or cut. The points are tested in screen space, so
@@ -723,7 +1012,7 @@ async function runAnalysis(op: string, args: Record<string, any> = {}): Promise<
   anaAlive = true; anaError = null;
   // one grid cell per few points keeps the neighbour search in the 27 cells around a point
   const cell = Math.max(viewer.cells.medianSpacing * 2.5, 0.01);
-  anaWorker.postMessage({ type: 'start', cell, maxPoints: isTouch ? 8e6 : 30e6 });
+  anaWorker.postMessage({ type: 'start', cell, maxPoints: isTouch ? 8e6 : 30e6, model: rowMajor(viewer.cells.model) });
   await anaOnce('ready');
   let n = 0;
   const total = viewer.cells.leafCount;
@@ -876,21 +1165,18 @@ async function analysis(op: string, args: Record<string, any> = {}, note = '') {
     const r = await runAnalysis(op, args);
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     if (r.kind === 'normals') {
-      // patch the new normals into each leaf's records, in the order they were fed
-      const nrm = r.data as Int8Array;
-      let at = 0;
-      viewer.cells.rewriteRecords((leaf) => {
-        const recs = leaf.readback(viewer.cells.gl2);
-        for (let i = 0; i < leaf.count; i++) {
-          recs[i * REC + 10] = nrm[(at + i) * 3] & 0xff;
-          recs[i * REC + 11] = nrm[(at + i) * 3 + 1] & 0xff;
-          recs[i * REC + 12] = nrm[(at + i) * 3 + 2] & 0xff;
-        }
-        at += leaf.count;
-        return recs;
+      // patch the new normals into each leaf's records, in the order they were fed, keeping
+      // the bytes that were there so the change is undoable like any other edit
+      const before = snapUi();
+      const prev = viewer.cells.writeNormals(r.data as Int8Array);
+      await hist.push({
+        kind: 'normals', label: note || 'Normals', dropped: 0, kept: viewer.loaded, undo: null,
+        normals: prev, robust: viewer.robust ? viewer.robust.clone() : viewer.cells.bounds.clone(),
+        before, after: snapUi(),
       });
+      cacheNote = 'cache holds old normals — Save as… updates it';
       $('v-analysis').textContent = `${note} · ${fmt(r.points)} points · ${secs}s`;
-      viewer.touch();
+      updateCacheUI(); updateHistUI(); viewer.touch();
     } else if (r.kind === 'field') {
       setScalarField(note || op, r.data as Float32Array, r.counts);
       const extra = r.components !== undefined ? ` · ${fmt(r.components)} clusters` : '';
@@ -903,8 +1189,17 @@ async function analysis(op: string, args: Record<string, any> = {}, note = '') {
   } finally { hideBusy(); }
 }
 
+/** The scanner's own stations, in the frame the analyser sees (so through the model matrix,
+ *  which `stationPositions` already applies). Empty when the file carries no panoramas. */
+function viewpointList(): number[] {
+  return viewer.stations.length ? viewer.stationPositions().flat() : [];
+}
 $('k-annorm').addEventListener('click', () => analysis('normals', { k: anaUi.k, orient: false }, 'normals computed').catch(() => {}));
-$('k-anorient').addEventListener('click', () => analysis('normals', { k: anaUi.k, orient: true }, 'normals computed and oriented').catch(() => {}));
+$('k-anorient').addEventListener('click', () => {
+  const vps = viewpointList();
+  analysis('normals', { k: anaUi.k, orient: true, viewpoints: vps },
+    vps.length ? `normals oriented toward ${vps.length / 3} stations` : 'normals computed and oriented').catch(() => {});
+});
 $('k-aninvert').addEventListener('click', () => analysis('invert', {}, 'normals inverted').catch(() => {}));
 $('k-anfeatgo').addEventListener('click', () => {
   const sel = $<HTMLSelectElement>('k-anfeat');
@@ -1034,7 +1329,10 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
   busy('Starting the mesher…'); await tick();
   try {
     meshAlive = true; meshError = null;
-    meshWorker.postMessage({ type: 'start', voxel, trunc, minWeight: opts.minW ?? MIN_W, stride, maxBytes: budget });
+    // the field is built in the cloud's current world, so a levelled floor gets a clean
+    // axis-aligned isosurface rather than one sliced at an angle
+    const builtWith = viewer.cells.model.clone();
+    meshWorker.postMessage({ type: 'start', voxel, trunc, minWeight: opts.minW ?? MIN_W, stride, maxBytes: budget, model: rowMajor(builtWith) });
     await meshOnce('ready');
     let n = 0;
     const total = viewer.cells.leafCount;
@@ -1048,7 +1346,7 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
     meshWorker.postMessage({ type: 'build', smooth, iso: 1.0 });
     const done = await meshOnce('mesh');
     meshData = { pos: done.pos, nrm: done.nrm, col: done.col, idx: done.idx };
-    viewer.setMesh(meshData);
+    viewer.setMesh(meshData, builtWith);
     document.body.classList.toggle('has-mesh', !!meshData.idx.length);
     setDisplay(meshData.idx.length ? 'mesh' : 'points');
     const st = done.stats;
@@ -1089,15 +1387,32 @@ $('k-msave').addEventListener('click', async () => {
 // ------------------------------------------------------------------ export
 let exportTotal = 0;
 function* leafPoints(stride: number) {
+  // A file is the one place the cloud's transform gets baked: the exporters add the global
+  // shift on top, so the coordinates that land on disk are model * local + translation.
+  const M = viewer.cells.model.elements;                       // column-major
+  const rot = new THREE.Matrix3().setFromMatrix4(viewer.cells.model);
+  const nv = new THREE.Vector3();
   for (const { leaf, recs } of viewer.cells.records()) {
     const n = Math.ceil(leaf.count / stride);
     const xyz = new Float64Array(n * 3), rgb = new Uint8Array(n * 3), inten = new Uint8Array(n), nrm = new Int8Array(n * 3);
     const u16 = new Uint16Array(recs.buffer, recs.byteOffset, (leaf.count * REC) >> 1); const k = leaf.size / 65536; let j = 0;
     for (let i = 0; i < leaf.count; i += stride) {
       const b = i * 7, o = i * REC;
-      xyz[j * 3] = leaf.origin.x + u16[b] * k; xyz[j * 3 + 1] = leaf.origin.y + u16[b + 1] * k; xyz[j * 3 + 2] = leaf.origin.z + u16[b + 2] * k;
+      const lx = leaf.origin.x + u16[b] * k, ly = leaf.origin.y + u16[b + 1] * k, lz = leaf.origin.z + u16[b + 2] * k;
+      xyz[j * 3] = M[0] * lx + M[4] * ly + M[8] * lz + M[12];
+      xyz[j * 3 + 1] = M[1] * lx + M[5] * ly + M[9] * lz + M[13];
+      xyz[j * 3 + 2] = M[2] * lx + M[6] * ly + M[10] * lz + M[14];
       rgb[j * 3] = recs[o + 6]; rgb[j * 3 + 1] = recs[o + 7]; rgb[j * 3 + 2] = recs[o + 8]; inten[j] = recs[o + 9];
-      nrm[j * 3] = recs[o + 10] << 24 >> 24; nrm[j * 3 + 1] = recs[o + 11] << 24 >> 24; nrm[j * 3 + 2] = recs[o + 12] << 24 >> 24; j++;
+      const a = recs[o + 10] << 24 >> 24, bb = recs[o + 11] << 24 >> 24, c = recs[o + 12] << 24 >> 24;
+      if (a === 0 && bb === 0 && c === 127) { nrm[j * 3] = 0; nrm[j * 3 + 1] = 0; nrm[j * 3 + 2] = 127; }
+      else {
+        nv.set(a, bb, c).applyMatrix3(rot);
+        if (nv.lengthSq() > 1e-12) nv.normalize().multiplyScalar(127);
+        nrm[j * 3] = Math.max(-127, Math.min(127, Math.round(nv.x)));
+        nrm[j * 3 + 1] = Math.max(-127, Math.min(127, Math.round(nv.y)));
+        nrm[j * 3 + 2] = Math.max(-127, Math.min(127, Math.round(nv.z)));
+      }
+      j++;
     }
     yield { xyz: xyz.subarray(0, j * 3), rgb: rgb.subarray(0, j * 3), inten: inten.subarray(0, j), nrm: nrm.subarray(0, j * 3), count: j };
   }
@@ -1149,7 +1464,7 @@ async function writeCache() {
   if (!currentFile || !meta) return;
   const stride = Number(($('k-load') as HTMLSelectElement).value) || 1; const r = robustLoHi();
   cacheBytesExpected = viewer.loaded * REC; busy('Caching…', 0);
-  io.postMessage({ type: 'cache-start', key: cacheKey, meta: { name: currentFile.name, size: currentFile.size, lastModified: currentFile.lastModified, stride, scanMeta: meta, kept: viewer.loaded, histogram: Array.from(histogram), robust: r ? { lo: r.lo, hi: r.hi } : null } });
+  io.postMessage({ type: 'cache-start', key: cacheKey, meta: { name: currentFile.name, size: currentFile.size, lastModified: currentFile.lastModified, stride, scanMeta: meta, kept: viewer.loaded, histogram: Array.from(histogram), robust: r ? { lo: r.lo, hi: r.hi } : null, model: rowMajor(viewer.cells.model) } });
   await ioOnce('cache-ready');
   let n = 0;
   for (const { leaf, recs } of viewer.cells.records()) {
@@ -1158,13 +1473,16 @@ async function writeCache() {
     if (++n % 6 === 0) await tick();
   }
   io.postMessage({ type: 'cache-finish' }); const done = await ioOnce('cache-done');
-  hideBusy(); fromCache = true; $('v-cache').textContent = `cached · ${mb(done.bytes)} on this device`; updateCacheUI(); refreshCachedList();
+  hideBusy(); fromCache = true; cacheNote = ''; $('v-cache').textContent = `cached · ${mb(done.bytes)} on this device`; updateCacheUI(); refreshCachedList();
 }
+/** Why the on-device cache no longer matches what is in memory. Cleared by a save, a
+ *  reload or a new file; shown by updateCacheUI so the user knows Save as… is needed. */
+let cacheNote = '';
 function updateCacheUI() {
   const btn = $('k-cache'), rm = $('k-cacheremove');
   if (!currentFile) { $('v-cache').textContent = '—'; btn.classList.add('hidden'); rm.classList.add('hidden'); return; }
-  if (fromCache) { $('v-cache').textContent = cropped ? 'cache holds the current (edited) points' : 'this scan is cached on this device'; btn.classList.add('hidden'); rm.classList.remove('hidden'); }
-  else if (cropped) { $('v-cache').textContent = `not cached · caching now stores the edited ${fmt(viewer.loaded)} points (${mb(viewer.loaded * REC)})`; btn.classList.remove('hidden'); rm.classList.add('hidden'); }
+  if (fromCache) { $('v-cache').textContent = cacheNote || (cropped ? 'cache holds the current (edited) points' : 'this scan is cached on this device'); btn.classList.add('hidden'); rm.classList.remove('hidden'); }
+  else if (cropped || cacheNote) { $('v-cache').textContent = `not cached · caching now stores the edited ${fmt(viewer.loaded)} points (${mb(viewer.loaded * REC)})`; btn.classList.remove('hidden'); rm.classList.add('hidden'); }
   else { $('v-cache').textContent = `not cached · would take ${mb(viewer.loaded * REC)}`; btn.classList.remove('hidden'); rm.classList.add('hidden'); }
 }
 $('k-cache').addEventListener('click', () => writeCache());
@@ -1218,7 +1536,7 @@ $('k-viewlink').addEventListener('click', async () => {
   const u = new URL(location.href); u.hash = btoa(JSON.stringify(state));
   try { await navigator.clipboard.writeText(u.toString()); $('v-cache').textContent = 'view link copied'; } catch {}
 });
-function applyPendingView() { if (!pendingView) return; try { viewer.setView(pendingView); if (pendingView.c !== undefined) { knobs.colorMode = pendingView.c; $<HTMLSelectElement>('k-color').value = String(pendingView.c); push(); } } catch {} pendingView = null; }
+function applyPendingView() { if (!pendingView) return; try { viewer.setView(pendingView); if (pendingView.c !== undefined) setColorMode(Number(pendingView.c)); } catch {} pendingView = null; }
 function applyUrlCommands() {
   const q = new URLSearchParams(location.search);
   const view = q.get('view');
@@ -1241,7 +1559,7 @@ const agent = new AgentLink({
   screenshot: (a) => ({ png: viewer.snapshot(a.width ?? 1280).split(',')[1], view: viewer.getView(), size: [innerWidth, innerHeight] }),
   set_view: (a) => { if (a.preset === 'fit') viewer.fit(); else if (a.preset === 'top') viewer.topDown(); else if (a.pose) viewer.setView(a.pose); else if (a.orbit) viewer.setOrbit(a.orbit.azimuthDeg, a.orbit.elevationDeg, a.orbit.distance); viewer.render(); return viewer.getView(); },
   set: (s) => {
-    const map: Record<string, (v: any) => void> = { colorMode: v => { knobs.colorMode = +v; $<HTMLSelectElement>('k-color').value = String(v); }, pointSize: v => knobs.size = +v, maxPx: v => knobs.maxPx = +v, edl: v => knobs.edl = !!v,
+    const map: Record<string, (v: any) => void> = { colorMode: v => setColorMode(+v), pointSize: v => knobs.size = +v, maxPx: v => knobs.maxPx = +v, edl: v => knobs.edl = !!v,
       edlStrength: v => knobs.edlStrength = +v, normalShade: v => knobs.normalShade = !!v, budget: v => knobs.budget = +v, density: v => knobs.density = +v, clipZMin: v => knobs.clipZMin = +v, clipZMax: v => knobs.clipZMax = +v, bright: v => knobs.bright = +v, gamma: v => knobs.gamma = +v };
     for (const [k, v] of Object.entries(s)) map[k]?.(v);
     push(); viewer.render(); return knobs;
@@ -1307,6 +1625,36 @@ const agent = new AgentLink({
     if (a.op === 'save') { await saveCurrent(); return { points: viewer.loaded, cached: fromCache, history: hist.steps }; }
     throw new Error('bad op');
   },
+  transform: async (a) => {
+    const op = a.op ?? 'get';
+    if (op === 'get') return transformState();
+    if (!viewer.loaded) throw new Error('nothing loaded');
+    if (op === 'level') { await levelCloud(); viewer.render(); return transformState(); }
+    let next: THREE.Matrix4, label: string;
+    if (op === 'set') {
+      const v = (a.matrix ?? []).map(Number);
+      if (v.length !== 16 || v.some((x: number) => !isFinite(x))) throw new Error('matrix: 16 finite numbers, row-major');
+      next = fromRowMajor(v); label = 'Apply matrix';
+    } else if (op === 'translate') {
+      const t = (a.translation ?? [0, 0, 0]).map(Number);
+      next = thenModel(new THREE.Matrix4().makeTranslation(t[0] || 0, t[1] || 0, t[2] || 0));
+      label = `Move ${t.map((n: number) => (n || 0).toFixed(2)).join(', ')} m`;
+    } else if (op === 'rotate') {
+      const deg = Number(a.degrees ?? 0), axis = String(a.axis ?? 'z').toLowerCase();
+      if (!isFinite(deg)) throw new Error('degrees must be a number');
+      next = rotationMatrix(axis, deg, a.about === 'origin' ? 'origin' : 'centre');
+      label = `Rotate ${deg.toFixed(1)}° about ${axis.toUpperCase()}`;
+    } else if (op === 'scale') {
+      const f = Number(a.factor ?? 1);
+      if (!(f > 0)) throw new Error('factor must be greater than zero');
+      next = thenModel(about(boundsCentre(), new THREE.Matrix4().makeScale(f, f, f)));
+      label = `Scale ×${f}`;
+    } else if (op === 'reset') { next = new THREE.Matrix4(); label = 'Reset transform'; }
+    else throw new Error('bad op');
+    await commitTransform(next, label);
+    viewer.render();
+    return transformState();
+  },
   stations: async (a) => { if (a.enter === -1) viewer.exitBubble(); else if (a.enter !== undefined) await enterStation(a.enter); viewer.render(); return { stations: viewer.stationPositions(), bubble: viewer.bubble?.index ?? null }; },
 });
 agent.onStatus = (s) => { $('v-agent').textContent = s; };
@@ -1330,6 +1678,7 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   if (cmd === 'regions') return a.op === 'apply';
   if (cmd === 'surface') return a.op === 'build';
   if (cmd === 'history') return a.op !== 'status';
+  if (cmd === 'transform') return (a.op ?? 'get') !== 'get';
   return false;
 }
 /** An agent reply is written into a Firestore document, so it must be small and plain.
@@ -1497,7 +1846,7 @@ addEventListener('orientationchange', () => setTimeout(() => { viewer.resize(); 
 document.querySelectorAll<HTMLElement>('#panel .grp').forEach((g, i) => {
   const h = g.querySelector('h3'); if (!h) return;
   const name = g.dataset.grp ?? h.textContent ?? String(i); const key = 'grp:' + name;
-  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface', 'analysis', 'field'].includes(name);
+  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface', 'analysis', 'field', 'transform'].includes(name);
   const stored = localStorage.getItem(key); g.classList.toggle('closed', stored ? stored === '1' : defaultClosed);
   h.addEventListener('click', () => { g.classList.toggle('closed'); localStorage.setItem(key, g.classList.contains('closed') ? '1' : '0'); });
 });
@@ -1508,7 +1857,10 @@ viewer.onStats = () => {
 };
 
 push();
+updateTransformUI();
 refreshCachedList();
 (function loop() { viewer.render(); requestAnimationFrame(loop); })();
 (window as any).__viewer = viewer;
-(window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; } };
+(window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist,
+  commitTransform, transformState, levelCloud, rowMajor, fromRowMajor, runExport, updateTransformUI,
+  get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; } };

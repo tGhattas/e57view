@@ -63,6 +63,15 @@ input[type=range]{-webkit-appearance:none;appearance:none;height:3px;background:
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;
   background:var(--teal);cursor:pointer;border:2px solid #05090b}
 input[type=checkbox]{accent-color:var(--teal);width:14px;height:14px;cursor:pointer}
+input[type=number],input[type=text]{background:#0a1216;color:var(--ink);border:1px solid var(--line);
+  border-radius:4px;padding:5px 6px;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;
+  width:100%;min-width:0;font-variant-numeric:tabular-nums}
+input[type=number]:focus,input[type=text]:focus{border-color:var(--teal-dim);outline:none}
+.row input[type=number],.row input[type=text]{flex:1;max-width:96px}
+.trio{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:8px}
+textarea{background:#0a1216;color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:8px;
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:11.5px;line-height:1.6;width:100%;resize:vertical}
+textarea:focus{border-color:var(--teal-dim);outline:none}
 #hist{width:100%;height:42px;background:#0a1216;border:1px solid var(--line);border-radius:4px;display:block}
 .dual{display:flex;flex-direction:column;gap:3px}
 
@@ -118,6 +127,7 @@ html,body{
   input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;margin-top:-9.5px;
     border-radius:50%;background:var(--teal);border:2px solid #05090b}
   input[type=checkbox]{width:22px;height:22px}
+  input[type=number],input[type=text]{font-size:14px;padding:8px}
   button.ghost{padding:11px 12px;font-size:13px}
   button.primary{padding:14px 24px;width:100%;font-size:15px}
   .seg button.primary{width:auto;padding:11px 12px;font-size:13px}

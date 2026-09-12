@@ -12,7 +12,7 @@ precision highp float;
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNrm;
 layout(location=2) in vec4 aCol;
-uniform mat4 uVP, uView;
+uniform mat4 uVP, uView, uModel;
 uniform float uColorMode, uZMin, uZMax, uClipZMin, uClipZMax;
 out vec3 vCol; out vec3 vNrm; out float vLogDepth; out vec3 vPosV; flat out float vDrop;
 
@@ -25,15 +25,18 @@ vec3 ramp(float t){
 }
 
 void main(){
-  vDrop = (aPos.z < uClipZMin || aPos.z > uClipZMax) ? 1.0 : 0.0;
+  // Same uModel as the points: a surface built in the cloud's local space stays glued to
+  // the points it came from when the cloud is moved, rotated or levelled.
+  vec3 p = (uModel * vec4(aPos, 1.0)).xyz;
+  vDrop = (p.z < uClipZMin || p.z > uClipZMax) ? 1.0 : 0.0;
   vCol = uColorMode > 1.5 ? vec3(0.72, 0.74, 0.76)
-       : uColorMode > 0.5 ? ramp((aPos.z - uZMin) / max(uZMax - uZMin, 1e-6))
+       : uColorMode > 0.5 ? ramp((p.z - uZMin) / max(uZMax - uZMin, 1e-6))
        : aCol.rgb;
-  vNrm = mat3(uView) * aNrm;
-  vec4 mv = uView * vec4(aPos, 1.0);
+  vNrm = mat3(uView) * mat3(uModel) * aNrm;
+  vec4 mv = uView * vec4(p, 1.0);
   vPosV = mv.xyz;
   vLogDepth = log2(max(-mv.z, 1e-4));
-  gl_Position = uVP * vec4(aPos, 1.0);
+  gl_Position = uVP * vec4(p, 1.0);
 }`;
 
 const FS = `#version 300 es
@@ -54,6 +57,8 @@ void main(){
   c = pow(max(c * uBright, 0.0), vec3(1.0 / uGamma));
   frag = vec4(c, vLogDepth);
 }`;
+
+const _t = new THREE.Vector3(), _n3 = new THREE.Matrix3();
 
 function compile(gl: WebGL2RenderingContext, src: string, kind: number): WebGLShader {
   const s = gl.createShader(kind)!;
@@ -83,6 +88,8 @@ export class MeshView {
   bytes = 0;
   bounds = new THREE.Box3();
   visible = true;
+  /** The cloud's transform, kept in step with the point renderer's. */
+  model = new THREE.Matrix4();
 
   constructor(private gl: WebGL2RenderingContext) {
     const p = gl.createProgram()!;
@@ -91,7 +98,7 @@ export class MeshView {
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('mesh link: ' + gl.getProgramInfoLog(p));
     this.prog = p;
-    for (const n of ['uVP', 'uView', 'uColorMode', 'uZMin', 'uZMax', 'uClipZMin', 'uClipZMax', 'uBright', 'uGamma', 'uFlat', 'uShade']) {
+    for (const n of ['uVP', 'uView', 'uModel', 'uColorMode', 'uZMin', 'uZMax', 'uClipZMin', 'uClipZMax', 'uBright', 'uGamma', 'uFlat', 'uShade']) {
       this.u[n] = gl.getUniformLocation(p, n);
     }
   }
@@ -156,6 +163,7 @@ export class MeshView {
     gl.useProgram(this.prog);
     gl.uniformMatrix4fv(this.u.uVP!, false, vp.elements);
     gl.uniformMatrix4fv(this.u.uView!, false, camera.matrixWorldInverse.elements);
+    gl.uniformMatrix4fv(this.u.uModel!, false, this.model.elements);
     gl.uniform1f(this.u.uColorMode!, p.colorMode);
     gl.uniform1f(this.u.uZMin!, p.zMin); gl.uniform1f(this.u.uZMax!, p.zMax);
     gl.uniform1f(this.u.uClipZMin!, p.clipZMin); gl.uniform1f(this.u.uClipZMax!, p.clipZMax);
@@ -168,7 +176,19 @@ export class MeshView {
     return this.triangles;
   }
 
-  /** Binary PLY of the surface, ready to write to a file. */
+  /** World position of vertex `i`: the cloud's transform baked in, then the global shift. */
+  private vert(m: MeshData, i: number, t: [number, number, number], out: THREE.Vector3) {
+    return out.set(m.pos[i * 3], m.pos[i * 3 + 1], m.pos[i * 3 + 2]).applyMatrix4(this.model)
+      .add(_t.set(t[0], t[1], t[2]));
+  }
+  /** World normal of vertex `i`, rotated by the model. */
+  private vnrm(m: MeshData, i: number, out: THREE.Vector3) {
+    out.set(m.nrm[i * 3], m.nrm[i * 3 + 1], m.nrm[i * 3 + 2]).applyMatrix3(_n3.setFromMatrix4(this.model));
+    return out.lengthSq() > 1e-12 ? out.normalize() : out.set(0, 0, 0);
+  }
+
+  /** Binary PLY of the surface, ready to write to a file. The cloud's transform is baked
+   *  into the coordinates: a file is the one place where "do not bake" has to end. */
   toPly(m: MeshData, translation: [number, number, number]): Blob {
     const nv = m.pos.length / 3, nf = m.idx.length / 3;
     const header =
@@ -181,13 +201,15 @@ export class MeshView {
     const body = new ArrayBuffer(nv * vStride + nf * (1 + 12));
     const dv = new DataView(body);
     let o = 0;
+    const v = new THREE.Vector3(), nn = new THREE.Vector3();
     for (let i = 0; i < nv; i++) {
-      dv.setFloat64(o, m.pos[i * 3] + translation[0], true); o += 8;
-      dv.setFloat64(o, m.pos[i * 3 + 1] + translation[1], true); o += 8;
-      dv.setFloat64(o, m.pos[i * 3 + 2] + translation[2], true); o += 8;
-      dv.setFloat32(o, m.nrm[i * 3], true); o += 4;
-      dv.setFloat32(o, m.nrm[i * 3 + 1], true); o += 4;
-      dv.setFloat32(o, m.nrm[i * 3 + 2], true); o += 4;
+      this.vert(m, i, translation, v); this.vnrm(m, i, nn);
+      dv.setFloat64(o, v.x, true); o += 8;
+      dv.setFloat64(o, v.y, true); o += 8;
+      dv.setFloat64(o, v.z, true); o += 8;
+      dv.setFloat32(o, nn.x, true); o += 4;
+      dv.setFloat32(o, nn.y, true); o += 4;
+      dv.setFloat32(o, nn.z, true); o += 4;
       dv.setUint8(o++, m.col[i * 3]); dv.setUint8(o++, m.col[i * 3 + 1]); dv.setUint8(o++, m.col[i * 3 + 2]);
     }
     for (let f = 0; f < nf; f++) {
@@ -203,14 +225,17 @@ export class MeshView {
   toObj(m: MeshData, translation: [number, number, number]): Blob {
     const parts: string[] = ['# e57view surface reconstruction\n'];
     const nv = m.pos.length / 3;
+    const v = new THREE.Vector3(), nn = new THREE.Vector3();
     let chunk: string[] = [];
     for (let i = 0; i < nv; i++) {
-      chunk.push(`v ${(m.pos[i * 3] + translation[0]).toFixed(4)} ${(m.pos[i * 3 + 1] + translation[1]).toFixed(4)} ${(m.pos[i * 3 + 2] + translation[2]).toFixed(4)} ${(m.col[i * 3] / 255).toFixed(3)} ${(m.col[i * 3 + 1] / 255).toFixed(3)} ${(m.col[i * 3 + 2] / 255).toFixed(3)}\n`);
+      this.vert(m, i, translation, v);
+      chunk.push(`v ${v.x.toFixed(4)} ${v.y.toFixed(4)} ${v.z.toFixed(4)} ${(m.col[i * 3] / 255).toFixed(3)} ${(m.col[i * 3 + 1] / 255).toFixed(3)} ${(m.col[i * 3 + 2] / 255).toFixed(3)}\n`);
       if (chunk.length > 20000) { parts.push(chunk.join('')); chunk = []; }
     }
     parts.push(chunk.join('')); chunk = [];
     for (let i = 0; i < nv; i++) {
-      chunk.push(`vn ${m.nrm[i * 3].toFixed(4)} ${m.nrm[i * 3 + 1].toFixed(4)} ${m.nrm[i * 3 + 2].toFixed(4)}\n`);
+      this.vnrm(m, i, nn);
+      chunk.push(`vn ${nn.x.toFixed(4)} ${nn.y.toFixed(4)} ${nn.z.toFixed(4)}\n`);
       if (chunk.length > 20000) { parts.push(chunk.join('')); chunk = []; }
     }
     parts.push(chunk.join('')); chunk = [];

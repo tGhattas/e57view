@@ -24,7 +24,7 @@ layout(location=0) in vec3 aPos;
 layout(location=1) in vec4 aColI;
 layout(location=2) in vec4 aNrm;
 layout(location=3) in float aSF;
-uniform mat4 uVP, uView;
+uniform mat4 uVP, uView, uModel;
 uniform vec3 uOrigin; uniform float uSize, uSpacing;
 uniform float uPtSize, uSizeMode, uColorMode, uZMin, uZMax, uIMin, uIMax;
 uniform float uScreenH, uSlope, uMinPx, uMaxPx, uClipZMin, uClipZMax;
@@ -47,11 +47,14 @@ vec3 ramp(float t){
   return vec3(1.0, 1.0-(t-0.75)*4.0, 0.0);
 }
 void main(){
-  vec3 p = uOrigin + aPos * (uSize / 65536.0);
+  // The records stay quantised in their original leaf cube; uModel is the cloud's transform,
+  // applied here so the region tests, the clipping and the elevation ramp all see the points
+  // where they are drawn. Nothing is ever baked into the 16-bit positions.
+  vec3 p = (uModel * vec4(uOrigin + aPos * (uSize / 65536.0), 1.0)).xyz;
   vec4 mv = uView * vec4(p, 1.0);
   gl_Position = uVP * vec4(p, 1.0);
   vLogDepth = log2(max(-mv.z, 1e-4));
-  vNrm = aNrm.xyz;
+  vNrm = mat3(uModel) * aNrm.xyz;
   vDrop = (p.z < uClipZMin || p.z > uClipZMax) ? 1.0 : 0.0;
   vOut = 0.0; vTint = 0.0;
   bool anyKeep = false, inKeep = false, inDel = false;
@@ -77,7 +80,7 @@ void main(){
   else if (uColorMode < 1.5) vCol = vec3(inten);
   else if (uColorMode < 2.5) vCol = aColI.rgb * (0.35 + 0.9 * inten);
   else if (uColorMode < 3.5) vCol = ramp(elev);
-  else if (uColorMode < 4.5) vCol = aNrm.xyz * 0.5 + 0.5;
+  else if (uColorMode < 4.5) vCol = normalize(vNrm + vec3(1e-6)) * 0.5 + 0.5;
   else if (uColorMode < 5.5) vCol = aSF < -1.0e17 ? vec3(0.32, 0.34, 0.36)
                                   : ramp((aSF - uSFMin) / max(uSFMax - uSFMin, 1e-9));
   else                       vCol = vec3(0.72, 0.75, 0.76);
@@ -110,6 +113,10 @@ void main(){
   else if (vTint > 0.5) c = mix(c, vec3(1.0, 0.55, 0.1), 0.55); // inside a pending suggestion: tinted
   frag = vec4(c, vLogDepth);
 }`;
+
+/** One leaf's previous normal bytes (3 per point), for the undo stack. */
+export interface NormalsLeaf { leaf: Leaf; index: number; count: number; recs: Uint8Array }
+export interface NormalsUndo { leaves: NormalsLeaf[]; bytes: number }
 
 export interface UndoLeaf { leaf: Leaf; recs: Uint8Array; sf: Float32Array | null; mask: Uint8Array | null; count: number; capacity: number; bmin: THREE.Vector3; bmax: THREE.Vector3; spacing: number; index: number }
 export interface UndoRecord { leaves: UndoLeaf[]; bytes: number; prevTotal: number; regions: Region[] }
@@ -292,7 +299,8 @@ function insideLocal(l: THREE.Vector3, r: Region): boolean {
   if (r.kind === 'sphere') return l.lengthSq() <= r.radius * r.radius;
   return Math.abs(l.x) <= r.half[0] && Math.abs(l.y) <= r.half[1] && Math.abs(l.z) <= r.half[2];
 }
-const _pin = new THREE.Vector3(), _plin = new THREE.Vector3();
+const _pin = new THREE.Vector3(), _plin = new THREE.Vector3(), _cor = new THREE.Vector3();
+const _ident = new THREE.Matrix4();
 export function pointInRegion(p: [number, number, number] | THREE.Vector3, r: Region): boolean {
   const inv = new THREE.Matrix3().fromArray(Array.from(invRot(r.quat)));
   const pt = p instanceof THREE.Vector3 ? p : _pin.set(p[0], p[1], p[2]);
@@ -340,7 +348,11 @@ export class CellRenderer {
   private pending: { blocks: ArrayBuffer[]; count: number; meta: LeafMeta; preview: boolean; capacity?: number; tag?: number }[] = [];
   /** Leaves that would like more points than they have loaded (cloud streaming). */
   refine: { leaf: Leaf; want: number }[] = [];
+  /** World AABB of the cloud **after** the model matrix. */
   bounds = new THREE.Box3();
+  /** The cloud's transform. Points are never baked: this matrix is applied at render, test,
+   *  export and analysis time, which makes a transform instant, lossless and undoable. */
+  model = new THREE.Matrix4();
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -348,7 +360,7 @@ export class CellRenderer {
     for (const n of ['uSFMin','uSFMax','uSFLo','uSFHi','uSFHide',
       'uVP','uView','uOrigin','uSize','uSpacing','uPtSize','uSizeMode','uColorMode','uZMin','uZMax',
                      'uIMin','uIMax','uScreenH','uSlope','uMinPx','uMaxPx','uClipZMin','uClipZMax',
-                     'uRound','uNormalShade','uBright','uGamma','uRegN','uRegHide']) {
+                     'uRound','uNormalShade','uBright','uGamma','uRegN','uRegHide','uModel']) {
       this.u[n] = gl.getUniformLocation(this.prog, n);
     }
     for (let i = 0; i < 16; i++) for (const n of ['uRegMode', 'uRegRole', 'uRegC', 'uRegS', 'uRegRot']) {
@@ -388,14 +400,8 @@ export class CellRenderer {
       const leaf = new Leaf(this.gl, p.blocks, p.count, p.meta, p.preview, p.capacity);
       leaf.tag = p.tag ?? -1;
       this.leaves.push(leaf);
-      if (!p.preview) {
-        this.total += p.capacity ?? p.count;
-        this.bounds.expandByPoint(new THREE.Vector3(...p.meta.bmin));
-        this.bounds.expandByPoint(new THREE.Vector3(...p.meta.bmax));
-      } else {
-        this.bounds.expandByPoint(new THREE.Vector3(...p.meta.bmin));
-        this.bounds.expandByPoint(new THREE.Vector3(...p.meta.bmax));
-      }
+      if (!p.preview) this.total += p.capacity ?? p.count;
+      this.bounds.union(this.leafBox(leaf));
       done += p.count * REC; changed = true;
     }
     return changed;
@@ -405,14 +411,69 @@ export class CellRenderer {
     const keep: Leaf[] = [];
     for (const l of this.leaves) { if (l.preview) l.dispose(this.gl); else keep.push(l); }
     this.leaves = keep;
-    // recompute bounds from real leaves
-    this.bounds.makeEmpty();
-    for (const l of keep) this.bounds.expandByPoint(l.center.clone().addScalar(-l.radius)).expandByPoint(l.center.clone().addScalar(l.radius));
+    this.recomputeBounds();
   }
 
   clear() {
     for (const l of this.leaves) l.dispose(this.gl);
     this.leaves = []; this.pending = []; this.total = 0; this.bounds.makeEmpty();
+  }
+
+  /** Replace the cloud's transform. Instant: only the derived bounds are recomputed. */
+  setModel(m: THREE.Matrix4) { this.model.copy(m); this.recomputeBounds(); }
+  /** The cloud's transform, as a copy. */
+  worldMatrix() { return this.model.clone(); }
+  /** Average linear scale the model applies — what point spacing and voxel sizes scale by. */
+  get modelScale(): number {
+    const e = this.model.elements;
+    const a = Math.hypot(e[0], e[1], e[2]), b = Math.hypot(e[4], e[5], e[6]), c = Math.hypot(e[8], e[9], e[10]);
+    return (a + b + c) / 3 || 1;
+  }
+
+  /** Per-leaf affine that turns a quantised record into a world position, so a point costs
+   *  three multiply-adds instead of a matrix product. The leaf's quantisation and the
+   *  cloud's model matrix fold into the same three columns. */
+  private leafFold(lf: Leaf) {
+    const k = lf.size / 65536;
+    const e = this.model.elements;    // column-major
+    const bx = e[0] * lf.origin.x + e[4] * lf.origin.y + e[8] * lf.origin.z + e[12];
+    const by = e[1] * lf.origin.x + e[5] * lf.origin.y + e[9] * lf.origin.z + e[13];
+    const bz = e[2] * lf.origin.x + e[6] * lf.origin.y + e[10] * lf.origin.z + e[14];
+    const ax = e[0] * k, ay = e[4] * k, az = e[8] * k;
+    const bx2 = e[1] * k, by2 = e[5] * k, bz2 = e[9] * k;
+    const cx = e[2] * k, cy = e[6] * k, cz = e[10] * k;
+    return {
+      at(qx: number, qy: number, qz: number, out: THREE.Vector3) {
+        return out.set(bx + qx * ax + qy * ay + qz * az,
+                       by + qx * bx2 + qy * by2 + qz * bz2,
+                       bz + qx * cx + qy * cy + qz * cz);
+      },
+    };
+  }
+  /** Transformed AABB of a leaf's tight box: conservative, since a rotated box is larger
+   *  than its own extent. Whole-cell region tests stay correct either way — a box that is
+   *  too big only ever falls back to the per-point test. */
+  leafBox(lf: Leaf, out = new THREE.Box3()): THREE.Box3 {
+    out.makeEmpty();
+    if (this.identity) { out.min.copy(lf.bmin); out.max.copy(lf.bmax); return out; }
+    const v = _cor;
+    for (let i = 0; i < 8; i++) {
+      out.expandByPoint(v.set(i & 1 ? lf.bmax.x : lf.bmin.x, i & 2 ? lf.bmax.y : lf.bmin.y, i & 4 ? lf.bmax.z : lf.bmin.z).applyMatrix4(this.model));
+    }
+    return out;
+  }
+  private get identity() { return _ident.equals(this.model); }
+  /** Decode `count` records of `leaf` into world-space double triples. */
+  transformRecordsInto(recs: Uint8Array, count: number, leaf: Leaf, out: Float64Array): Float64Array {
+    const u16 = new Uint16Array(recs.buffer, recs.byteOffset, (count * REC) >> 1);
+    const fold = this.leafFold(leaf);
+    const p = new THREE.Vector3();
+    for (let i = 0; i < count; i++) {
+      const b = i * 7;
+      fold.at(u16[b], u16[b + 1], u16[b + 2], p);
+      out[i * 3] = p.x; out[i * 3 + 1] = p.y; out[i * 3 + 2] = p.z;
+    }
+    return out;
   }
 
   private sets(regions: Region[]) {
@@ -427,10 +488,11 @@ export class CellRenderer {
     let n = 0;
     for (const l of this.leaves) {
       if (l.preview) continue;
+      const box = this.leafBox(l);
       let keepCls: boolean | null = sets.keep.length ? false : true;
-      for (const k of sets.keep) { const c = classifyRegion(l.bmin, l.bmax, k.r, k.inv); if (c === true) { keepCls = true; break; } if (c === null) keepCls = null; }
+      for (const k of sets.keep) { const c = classifyRegion(box.min, box.max, k.r, k.inv); if (c === true) { keepCls = true; break; } if (c === null) keepCls = null; }
       let delCls: boolean | null = false;
-      for (const d of sets.del) { const c = classifyRegion(l.bmin, l.bmax, d.r, d.inv); if (c === true) { delCls = true; break; } if (c === null) delCls = null; }
+      for (const d of sets.del) { const c = classifyRegion(box.min, box.max, d.r, d.inv); if (c === true) { delCls = true; break; } if (c === null) delCls = null; }
       if (keepCls === false || delCls === true) continue;
       n += (keepCls === true && delCls === false) ? l.count : l.count * 0.5;
     }
@@ -487,14 +549,49 @@ export class CellRenderer {
     return { min, max, hist, n };
   }
 
-  /** Overwrite record bytes leaf by leaf, for analyses that rewrite normals in place. */
-  rewriteRecords(next: (leaf: Leaf, i: number) => Uint8Array | null) {
-    let i = 0;
-    for (const l of this.leaves) {
-      if (l.preview) continue;
-      const r = next(l, i++);
-      if (r) l.rewrite(this.gl, r);
+  /** Write computed normals (3 signed bytes per point, in `records()` order) into every
+   *  leaf's records in place, and hand back the bytes that were there so the change undoes
+   *  like any other edit. */
+  writeNormals(nrm: Int8Array): NormalsUndo {
+    const leaves: NormalsLeaf[] = [];
+    let at = 0, bytes = 0;
+    this.leaves.forEach((lf, index) => {
+      if (lf.preview) return;
+      const recs = lf.readback(this.gl);
+      const prev = new Uint8Array(lf.count * 3);
+      for (let i = 0; i < lf.count; i++) {
+        const o = i * REC, q = (at + i) * 3;
+        prev[i * 3] = recs[o + 10]; prev[i * 3 + 1] = recs[o + 11]; prev[i * 3 + 2] = recs[o + 12];
+        recs[o + 10] = nrm[q] & 0xff; recs[o + 11] = nrm[q + 1] & 0xff; recs[o + 12] = nrm[q + 2] & 0xff;
+      }
+      lf.rewrite(this.gl, recs);
+      leaves.push({ leaf: lf, index, count: lf.count, recs: prev });
+      bytes += prev.byteLength;
+      at += lf.count;
+    });
+    return { leaves, bytes };
+  }
+
+  /** Put stored normal bytes back, keeping what was replaced in their place. Undo and redo
+   *  of a normals change are the same operation run twice. `fetch` supplies entry i's bytes
+   *  from RAM or the spill file. */
+  async swapNormals(rec: NormalsUndo, fetch: (i: number) => Promise<Uint8Array> | Uint8Array) {
+    for (let i = 0; i < rec.leaves.length; i++) {
+      const e = rec.leaves[i];
+      const want = await fetch(i);
+      if (e.leaf.disposed) { e.recs = want.slice(); continue; }
+      const recs = e.leaf.readback(this.gl);
+      const n = Math.min(e.leaf.count, e.count);
+      const prev = new Uint8Array(n * 3);
+      for (let j = 0; j < n; j++) {
+        const o = j * REC;
+        prev[j * 3] = recs[o + 10]; prev[j * 3 + 1] = recs[o + 11]; prev[j * 3 + 2] = recs[o + 12];
+        recs[o + 10] = want[j * 3]; recs[o + 11] = want[j * 3 + 1]; recs[o + 12] = want[j * 3 + 2];
+      }
+      e.leaf.rewrite(this.gl, recs);
+      e.recs = prev;
     }
+    rec.bytes = rec.leaves.reduce((b, l) => b + l.recs.byteLength, 0);
   }
 
   /** Drop points by an explicit per-leaf keep mask (1 keep, 0 drop), undoably.
@@ -569,23 +666,28 @@ export class CellRenderer {
     };
     this.leaves.forEach((lf, index) => {
       if (lf.preview) { lf.dispose(gl); return; }
+      const box = this.leafBox(lf);
       let keepCls: boolean | null = sets.keep.length ? false : true;
-      for (const k of sets.keep) { const c = classifyRegion(lf.bmin, lf.bmax, k.r, k.inv); if (c === true) { keepCls = true; break; } if (c === null) keepCls = null; }
+      for (const k of sets.keep) { const c = classifyRegion(box.min, box.max, k.r, k.inv); if (c === true) { keepCls = true; break; } if (c === null) keepCls = null; }
       let delCls: boolean | null = false;
-      for (const d of sets.del) { const c = classifyRegion(lf.bmin, lf.bmax, d.r, d.inv); if (c === true) { delCls = true; break; } if (c === null) delCls = null; }
+      for (const d of sets.del) { const c = classifyRegion(box.min, box.max, d.r, d.inv); if (c === true) { delCls = true; break; } if (c === null) delCls = null; }
       if (keepCls === false || delCls === true) { dropped += lf.count; if (undo) snap(lf, index, lf.readback(gl), null, lf.sf ? lf.sf.slice(0, lf.count) : null); lf.dispose(gl); return; }
       if (keepCls === true && delCls === false) { keep.push(lf); kept += lf.count; return; }
       const src = lf.readback(gl);
       const u16 = new Uint16Array(src.buffer, 0, (lf.count * REC) >> 1);
       const dst = new Uint8Array(src.length);
-      const mask = undo ? new Uint8Array((lf.count + 7) >> 3) : null;
-      const k = lf.size / 65536, ox = lf.origin.x, oy = lf.origin.y, oz = lf.origin.z;
+      // One keep/drop decision per point, taken once and then used by the record
+      // compaction, the scalar compaction and (when recording) the undo bit mask. It has to
+      // exist whether or not we are recording: deriving the scalar order from an undo-only
+      // mask silently mis-ordered every value when `record` was false.
+      const mask = new Uint8Array((lf.count + 7) >> 3);
+      const fold = this.leafFold(lf);
       let n = 0;
       for (let i = 0; i < lf.count; i++) {
         const b = i * 7;
-        p.set(ox + u16[b] * k, oy + u16[b + 1] * k, oz + u16[b + 2] * k);
+        fold.at(u16[b], u16[b + 1], u16[b + 2], p);
         if (keepPoint(l, p, sets)) { dst.set(src.subarray(i * REC, i * REC + REC), n * REC); n++; }
-        else if (mask) mask[i >> 3] |= 1 << (i & 7);
+        else mask[i >> 3] |= 1 << (i & 7);
       }
       const gone = lf.count - n;
       dropped += gone;
@@ -596,14 +698,14 @@ export class CellRenderer {
         keptSf = new Float32Array(n); goneSf = new Float32Array(gone);
         let a = 0, b = 0;
         for (let i = 0; i < lf.count; i++) {
-          if (mask && (mask[i >> 3] & (1 << (i & 7)))) goneSf[b++] = lf.sf[i];
+          if (mask[i >> 3] & (1 << (i & 7))) goneSf[b++] = lf.sf[i];
           else keptSf[a++] = lf.sf[i];
         }
       }
       if (undo && gone) {
         // dropped records in original order, compacted into their own buffer
         const out = new Uint8Array(gone * REC); let o = 0;
-        for (let i = 0; i < lf.count; i++) if (mask![i >> 3] & (1 << (i & 7))) { out.set(src.subarray(i * REC, i * REC + REC), o); o += REC; }
+        for (let i = 0; i < lf.count; i++) if (mask[i >> 3] & (1 << (i & 7))) { out.set(src.subarray(i * REC, i * REC + REC), o); o += REC; }
         snap(lf, index, out, n === 0 ? null : mask, n === 0 ? (lf.sf ? lf.sf.slice(0, lf.count) : null) : goneSf);
         if (n === 0) undo.leaves[undo.leaves.length - 1].recs = src;   // whole leaf went: keep it verbatim
       }
@@ -619,7 +721,8 @@ export class CellRenderer {
   }
   private recomputeBounds() {
     this.bounds.makeEmpty();
-    for (const lf of this.leaves) { this.bounds.expandByPoint(lf.bmin); this.bounds.expandByPoint(lf.bmax); }
+    const b = new THREE.Box3();
+    for (const lf of this.leaves) this.bounds.union(this.leafBox(lf, b));
   }
 
   /** Put every leaf of an undo record back. `fetch(i)` supplies the dropped records of entry i (RAM or disk). */
@@ -690,10 +793,10 @@ export class CellRenderer {
         else { for (let j = 0; j < e.count; j++) if (e.mask[j >> 3] & (1 << (j & 7))) mask[j >> 3] |= 1 << (j & 7); }
         if (sets) {
           const u16 = new Uint16Array(src.buffer, src.byteOffset, (nCur * REC) >> 1);
-          const k = e.leaf.size / 65536, ox = e.leaf.origin.x, oy = e.leaf.origin.y, oz = e.leaf.origin.z;
+          const fold = this.leafFold(e.leaf);
           for (let j = e.count; j < nCur; j++) {
             const b = j * 7;
-            p.set(ox + u16[b] * k, oy + u16[b + 1] * k, oz + u16[b + 2] * k);
+            fold.at(u16[b], u16[b + 1], u16[b + 2], p);
             if (!keepPoint(loc, p, sets)) mask[j >> 3] |= 1 << (j & 7);
           }
         }
@@ -726,15 +829,16 @@ export class CellRenderer {
     let n = 0;
     for (const lf of this.leaves) {
       if (lf.preview) continue;
-      const c = classifyRegion(lf.bmin, lf.bmax, r, inv);
+      const box = this.leafBox(lf);
+      const c = classifyRegion(box.min, box.max, r, inv);
       if (c === false) continue;
       if (c === true) { n += lf.count; continue; }
       const src = lf.readback(this.gl);
       const u16 = new Uint16Array(src.buffer, 0, (lf.count * REC) >> 1);
-      const k = lf.size / 65536;
+      const fold = this.leafFold(lf);
       let m = 0;
       for (let i = 0; i < lf.count; i += sampleEvery) {
-        const b = i * 7; p.set(lf.origin.x + u16[b] * k, lf.origin.y + u16[b + 1] * k, lf.origin.z + u16[b + 2] * k);
+        const b = i * 7; fold.at(u16[b], u16[b + 1], u16[b + 2], p);
         if (insideLocal(toLocal(p, r, inv, l), r)) m++;
       }
       n += m * sampleEvery;
@@ -777,10 +881,11 @@ export class CellRenderer {
     for (const l of this.leaves) { if (l.preview) continue; yield { leaf: l, recs: l.readback(this.gl) }; }
   }
   get leafCount() { return this.leaves.filter(l => !l.preview).length; }
-  /** Median of the per-cell point spacing estimates — the natural scale of this scan. */
+  /** Median of the per-cell point spacing estimates — the natural scale of this scan,
+   *  in the frame it is drawn in, so a scaled cloud reports a scaled spacing. */
   get medianSpacing(): number {
     const s = this.leaves.filter(l => !l.preview && l.count > 64).map(l => l.spacing).sort((a, b) => a - b);
-    return s.length ? s[s.length >> 1] : 0.05;
+    return (s.length ? s[s.length >> 1] : 0.05) * this.modelScale;
   }
 
   /** Cull, budget, draw. Assumes the target framebuffer and viewport are already bound. */
@@ -799,12 +904,14 @@ export class CellRenderer {
     const vis: Leaf[] = [];
     let want = 0;
     const sph = new THREE.Sphere();
+    const scale = this.modelScale;
     for (const l of this.leaves) {
-      sph.center.copy(l.center); sph.radius = l.radius;
+      // the leaf's bounding sphere seen through the model: centre transformed, radius scaled
+      sph.center.copy(l.center).applyMatrix4(this.model); sph.radius = l.radius * scale;
       if (!this.frustum.intersectsSphere(sph)) continue;
-      const d = Math.max(camPos.distanceTo(l.center) - l.radius, near);
+      const d = Math.max(camPos.distanceTo(sph.center) - sph.radius, near);
       l.dist = d;
-      const rpx = l.radius * (0.5 * p.screenH) / (slope * d);
+      const rpx = sph.radius * (0.5 * p.screenH) / (slope * d);
       const area = Math.PI * rpx * rpx;
       l.desired = Math.min(l.capacity, Math.ceil(p.density * area));
       want += l.desired;
@@ -844,6 +951,7 @@ export class CellRenderer {
     gl.disable(gl.BLEND); gl.disable(gl.CULL_FACE);
     gl.uniformMatrix4fv(this.u.uVP, false, this.vp.elements);
     gl.uniformMatrix4fv(this.u.uView, false, camera.matrixWorldInverse.elements);
+    gl.uniformMatrix4fv(this.u.uModel, false, this.model.elements);
     gl.uniform1f(this.u.uPtSize, p.ptSize); gl.uniform1f(this.u.uSizeMode, p.sizeMode);
     gl.uniform1f(this.u.uColorMode, p.colorMode);
     gl.uniform1f(this.u.uSFMin, p.sfMin ?? 0); gl.uniform1f(this.u.uSFMax, p.sfMax ?? 1);
@@ -872,7 +980,7 @@ export class CellRenderer {
       const n = Math.min(l.draw, l.count);
       if (n < 1) continue;
       // fewer points drawn => each must cover more ground
-      const eff = l.spacing * Math.sqrt(l.capacity / n);
+      const eff = l.spacing * scale * Math.sqrt(l.capacity / n);
       gl.uniform3f(this.u.uOrigin, l.origin.x, l.origin.y, l.origin.z);
       gl.uniform1f(this.u.uSize, l.size);
       gl.uniform1f(this.u.uSpacing, eff);

@@ -35,6 +35,14 @@ function occlusion(): { right: number; bottom: number } {
   if (coversBottom) return { right: 0, bottom: Math.max(0, innerHeight - r.top) };
   return { right: Math.max(0, innerWidth - r.left), bottom: 0 };
 }
+/** True when a matrix's upper-left 3x3 is the identity — a pure translation. */
+function sameLinear(m: THREE.Matrix4): boolean {
+  const e = m.elements;
+  for (const [i, want] of [[0, 1], [1, 0], [2, 0], [4, 0], [5, 1], [6, 0], [8, 0], [9, 0], [10, 1]] as [number, number][]) {
+    if (Math.abs(e[i] - want) > 1e-12) return false;
+  }
+  return true;
+}
 function halfToFloat(h: number): number {
   const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, f = h & 0x3ff;
   if (e === 0) return s * Math.pow(2, -14) * (f / 1024);
@@ -145,11 +153,22 @@ export class Viewer {
   regionHide = false;
   private regionGroups = new Map<string, THREE.Group>();
   activeRegion: string | null = null;
-  private tc: TransformControls;
+  /** Public so the Transform panel can borrow it for the cloud proxy. Only ever attached to
+   *  one object at a time, which is what stops the crop gizmo and the cloud gizmo fighting. */
+  tc: TransformControls;
   gizmoMode: GizmoMode = 'translate';
   gizmoBusy = false;
   onRegionChange: ((r: Region) => void) | null = null;
   onSuggestionDecision: ((id: string, accept: boolean) => void) | null = null;
+  /** Interactive cloud transform: a proxy object at the bounding-box centre carries the
+   *  gizmo, and its movement is turned into a delta on the model matrix. */
+  private proxy: THREE.Object3D | null = null;
+  private dragBase: THREE.Matrix4 | null = null;
+  private dragFrom = new THREE.Matrix4();
+  modelGizmo = false;
+  /** Fires on every gizmo frame, then once with done=true carrying the matrix the drag
+   *  started from, so the caller can push exactly one undo step per drag. */
+  onModelDrag: ((done: boolean, base: THREE.Matrix4) => void) | null = null;
   private slabels = new Map<string, HTMLDivElement>();
 
   // tools / clicks
@@ -211,8 +230,16 @@ export class Viewer {
     this.tc.size = isTouch ? 1.1 : 0.8;
     this.tc.enabled = false;
     this.overlay.add(this.tc.getHelper());
-    this.tc.addEventListener('dragging-changed', (e: any) => { this.gizmoBusy = !!e.value; if (!this.fly.enabled) this.controls.enabled = !e.value; this.touch(); });
-    this.tc.addEventListener('objectChange', () => this.syncActiveFromGroup());
+    this.tc.addEventListener('dragging-changed', (e: any) => {
+      this.gizmoBusy = !!e.value;
+      if (!this.fly.enabled) this.controls.enabled = !e.value;
+      if (this.modelGizmo && this.proxy) {
+        if (e.value) { this.dragBase = this.cells.model.clone(); this.proxy.updateMatrixWorld(true); this.dragFrom.copy(this.proxy.matrixWorld); }
+        else { const base = this.dragBase; this.dragBase = null; this.retightenBounds(); this.recentreProxy(); if (base) this.onModelDrag?.(true, base); }
+      }
+      this.touch();
+    });
+    this.tc.addEventListener('objectChange', () => { if (this.modelGizmo) this.dragModel(); else this.syncActiveFromGroup(); });
 
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     this.cells = new CellRenderer(gl);
@@ -268,7 +295,12 @@ export class Viewer {
   dropPreview() { this.cells.dropPreview(); this.dirty = true; }
   clear() { this.cells.clear(); this.robust = null; this.setRegions([]); this.clearMeasures(); this.setStations([]); this.exitBubble(); this.dirty = true; }
   get loaded() { return this.cells.total; }
-  setRobustBounds(lo: [number, number, number], hi: [number, number, number]) { this.robust = new THREE.Box3(new THREE.Vector3(...lo), new THREE.Vector3(...hi)); this.applyZRange(); this.dirty = true; }
+  /** Percentile bounds from the loader, in the cloud's own frame; stored transformed, since
+   *  everything that reads `bounds()` works in world space. */
+  setRobustBounds(lo: [number, number, number], hi: [number, number, number]) {
+    this.robust = new THREE.Box3(new THREE.Vector3(...lo), new THREE.Vector3(...hi)).applyMatrix4(this.cells.model);
+    this.applyZRange(); this.dirty = true;
+  }
   bounds() { return this.robust && !this.robust.isEmpty() ? this.robust : this.cells.bounds; }
   applyZRange() { const b = this.bounds(); if (!b.isEmpty()) this.zRange = [b.min.z, b.max.z]; }
   setKnobs(k: Knobs) {
@@ -276,6 +308,74 @@ export class Viewer {
     this.edlMat.uniforms.uEnabled.value = k.edl && this.rtType !== THREE.UnsignedByteType ? 1 : 0;
     this.edlMat.uniforms.uStrength.value = k.edlStrength; this.edlMat.uniforms.uRadius.value = k.edlRadius;
     this.dirty = true;
+  }
+
+  // ------------------------------------------------------------ cloud transform
+  /** Replace the cloud's model matrix. Nothing is baked: the points stay quantised in their
+   *  leaf cubes and every consumer reads them through this matrix. The robust framing box
+   *  and the station markers ride along on the delta so the derived state stays consistent. */
+  setModel(m: THREE.Matrix4, tight = true) {
+    const delta = m.clone().multiply(this.cells.model.clone().invert());
+    this.cells.setModel(m);
+    // Re-boxing a rotated box inflates it, and the framing box drives fitting, the elevation
+    // ramp and the clipping sliders — so when the linear part changes it is measured again
+    // from a sample rather than carried through the delta. A pure translation carries over
+    // exactly, so it is left alone. During a drag the readback would stall every frame, so
+    // the cheap carry-over stands in until the handle is released.
+    const linear = !sameLinear(delta);
+    const s = tight && linear ? this.sampledBox() : null;
+    if (s) this.robust = s;
+    else if (this.robust && !this.robust.isEmpty()) this.robust.applyMatrix4(delta);
+    this.syncMeshModel();
+    this.refreshStations();
+    this.applyZRange();
+    if (this.proxy && !this.gizmoBusy) this.recentreProxy();
+    this.dirty = true;
+  }
+  /** World box of a uniform sample of the points. The leaves are shuffled, so a prefix of
+   *  each is a uniform subsample — the same trick the level-of-detail draw uses. */
+  private sampledBox(): THREE.Box3 | null {
+    const b = new THREE.Box3(), v = new THREE.Vector3();
+    let n = 0;
+    for (const { leaf, recs, n: cnt } of this.cells.sample(800)) {
+      const xyz = this.cells.transformRecordsInto(recs, cnt, leaf, new Float64Array(cnt * 3));
+      for (let i = 0; i < cnt; i++) b.expandByPoint(v.set(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]));
+      n += cnt;
+    }
+    return n ? b : null;
+  }
+  /** Measure the framing box again — after a gizmo drag, where it was only inflated. */
+  retightenBounds() { const s = this.sampledBox(); if (s) { this.robust = s; this.applyZRange(); this.dirty = true; } }
+  get model() { return this.cells.model; }
+  /** Attach (or drop) the drag gizmo for the whole cloud. */
+  setModelGizmo(on: boolean) {
+    if (!on) {
+      if (this.proxy) { if (this.tc.object === this.proxy) this.tc.detach(); this.overlay.remove(this.proxy); this.proxy = null; }
+      this.modelGizmo = false; this.tc.enabled = false; this.dirty = true; return;
+    }
+    this.setActiveRegion(null);            // one gizmo at a time
+    if (!this.proxy) { this.proxy = new THREE.Object3D(); this.overlay.add(this.proxy); }
+    this.modelGizmo = true;
+    this.recentreProxy();
+    this.tc.attach(this.proxy); this.tc.enabled = true;
+    this.tc.setMode(this.gizmoMode === 'scale' ? 'scale' : this.gizmoMode);
+    this.dirty = true;
+  }
+  private recentreProxy() {
+    if (!this.proxy) return;
+    const b = this.bounds();
+    this.proxy.position.copy(b.isEmpty() ? new THREE.Vector3() : b.getCenter(new THREE.Vector3()));
+    this.proxy.quaternion.identity(); this.proxy.scale.set(1, 1, 1);
+    this.proxy.updateMatrixWorld(true);
+  }
+  /** One gizmo frame: the proxy's movement since the drag began, applied to the model. */
+  private dragModel() {
+    if (!this.proxy || !this.dragBase) return;
+    this.proxy.updateMatrixWorld(true);
+    const delta = this.proxy.matrixWorld.clone().multiply(this.dragFrom.clone().invert());
+    const base = this.dragBase;
+    this.setModel(delta.multiply(base), false);
+    this.onModelDrag?.(false, base);
   }
 
   // ------------------------------------------------------------ regions
@@ -338,11 +438,13 @@ export class Viewer {
   setActiveRegion(id: string | null) {
     this.activeRegion = id;
     const g = id ? this.regionGroups.get(id) : undefined;
+    if (g && this.modelGizmo) this.setModelGizmo(false);      // one gizmo at a time
     if (g) { this.tc.attach(g); this.tc.enabled = true; this.tc.setMode(this.gizmoMode); }
     else { if (this.tc.object) this.tc.detach(); this.tc.enabled = false; }
     this.dirty = true;
   }
   setGizmoMode(m: GizmoMode) { this.gizmoMode = m; this.tc.setMode(m); this.dirty = true; }
+  get gizmoTarget(): 'none' | 'region' | 'cloud' { return this.modelGizmo ? 'cloud' : this.activeRegion ? 'region' : 'none'; }
 
   private syncActiveFromGroup() {
     const r = this.regions.find(x => x.id === this.activeRegion); const g = r && this.regionGroups.get(r.id);
@@ -358,12 +460,21 @@ export class Viewer {
     this.onRegionChange?.(r);
   }
 
-  /** Replace the reconstructed surface. Passing null drops it. */
-  setMesh(m: MeshData | null) {
+  /** Replace the reconstructed surface. Passing null drops it.
+   *
+   *  The mesher is fed the cloud's transform, so the vertices come back in the world the
+   *  cloud was in when they were built. Remember that matrix: the surface is then drawn
+   *  through `current × build⁻¹`, which is the identity right after a build and follows the
+   *  points exactly when the cloud is moved afterwards. Without it a transform applied at
+   *  build time would be applied twice. */
+  setMesh(m: MeshData | null, builtWith?: THREE.Matrix4) {
     if (!m) { this.mesh.clear(); if (this.display !== 'points') this.setDisplay('points'); }
-    else this.mesh.upload(m);
+    else { this.mesh.upload(m); this.meshBase.copy(builtWith ?? this.cells.model); }
+    this.syncMeshModel();
     this.dirty = true;
   }
+  private meshBase = new THREE.Matrix4();
+  private syncMeshModel() { this.mesh.model.copy(this.cells.model).multiply(this.meshBase.clone().invert()); }
   setDisplay(d: Display) {
     this.display = this.mesh.hasMesh || d === 'points' ? d : 'points';
     this.mesh.visible = this.display !== 'points';
@@ -488,10 +599,24 @@ export class Viewer {
     if (t !== 'measure') { this.pending = null; if (this.pendingMark) { this.overlay.remove(this.pendingMark); this.pendingMark = null; } } this.dirty = true; }
 
   // ------------------------------------------------------------ stations / bubbles
+  private stationLocal: THREE.Vector3[] = [];
   setStations(list: Station[], translation: [number, number, number] = [0, 0, 0]) {
     for (const s of this.stationSprites) this.stationGroup.remove(s);
-    this.stationSprites = []; this.stations = list;
-    for (const st of list) { const s = this.sprite(this.stationTex, 0.028); s.position.set(st.t[0] - translation[0], st.t[1] - translation[1], st.t[2] - translation[2]); this.stationGroup.add(s); this.stationSprites.push(s); }
+    this.stationSprites = []; this.stations = list; this.stationLocal = [];
+    for (const st of list) {
+      const s = this.sprite(this.stationTex, 0.028);
+      this.stationLocal.push(new THREE.Vector3(st.t[0] - translation[0], st.t[1] - translation[1], st.t[2] - translation[2]));
+      this.stationGroup.add(s); this.stationSprites.push(s);
+    }
+    this.refreshStations();
+  }
+  /** Put the markers where the transformed cloud puts them. A station is part of the scan,
+   *  so it moves with it — and the analyser needs them in the same frame as the points. */
+  private refreshStations() {
+    for (let i = 0; i < this.stationSprites.length; i++) {
+      this.stationSprites[i].position.copy(this.stationLocal[i]).applyMatrix4(this.cells.model);
+    }
+    if (this.bubble) this.bubble.pos.copy(this.stationSprites[this.bubble.index]?.position ?? this.bubble.pos);
     this.dirty = true;
   }
   stationPositions() { return this.stationSprites.map(s => s.position.toArray()); }
@@ -584,7 +709,9 @@ export class Viewer {
    *  projected box misses the polygon.
    */
   polygonMask(poly: [number, number][], inside: boolean, w: number, h: number): Uint8Array[] {
-    const vp = new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    // view-projection times the cloud's model: the lasso tests the points where they are
+    // drawn, and the per-leaf folding below still costs three multiply-adds per point
+    const vp = new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse).multiply(this.cells.model);
     const e = vp.elements;
     let px0 = Infinity, py0 = Infinity, px1 = -Infinity, py1 = -Infinity;
     for (const [x, y] of poly) { px0 = Math.min(px0, x); py0 = Math.min(py0, y); px1 = Math.max(px1, x); py1 = Math.max(py1, y); }
