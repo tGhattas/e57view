@@ -44,6 +44,7 @@ const AGENT_HELP = {
     { cmd: 'surface', args: { op: 'build', voxelCm: 6 } },
     { cmd: 'surface', args: { op: 'export', format: 'ply', part: 0 } },
     { cmd: 'regions', args: { op: 'mode', role: 'delete' } },
+    { cmd: 'regions', args: { op: 'lasso', pixels: [[420, 300], [600, 300], [600, 470], [420, 470]], width: 1024, height: 683 } },
     { cmd: 'transform', args: { op: 'level' } },
     { cmd: 'history', args: { op: 'undo' } },
     { cmd: 'revoke' },

@@ -1,7 +1,7 @@
 import './style.css';
 import * as THREE from 'three';
 import { Viewer, isTouch, isIOS, type Knobs, type Station, type GizmoMode } from './viewer';
-import { REC, pointInRegion, type Region } from './cells';
+import { REC, pointInRegion, simplifyRing, PRISM_MAX_V, type Region } from './cells';
 import { AgentLink } from './agent';
 import { History, cloneRegions } from './history';
 import type { MeshData } from './meshview';
@@ -135,6 +135,7 @@ function resetForLoad(name: string) {
   viewer.clear();
   histogram = new Uint32Array(256); axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)]; axisCube = null;
   sections.length = 0; deletes.length = 0; cropUI.on = false; cropState.role = 'keep'; syncCropRoleUI();
+  prismFull.clear(); countCache.clear();
   meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
   viewer.setModel(new THREE.Matrix4()); viewer.setModelGizmo(false);
   sfName = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
@@ -394,7 +395,7 @@ addEventListener('keydown', (e: KeyboardEvent) => {
   else if (e.key === 'f' || e.key === 'F') setMode(!viewer.fly.enabled);
   else if (e.key === 'm' || e.key === 'M') setTool(viewer.tool === 'measure' ? 'none' : 'measure');
   else if (e.key === 's' || e.key === 'S') setTool(viewer.tool === 'segment' ? 'none' : 'segment');
-  else if (e.key === 'Enter' && viewer.tool === 'segment') { segHover = null; drawSegment(); }
+  else if (e.key === 'Enter' && viewer.tool === 'segment') { segHover = null; drawSegment(); if (segPts.length >= 3) createPrismRegion(); }
   else if (e.key === 'Escape') cancelStarted();
   else if (e.key === 'Home') viewer.fit();
 });
@@ -418,13 +419,19 @@ function cropFromSliders() {
 /** Regions that decide what survives: keep regions and delete regions, the crop among them
  *  whichever role it currently has. */
 function cutRegions(): Region[] { return allRegions().filter(r => r.role === 'keep' || r.role === 'delete'); }
-const removingInside = () => cropUI.on && cropState.role === 'delete';
-/** The Keep inside / Remove inside pair, and the Apply button that follows it. */
+/** True when the apply set has nothing to keep, so Apply removes rather than crops. That is
+ *  the honest rule whatever put the regions there — the crop box in Remove mode, a drawn
+ *  region toggled to Remove, or a delete region an agent added. */
+function removingInside(): boolean {
+  const cuts = cutRegions();
+  return cuts.length > 0 && !cuts.some(r => r.role === 'keep');
+}
+/** The Keep inside / Remove inside pair. The Apply button's own label follows the whole set
+ *  and is written by cropReadouts. */
 function syncCropRoleUI() {
   const del = cropState.role === 'delete';
   $('k-cropkeep').classList.toggle('on', !del);
   $('k-cropdel').classList.toggle('on', del);
-  $('k-cropapply').textContent = del ? 'Remove inside…' : 'Apply crop…';
 }
 function setCropRole(role: 'keep' | 'delete') {
   cropState.role = role;
@@ -439,6 +446,7 @@ function cropReadouts() {
   const cuts = cutRegions();
   // estimateKept answers the same question either way: how many survive this set of regions
   const est = cuts.length && viewer.loaded ? viewer.cells.estimateKept(cuts) : 0;
+  $('k-cropapply').textContent = removingInside() ? 'Remove inside…' : 'Apply crop…';
   $('v-crop').textContent = cropped ? `cropped · ${fmt(viewer.loaded)} points in memory`
     : !cuts.length ? '—'
     : removingInside() ? `~${fmt(Math.max(0, viewer.loaded - est))} removed · ${fmt(est)} kept`
@@ -449,7 +457,7 @@ function updateCropUI(recenter = false) {
   if (recenter) { const b = viewer.bounds(); if (!b.isEmpty()) cropState.center = b.getCenter(new THREE.Vector3()).toArray() as any; }
   cropFromSliders(); syncRegions(); cropReadouts();
   if (cropUI.on) viewer.setActiveRegion('crop'); else if (viewer.activeRegion === 'crop') viewer.setActiveRegion(null);
-  updateTransformUI();
+  updateTransformUI(); syncPrismUI();
   viewer.touch();
 }
 viewer.onRegionChange = (r) => {
@@ -497,7 +505,7 @@ async function applyCrop() {
   const kept = viewer.cells.estimateKept(cuts);
   const gone = Math.max(0, viewer.loaded - kept);
   const removing = removingInside();
-  const shape = cropUI.on ? `the ${cropState.kind}` : `${cuts.length} region${cuts.length > 1 ? 's' : ''}`;
+  const shape = cuts.length === 1 ? `the ${cuts[0].kind === 'prism' ? 'drawn region' : cuts[0].kind}` : `${cuts.length} regions`;
   const tail = `<p>The file on disk is not touched. <b>Undo</b> puts the points back. <b>Save as…</b> writes a copy. <b>Escape</b> cancels.</p>`;
   const ans = removing
     ? await modal('Remove the points inside?',
@@ -742,15 +750,61 @@ function addSection(center?: number[]) {
   sections.push(r); syncRegions(); viewer.setActiveRegion(r.id); renderSectionList(); cropReadouts(); return r;
 }
 $('k-secadd').addEventListener('click', () => addSection());
+/** The depth a prism was created with — the one that spans the whole cloud — so the slider
+ *  can work in fractions of it. */
+const prismFull = new Map<string, number>();
+function activePrism(): Region | null {
+  const r = allRegions().find(x => x.id === viewer.activeRegion);
+  return r && r.kind === 'prism' ? r : null;
+}
+function syncPrismUI() {
+  const r = activePrism();
+  document.body.classList.toggle('has-prism', !!r);
+  if (!r) return;
+  const full = Math.max(prismFull.get(r.id) ?? r.half[2], 1e-6);
+  $<HTMLInputElement>('k-prismdepth').value = String(Math.min(1, Math.max(0.004, r.half[2] / full)));
+  $('v-prismdepth').textContent = `${(r.half[2] * 2).toFixed(2)} m`;
+}
+$('k-prismdepth').addEventListener('input', e => {
+  const r = activePrism(); if (!r) return;
+  const full = Math.max(prismFull.get(r.id) ?? r.half[2], 1e-6);
+  r.half = [r.half[0], r.half[1], Math.max(0.005, Number((e.target as HTMLInputElement).value) * full)];
+  syncRegions(); syncPrismUI(); cropReadouts(); renderSectionList(); viewer.touch();
+});
+
+/** Points inside a region, for the list. Exact enough to be useful and never computed while
+ *  a gizmo is moving, because that would read cells back from the GPU every frame. */
+const countCache = new Map<string, number>();
+function regionCount(r: Region): number {
+  if (!viewer.loaded) return 0;
+  if (viewer.gizmoBusy) return countCache.get(r.id) ?? viewer.cells.estimateInside(r);
+  const n = viewer.cells.countInside(r, 16);
+  countCache.set(r.id, n);
+  return n;
+}
 function renderSectionList() {
   const ul = $('sec-list'); ul.innerHTML = '';
   for (const s of sections) {
     const li = document.createElement('li'); li.classList.toggle('sel', viewer.activeRegion === s.id);
-    li.innerHTML = `<span class="ok">${s.label}</span> <span class="mono">${(s.half[2] * 2).toFixed(2)} m thick · z ${s.center[2].toFixed(1)}</span><span class="x" title="Remove">✕</span>`;
+    const what = s.kind === 'prism' ? `drawn · ${s.poly?.length ?? 0} sides · ${(s.half[2] * 2).toFixed(2)} m deep`
+      : s.kind === 'slab' ? `${(s.half[2] * 2).toFixed(2)} m thick · z ${s.center[2].toFixed(1)}`
+      : s.kind === 'sphere' ? `r ${s.radius.toFixed(2)} m` : `box ${(s.half[0] * 2).toFixed(2)} m`;
+    li.innerHTML = `<span class="ok">${s.label ?? s.kind}</span> <span class="mono">${what} · ~${fmt(regionCount(s))} pts</span>`
+      + `<span class="x" title="Remove this region">✕</span>`
+      + `<span class="rr${s.role === 'delete' ? ' del' : ''}" title="Keep what is inside, or remove it">${s.role === 'delete' ? 'Remove' : 'Keep'}</span>`;
     li.querySelector('.ok')!.addEventListener('click', () => { viewer.setActiveRegion(s.id); renderSectionList(); });
-    li.querySelector('.x')!.addEventListener('click', () => { sections.splice(sections.indexOf(s), 1); syncRegions(); renderSectionList(); cropReadouts(); });
+    li.querySelector('.rr')!.addEventListener('click', () => {
+      s.role = s.role === 'delete' ? 'keep' : 'delete';
+      syncRegions(); renderSectionList(); cropReadouts(); viewer.touch();
+    });
+    li.querySelector('.x')!.addEventListener('click', () => {
+      sections.splice(sections.indexOf(s), 1); prismFull.delete(s.id); countCache.delete(s.id);
+      if (viewer.activeRegion === s.id) viewer.setActiveRegion(null);
+      syncRegions(); renderSectionList(); cropReadouts();
+    });
     ul.appendChild(li);
   }
+  syncPrismUI();
 }
 
 // ------------------------------------------------------------------ cloud transform
@@ -998,11 +1052,34 @@ function drawSegment() {
   line.setAttribute('points', pts.map(p => p.join(',')).join(' ') + (segPts.length > 1 ? ' ' + segPts[0].join(',') : ''));
   fill.setAttribute('points', segPts.length > 2 ? segPts.map(p => p.join(',')).join(' ') : '');
   const ready = segPts.length >= 3;
-  ($('seg-in') as HTMLButtonElement).disabled = !ready;
-  ($('seg-out') as HTMLButtonElement).disabled = !ready;
+  for (const id of ['seg-region', 'seg-in', 'seg-out']) ($(id) as HTMLButtonElement).disabled = !ready;
   $('seg-hint').textContent = segPts.length === 0
     ? 'Click to trace a shape · Esc to cancel'
-    : ready ? `${segPts.length} points · keep what is inside or outside` : `${segPts.length} of 3 points`;
+    : ready ? `${segPts.length} points · Enter makes it a region you can orbit around` : `${segPts.length} of 3 points`;
+}
+/** The shader keeps every active outline in one fixed uniform array, so this is its size. */
+const MAX_PRISMS = 4;
+/** Turn the traced outline into a prism region: a bounding shape like the box, visible from
+ *  any angle, movable, and applied later with everything else. Drawing cuts nothing. */
+async function createPrismRegion() {
+  if (segPts.length < 3) return null;
+  if (allRegions().filter(r => r.kind === 'prism').length >= MAX_PRISMS) {
+    await modal('Four drawn regions at a time',
+      `<p>Every active outline lives in one fixed array in the vertex shader, so four regions of up to ${PRISM_MAX_V} sides each are what fits. Remove one from the Sections list, or apply what you have.</p>`,
+      [{ label: 'OK', value: 'ok', cls: 'primary' }]);
+    return null;
+  }
+  const rect = $('gl').getBoundingClientRect();
+  const poly = segPts.slice();
+  let r: Region;
+  try { r = viewer.prismFromScreen(poly, rect.width, rect.height, uid('pri-')); }
+  catch (e: any) { $('v-crop').textContent = 'could not build a region: ' + (e?.message ?? e); return null; }
+  r.label = `Region ${sections.length + 1}`;
+  prismFull.set(r.id, r.half[2]);
+  sections.push(r);
+  setTool('none');
+  syncRegions(); viewer.setActiveRegion(r.id); renderSectionList(); cropReadouts(); viewer.touch();
+  return r;
 }
 {
   const gl = $('gl');
@@ -1025,6 +1102,8 @@ function drawSegment() {
     segHover = null; drawSegment();
   }, true);
 }
+/** The one-shot path: cut immediately from this view without making a region. Kept because it
+ *  is the quickest way to take out something obvious, and because an agent uses it. */
 async function applySegment(inside: boolean) {
   if (segPts.length < 3) return;
   const r = $('gl').getBoundingClientRect();
@@ -1035,8 +1114,9 @@ async function applySegment(inside: boolean) {
   finally { hideBusy(); }
   endSegment();
   setTool('none');
-  await commitMask(inside ? 'Keep inside the shape' : 'Keep outside the shape', masks, '', false);
+  await commitMask(inside ? 'Keep inside the shape' : 'Remove inside the shape', masks, '', false);
 }
+$('seg-region').addEventListener('click', () => createPrismRegion());
 $('seg-in').addEventListener('click', () => applySegment(true));
 $('seg-out').addEventListener('click', () => applySegment(false));
 $('seg-cancel').addEventListener('click', () => setTool('none'));
@@ -1861,44 +1941,6 @@ function heightmapCmd(a: any) {
   };
 }
 
-/** Ramer-Douglas-Peucker: drop the vertices that do not change the shape by more than `tol`.
- *
- *  A closed ring has to be cut first. The algorithm keeps the two endpoints and measures every
- *  other vertex against the line between them — and on a ring those endpoints are the same
- *  point, so that line has no length and the whole outline collapses to a single vertex. Split
- *  it at the vertex furthest from the start and simplify the two halves. */
-function simplify(line: number[][], tol: number): number[][] {
-  if (line.length < 3) return line;
-  const closed = Math.hypot(line[0][0] - line[line.length - 1][0], line[0][1] - line[line.length - 1][1]) < tol * 1e-3 + 1e-9;
-  if (closed && line.length > 4) {
-    let far = 1, best = -1;
-    for (let i = 1; i < line.length - 1; i++) {
-      const d = Math.hypot(line[i][0] - line[0][0], line[i][1] - line[0][1]);
-      if (d > best) { best = d; far = i; }
-    }
-    const a = rdp(line.slice(0, far + 1), tol), b = rdp(line.slice(far), tol);
-    return a.concat(b.slice(1));
-  }
-  return rdp(line, tol);
-}
-function rdp(line: number[][], tol: number): number[][] {
-  if (line.length < 3) return line;
-  const keep = new Uint8Array(line.length); keep[0] = 1; keep[line.length - 1] = 1;
-  const stack: [number, number][] = [[0, line.length - 1]];
-  while (stack.length) {
-    const [s, e] = stack.pop()!;
-    const [x1, y1] = line[s], [x2, y2] = line[e];
-    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1e-9;
-    let worst = -1, at = -1;
-    for (let i = s + 1; i < e; i++) {
-      const d = Math.abs((line[i][0] - x1) * dy - (line[i][1] - y1) * dx) / len;
-      if (d > worst) { worst = d; at = i; }
-    }
-    if (worst > tol && at > 0) { keep[at] = 1; stack.push([s, at], [at, e]); }
-  }
-  return line.filter((_, i) => keep[i]);
-}
-
 /** Marching squares over the occupancy of a horizontal slab: the footprint primitive. */
 function contourCmd(a: any) {
   if (!viewer.loaded) throw new Error('nothing loaded');
@@ -2002,10 +2044,10 @@ function contourCmd(a: any) {
   }
   // grid units to metres, then simplify until the reply is a sensible size
   lines = lines.map(l => l.map(([gx, gy]) => [x0 + gx * mpp, y0 + gy * mpp]));
-  let tol = mpp * 0.75, simplified = lines.map(l => simplify(l, tol));
+  let tol = mpp * 0.75, simplified = lines.map(l => simplifyRing(l, tol));
   const budget = Math.max(500, Math.min(40_000, Math.round(Number(a.maxVertices) || 12_000)));
   const count = (ls: number[][][]) => ls.reduce((n, l) => n + l.length, 0);
-  while (count(simplified) > budget && tol < mpp * 64) { tol *= 2; simplified = lines.map(l => simplify(l, tol)); }
+  while (count(simplified) > budget && tol < mpp * 64) { tol *= 2; simplified = lines.map(l => simplifyRing(l, tol)); }
   const bx = new THREE.Box3();
   const v2 = new THREE.Vector3();
   for (const l of simplified) for (const [x, y] of l) bx.expandByPoint(v2.set(x, y, z));
@@ -2179,9 +2221,30 @@ const agent = new AgentLink({
       return { crop: cropState, mode: cropState.role === 'delete' ? 'remove inside' : 'keep inside' };
     }
     if (a.op === 'clear') { sections.length = 0; deletes.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; syncRegions(); renderSectionList(); return []; }
+    if (a.op === 'lasso') {
+      // the same construction the UI uses: an outline from the current camera, extruded
+      const px = a.pixels;
+      if (!Array.isArray(px) || px.length < 3) throw new Error('pixels: [[x,y], …], at least three');
+      const rect = $('gl').getBoundingClientRect();
+      const r = viewer.prismFromScreen(px.map((q: any) => [Number(q[0]), Number(q[1])] as [number, number]),
+        Number(a.width) || rect.width, Number(a.height) || rect.height, a.id ?? uid('pri-'), Number(a.depth) || undefined);
+      r.role = a.role === 'delete' ? 'delete' : 'keep';
+      r.label = a.label ?? `Region ${sections.length + 1}`;
+      prismFull.set(r.id, r.half[2]);
+      sections.push(r);
+      syncRegions(); viewer.setActiveRegion(r.id); renderSectionList(); cropReadouts(); viewer.render();
+      return { region: r, pointsInside: viewer.cells.insideExact(r).count };
+    }
     if (a.op === 'add' || a.op === 'update') {
       const r: Region = { id: a.region.id ?? uid(a.region.role === 'keep' ? 'sec-' : 'ai-'), kind: a.region.kind, role: a.region.role ?? 'keep', center: a.region.center, half: a.region.half ?? [1, 1, 1], radius: a.region.radius ?? (a.region.half?.[0] ?? 1), quat: a.region.quat ?? [0, 0, 0, 1], label: a.region.label };
       if (r.kind === 'slab') { const md = maxDim(); r.half = [md * 3, md * 3, r.half[2]]; }
+      if (r.kind === 'prism') {
+        const poly = (a.region.poly ?? []).map((q: any) => [Number(q[0]), Number(q[1])] as [number, number]);
+        if (poly.length < 3) throw new Error('a prism needs poly: [[x,y], …] in its own local XY plane, metres');
+        r.poly = poly.slice(0, PRISM_MAX_V);
+        r.half = [r.half[0], r.half[1], r.half[2]];
+        prismFull.set(r.id, r.half[2]);
+      }
       const pool = r.role === 'keep' ? sections : deletes; const i = pool.findIndex(x => x.id === r.id);
       if (i >= 0) pool[i] = r; else pool.push(r);
       syncRegions(); renderSectionList(); viewer.setActiveRegion(r.id); viewer.render(); return r;
@@ -2516,4 +2579,5 @@ refreshCachedList();
   commitTransform, transformState, levelCloud, rowMajor, fromRowMajor, runExport, updateTransformUI,
   dirtyList, isDirty, openAnother, confirmReplace,
   stateRecord, recommendedSource, surfaceRecord, heightmapCmd, contourCmd, fitPlaneCmd, dispatchAgent,
+  createPrismRegion, get sections() { return sections; }, renderSectionList, regionCount, syncRegions,
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; } };

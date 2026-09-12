@@ -32,14 +32,19 @@ uniform float uScreenH, uSlope, uMinPx, uMaxPx, uClipZMin, uClipZMax;
 // everywhere, which is the whole point of a measurable plan or elevation.
 uniform float uOrthoMpp;
 uniform float uSFMin, uSFMax, uSFLo, uSFHi, uSFHide;
-// Regions: up to 16, each a box (1), sphere (2) or slab (3) with its own frame.
+// Regions: up to 16, each a box (1), sphere (2), slab (3) or prism (4) with its own frame.
 // role 0 = keep (a point must be inside at least one keep region),
 // role 1 = delete-pending (inside is tinted), role 2 = delete (inside is dimmed / hidden)
 #define NREG 16
+// A prism is a drawn outline extruded along its local Z. The outlines of every active prism
+// share one vertex pool; each region says where its own run starts and how long it is.
+#define NPV 96
 uniform float uRegN, uRegHide;
 uniform float uRegMode[NREG]; uniform float uRegRole[NREG];
 uniform vec3 uRegC[NREG]; uniform vec3 uRegS[NREG];
 uniform mat3 uRegRot[NREG];              // world -> region local
+uniform vec2 uPrismV[NPV];
+uniform float uPrismStart[NREG], uPrismCount[NREG];
 out vec3 vCol; out float vLogDepth; out vec3 vNrm; flat out float vDrop; flat out float vOut; flat out float vTint;
 
 vec3 ramp(float t){
@@ -66,7 +71,21 @@ void main(){
     float m = uRegMode[i];
     vec3 l = uRegRot[i] * (p - uRegC[i]);
     bool inside;
-    if (m > 2.5)      inside = abs(l.z) <= uRegS[i].z;                       // slab: infinite in x,y
+    if (m > 3.5) {                                                           // prism
+      inside = abs(l.z) <= uRegS[i].z;
+      if (inside) {
+        int st = int(uPrismStart[i]), c = int(uPrismCount[i]);
+        bool odd = false;
+        for (int k = 0; k < NPV; k++) {
+          if (k >= c) break;
+          vec2 a = uPrismV[st + k];
+          vec2 b = uPrismV[st + (k + 1 == c ? 0 : k + 1)];
+          if ((a.y > l.y) != (b.y > l.y) && l.x < a.x + (l.y - a.y) / (b.y - a.y) * (b.x - a.x)) odd = !odd;
+        }
+        inside = odd;
+      }
+    }
+    else if (m > 2.5) inside = abs(l.z) <= uRegS[i].z;                       // slab: infinite in x,y
     else if (m > 1.5) inside = dot(l, l) <= uRegS[i].x * uRegS[i].x;         // sphere
     else              inside = all(lessThanEqual(abs(l), uRegS[i]));         // box
     float r = uRegRole[i];
@@ -278,15 +297,22 @@ export interface DrawParams {
   orthoMpp?: number;
 }
 
-export type RegionKind = 'box' | 'sphere' | 'slab';
+export type RegionKind = 'box' | 'sphere' | 'slab' | 'prism';
 export type RegionRole = 'keep' | 'pending' | 'delete';
+/** Maximum outline vertices in one prism, and in all active prisms together. The shader holds
+ *  them in one fixed uniform array, so these are its dimensions, not a style preference. */
+export const PRISM_MAX_V = 24;
+export const PRISM_POOL = 96;
 export interface Region {
   id: string; kind: RegionKind; role: RegionRole;
   center: [number, number, number];
-  half: [number, number, number];        // box half extents; slab: half[2] = half thickness
+  half: [number, number, number];        // box half extents; slab and prism: half[2] = half depth
   radius: number;                        // sphere
   quat: [number, number, number, number]; // x y z w, region local -> world
   label?: string;
+  /** prism: the drawn outline in the region's local XY plane, in metres, centred on its own
+   *  centroid. Extruded along local Z to +/- half[2]. */
+  poly?: [number, number][];
 }
 /** @deprecated use Region */
 export type CropRegion = Region;
@@ -299,10 +325,62 @@ function invRot(q: [number, number, number, number]): Float32Array {
 function toLocal(p: THREE.Vector3, r: Region, inv: THREE.Matrix3, out: THREE.Vector3) {
   return out.set(p.x - r.center[0], p.y - r.center[1], p.z - r.center[2]).applyMatrix3(inv);
 }
+/** Even-odd crossing test, the same one the vertex shader runs. */
+export function pointInPoly(x: number, y: number, poly: [number, number][]): boolean {
+  let odd = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) odd = !odd;
+  }
+  return odd;
+}
 function insideLocal(l: THREE.Vector3, r: Region): boolean {
+  if (r.kind === 'prism') return Math.abs(l.z) <= r.half[2] && !!r.poly && pointInPoly(l.x, l.y, r.poly);
   if (r.kind === 'slab') return Math.abs(l.z) <= r.half[2];
   if (r.kind === 'sphere') return l.lengthSq() <= r.radius * r.radius;
   return Math.abs(l.x) <= r.half[0] && Math.abs(l.y) <= r.half[1] && Math.abs(l.z) <= r.half[2];
+}
+/** Bounding half extents of a prism's outline, for the gizmo and the cheap rejections. */
+export function polyHalf(poly: [number, number][]): [number, number] {
+  let x = 0, y = 0;
+  for (const [px, py] of poly) { x = Math.max(x, Math.abs(px)); y = Math.max(y, Math.abs(py)); }
+  return [Math.max(x, 1e-4), Math.max(y, 1e-4)];
+}
+/** Ramer-Douglas-Peucker that survives a closed ring.
+ *
+ *  The plain algorithm keeps the two endpoints and measures every other vertex against the
+ *  line between them; on a ring those endpoints are the same point, that line has no length,
+ *  and the whole outline collapses to one vertex. Cut it at the vertex furthest from the
+ *  start and simplify the halves. */
+export function simplifyRing(line: number[][], tol: number): number[][] {
+  if (line.length < 3) return line;
+  const closed = Math.hypot(line[0][0] - line[line.length - 1][0], line[0][1] - line[line.length - 1][1]) < tol * 1e-3 + 1e-9;
+  if (closed && line.length > 4) {
+    let far = 1, best = -1;
+    for (let i = 1; i < line.length - 1; i++) {
+      const d = Math.hypot(line[i][0] - line[0][0], line[i][1] - line[0][1]);
+      if (d > best) { best = d; far = i; }
+    }
+    return rdp(line.slice(0, far + 1), tol).concat(rdp(line.slice(far), tol).slice(1));
+  }
+  return rdp(line, tol);
+}
+function rdp(line: number[][], tol: number): number[][] {
+  if (line.length < 3) return line;
+  const keep = new Uint8Array(line.length); keep[0] = 1; keep[line.length - 1] = 1;
+  const stack: [number, number][] = [[0, line.length - 1]];
+  while (stack.length) {
+    const [s, e] = stack.pop()!;
+    const [x1, y1] = line[s], [x2, y2] = line[e];
+    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1e-9;
+    let worst = -1, at = -1;
+    for (let i = s + 1; i < e; i++) {
+      const d = Math.abs((line[i][0] - x1) * dy - (line[i][1] - y1) * dx) / len;
+      if (d > worst) { worst = d; at = i; }
+    }
+    if (worst > tol && at > 0) { keep[at] = 1; stack.push([s, at], [at, e]); }
+  }
+  return line.filter((_, i) => keep[i]);
 }
 const _pin = new THREE.Vector3(), _plin = new THREE.Vector3(), _cor = new THREE.Vector3();
 const _ident = new THREE.Matrix4();
@@ -314,6 +392,25 @@ export function pointInRegion(p: [number, number, number] | THREE.Vector3, r: Re
 /** Conservative cell test: true = fully inside, false = fully outside, null = straddles. */
 function classifyRegion(bmin: THREE.Vector3, bmax: THREE.Vector3, r: Region, inv: THREE.Matrix3): boolean | null {
   const c = new THREE.Vector3(), l = new THREE.Vector3();
+  if (r.kind === 'prism' && r.poly) {
+    // The cell's eight corners projected into the prism's frame: their 2D bounding box is a
+    // superset of the cell's footprint, so a miss against the outline's bounding box is a
+    // real miss, and a Z range clear of the depth is a real miss too.
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    let allIn = true;
+    for (let i = 0; i < 8; i++) {
+      c.set(i & 1 ? bmax.x : bmin.x, i & 2 ? bmax.y : bmin.y, i & 4 ? bmax.z : bmin.z);
+      toLocal(c, r, inv, l);
+      x0 = Math.min(x0, l.x); x1 = Math.max(x1, l.x);
+      y0 = Math.min(y0, l.y); y1 = Math.max(y1, l.y);
+      z0 = Math.min(z0, l.z); z1 = Math.max(z1, l.z);
+      if (allIn && !(Math.abs(l.z) <= r.half[2] && pointInPoly(l.x, l.y, r.poly))) allIn = false;
+    }
+    if (z1 < -r.half[2] || z0 > r.half[2]) return false;
+    const [hx, hy] = polyHalf(r.poly);
+    if (x1 < -hx || x0 > hx || y1 < -hy || y0 > hy) return false;
+    return allIn ? true : null;
+  }
   let allIn = true, anyIn = false;
   for (let i = 0; i < 8; i++) {
     c.set(i & 1 ? bmax.x : bmin.x, i & 2 ? bmax.y : bmin.y, i & 4 ? bmax.z : bmin.z);
@@ -371,6 +468,8 @@ export class CellRenderer {
     for (let i = 0; i < 16; i++) for (const n of ['uRegMode', 'uRegRole', 'uRegC', 'uRegS', 'uRegRot']) {
       this.u[`${n}[${i}]`] = gl.getUniformLocation(this.prog, `${n}[${i}]`);
     }
+    // set wholesale from the location of element 0
+    for (const n of ['uPrismV', 'uPrismStart', 'uPrismCount']) this.u[n] = gl.getUniformLocation(this.prog, `${n}[0]`);
   }
 
   private compile(vs: string, fs: string): WebGLProgram {
@@ -828,6 +927,22 @@ export class CellRenderer {
     return { kept: this.total, dropped };
   }
 
+  /** Points inside a region from cell classification alone: no readback, so it is safe to call
+   *  while a gizmo is being dragged. Whole cells count fully, straddling cells half. */
+  estimateInside(r: Region): number {
+    const inv = new THREE.Matrix3().fromArray(Array.from(invRot(r.quat)));
+    const b = new THREE.Box3();
+    let n = 0;
+    for (const lf of this.leaves) {
+      if (lf.preview) continue;
+      const box = this.leafBox(lf, b);
+      const c = classifyRegion(box.min, box.max, r, inv);
+      if (c === false) continue;
+      n += c === true ? lf.count : lf.count * 0.5;
+    }
+    return Math.round(n);
+  }
+
   /** Points inside a region (any role) counted from a sample of cells — for suggestion sizing. */
   countInside(r: Region, sampleEvery = 16): number {
     const inv = new THREE.Matrix3().fromArray(Array.from(invRot(r.quat)));
@@ -1000,8 +1115,23 @@ export class CellRenderer {
     const regs = (p.regions ?? []).slice(0, 16);
     gl.uniform1f(this.u.uRegN, regs.length);
     gl.uniform1f(this.u.uRegHide, p.regionHide ? 1 : 0);
+    // pack every prism's outline into the shared pool; a prism that will not fit is skipped
+    const pv = new Float32Array(PRISM_POOL * 2);
+    const pStart = new Float32Array(16), pCount = new Float32Array(16);
+    let at = 0;
     regs.forEach((r, i) => {
-      gl.uniform1f(this.u[`uRegMode[${i}]`], r.kind === 'slab' ? 3 : r.kind === 'sphere' ? 2 : 1);
+      if (r.kind !== 'prism' || !r.poly?.length) return;
+      const n = Math.min(r.poly.length, PRISM_MAX_V);
+      if (at + n > PRISM_POOL) return;
+      pStart[i] = at; pCount[i] = n;
+      for (let k = 0; k < n; k++) { pv[(at + k) * 2] = r.poly[k][0]; pv[(at + k) * 2 + 1] = r.poly[k][1]; }
+      at += n;
+    });
+    gl.uniform2fv(this.u.uPrismV, pv);
+    gl.uniform1fv(this.u.uPrismStart, pStart);
+    gl.uniform1fv(this.u.uPrismCount, pCount);
+    regs.forEach((r, i) => {
+      gl.uniform1f(this.u[`uRegMode[${i}]`], r.kind === 'prism' ? 4 : r.kind === 'slab' ? 3 : r.kind === 'sphere' ? 2 : 1);
       gl.uniform1f(this.u[`uRegRole[${i}]`], r.role === 'keep' ? 0 : r.role === 'pending' ? 1 : 2);
       gl.uniform3f(this.u[`uRegC[${i}]`], r.center[0], r.center[1], r.center[2]);
       gl.uniform3f(this.u[`uRegS[${i}]`], r.kind === 'sphere' ? r.radius : r.half[0], r.half[1], r.half[2]);

@@ -63,7 +63,8 @@ export const RAM_BUDGET = coarse ? 96e6 : 384e6;
 const SPILL_AT = 24e6;
 
 export function cloneRegion(r: Region): Region {
-  return { id: r.id, kind: r.kind, role: r.role, center: [...r.center], half: [...r.half], radius: r.radius, quat: [...r.quat], label: r.label };
+  return { id: r.id, kind: r.kind, role: r.role, center: [...r.center], half: [...r.half], radius: r.radius, quat: [...r.quat], label: r.label,
+    poly: r.poly ? r.poly.map(v => [v[0], v[1]] as [number, number]) : undefined };
 }
 export function cloneRegions(rs: Region[]): Region[] { return rs.map(cloneRegion); }
 

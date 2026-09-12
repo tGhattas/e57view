@@ -187,8 +187,9 @@
       <label class="row"><span>Size</span><input type="range" id="k-cropsize" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsize">—</b></label>
       <label class="row box-only"><span>Depth</span><input type="range" id="k-cropsy" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsy">—</b></label>
       <label class="row box-only"><span>Height</span><input type="range" id="k-cropsz" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsz">—</b></label>
+      <label class="row prism-only"><span>Prism depth</span><input type="range" id="k-prismdepth" min="0.004" max="1" step="0.004" value="1"><b class="mono" id="v-prismdepth">—</b></label>
       <button id="k-cropcentre" class="ghost wide">Centre on orbit point</button>
-      <button id="k-segment" class="ghost wide">Draw a selection (S)</button>
+      <button id="k-segment" class="ghost wide">Draw a region (S)</button>
       <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. <b>Keep inside</b> dims everything outside the region; <b>Remove inside</b> dims what is inside it — either way the preview is what Apply will leave behind. <b>Escape</b> cancels the region.</p>
       <div class="seg">
         <button id="k-cropcancel" class="ghost">Cancel region</button>
@@ -199,7 +200,7 @@
 
     <div class="grp" data-grp="sections">
       <h3>Sections</h3>
-      <p class="hint">Keep only what lies inside any section. Each is a slab you move, tilt and thicken with the gizmo — floors, a wall, a corridor.</p>
+      <p class="hint">Bounding shapes, combined as a union: keep only what lies inside any of them, or mark one <b>Remove</b> to drop what is inside it. A section is a slab you move, tilt and thicken with the gizmo — floors, a wall, a corridor. A drawn region (<b>S</b>) is an outline extruded along the direction you drew it from, so you can orbit around it and see exactly what it holds.</p>
       <button id="k-secadd" class="ghost wide">Add section at orbit point</button>
       <ul id="sec-list" class="mlist"></ul>
       <p class="hint mono" id="v-sections">—</p>
@@ -449,9 +450,10 @@ claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"</pre>
   </div>
   <svg id="seg" class="hidden"><polygon id="seg-fill"></polygon><polyline id="seg-line"></polyline></svg>
   <div id="segbar" class="hidden">
-    <span class="mono" id="seg-hint">Click to trace a shape · double-click or Enter to close · Esc to cancel</span>
-    <button id="seg-in" class="primary" disabled>Keep inside</button>
-    <button id="seg-out" class="ghost" disabled>Keep outside</button>
+    <span class="mono" id="seg-hint">Click to trace a shape · double-click to close · Esc to cancel</span>
+    <button id="seg-region" class="primary" disabled>Create region</button>
+    <button id="seg-in" class="ghost" disabled>Keep inside now</button>
+    <button id="seg-out" class="ghost" disabled>Remove inside now</button>
     <button id="seg-cancel" class="ghost">Cancel</button>
   </div>
   <div id="coord" class="mono hidden"></div>

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { EDL_FS, QUAD_VS } from './shaders';
-import { CellRenderer, pointInRegion, REC, type DrawStats, type LeafMeta, type Region, type UndoRecord } from './cells';
+import { CellRenderer, pointInRegion, polyHalf, simplifyRing, PRISM_MAX_V, REC, type DrawStats, type LeafMeta, type Region, type UndoRecord } from './cells';
 import { MeshView, type MeshData } from './meshview';
 
 const BG = new THREE.Color(0x05090b);
@@ -260,6 +260,11 @@ export class Viewer {
       if (this.modelGizmo && this.proxy) {
         if (e.value) { this.dragBase = this.cells.model.clone(); this.proxy.updateMatrixWorld(true); this.dragFrom.copy(this.proxy.matrixWorld); }
         else { const base = this.dragBase; this.dragBase = null; this.retightenBounds(); this.recentreProxy(); if (base) this.onModelDrag?.(true, base); }
+      } else if (!e.value && this.activeRegion) {
+        // one more notification now the handle is released, so anything too expensive to
+        // recompute per frame (a point count, say) gets its turn
+        const r = this.regions.find(x => x.id === this.activeRegion);
+        if (r) this.onRegionChange?.(r);
       }
       this.touch();
     });
@@ -403,10 +408,37 @@ export class Viewer {
   }
 
   // ------------------------------------------------------------ regions
+  /** A signature of the things that change a prism's geometry rather than its placement. */
+  private static prismSig(r: Region) { return `${r.half[2].toFixed(5)}|${(r.poly ?? []).map(v => v[0].toFixed(4) + ',' + v[1].toFixed(4)).join(';')}`; }
+
   private buildRegionGroup(r: Region): THREE.Group {
     const g = new THREE.Group();
     const col = ROLE_COLOR[r.role] ?? TEAL;
     const fillMat = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: r.role === 'keep' ? 0.06 : 0.14, depthTest: false, depthWrite: false });
+    if (r.kind === 'prism') {
+      // the outline at both caps plus the edges between them: the shape has to be legible
+      // from any angle, which is the whole reason a drawn selection became a region
+      const poly = r.poly ?? [];
+      const hz = Math.max(r.half[2], 1e-3);
+      const pos: number[] = [];
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        pos.push(a[0], a[1], -hz, b[0], b[1], -hz);
+        pos.push(a[0], a[1], hz, b[0], b[1], hz);
+        pos.push(a[0], a[1], -hz, a[0], a[1], hz);
+      }
+      const lg = new THREE.BufferGeometry();
+      lg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.85, depthTest: false })));
+      if (poly.length >= 3) {
+        const cap = new THREE.ShapeGeometry(new THREE.Shape(poly.map(v => new THREE.Vector2(v[0], v[1]))));
+        const near = new THREE.Mesh(cap, fillMat), far = new THREE.Mesh(cap, fillMat);
+        near.position.z = -hz; far.position.z = hz;
+        g.add(near, far);
+      }
+      g.userData = { kind: r.kind, role: r.role, sig: Viewer.prismSig(r) };
+      return g;
+    }
     if (r.kind === 'sphere') {
       g.add(new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 20), new THREE.MeshBasicMaterial({ color: col, wireframe: true, transparent: true, opacity: 0.35, depthTest: false, depthWrite: false })));
       g.add(new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 20), fillMat));
@@ -422,7 +454,9 @@ export class Viewer {
   private applyRegionToGroup(r: Region, g: THREE.Group) {
     g.position.set(r.center[0], r.center[1], r.center[2]);
     g.quaternion.set(r.quat[0], r.quat[1], r.quat[2], r.quat[3]);
-    if (r.kind === 'box') g.scale.set(r.half[0] * 2, r.half[1] * 2, r.half[2] * 2);
+    // a prism's geometry is already in local metres, so it is never scaled
+    if (r.kind === 'prism') g.scale.set(1, 1, 1);
+    else if (r.kind === 'box') g.scale.set(r.half[0] * 2, r.half[1] * 2, r.half[2] * 2);
     else if (r.kind === 'sphere') g.scale.set(r.radius * 2, r.radius * 2, r.radius * 2);
     else { const s = this.slabSpan(); g.scale.set(s, s, r.half[2] * 2); }
   }
@@ -433,7 +467,8 @@ export class Viewer {
     for (const [id, g] of this.regionGroups) if (!ids.has(id)) { this.overlay.remove(g); this.regionGroups.delete(id); if (this.activeRegion === id) this.setActiveRegion(null); }
     for (const r of list) {
       let g = this.regionGroups.get(r.id);
-      if (!g || g.userData.kind !== r.kind || g.userData.role !== r.role) {
+      const stale = !!g && r.kind === 'prism' && g.userData.sig !== Viewer.prismSig(r);
+      if (!g || stale || g.userData.kind !== r.kind || g.userData.role !== r.role) {
         if (g) { this.overlay.remove(g); if (this.tc.object === g) this.tc.detach(); }
         g = this.buildRegionGroup(r); this.overlay.add(g); this.regionGroups.set(r.id, g);
         if (this.activeRegion === r.id) this.tc.attach(g);
@@ -473,6 +508,20 @@ export class Viewer {
   private syncActiveFromGroup() {
     const r = this.regions.find(x => x.id === this.activeRegion); const g = r && this.regionGroups.get(r.id);
     if (!r || !g) return;
+    if (r.kind === 'prism') {
+      // Resize scales the outline uniformly about its own centroid (the X handle) and sets
+      // the depth (the Z handle); the geometry is then rebuilt and the group's scale reset.
+      r.center = g.position.toArray() as [number, number, number];
+      r.quat = [g.quaternion.x, g.quaternion.y, g.quaternion.z, g.quaternion.w];
+      const sx = Math.max(0.05, Math.abs(g.scale.x)), sz = Math.max(0.02, Math.abs(g.scale.z));
+      if (r.poly && Math.abs(sx - 1) > 1e-6) r.poly = r.poly.map(v => [v[0] * sx, v[1] * sx] as [number, number]);
+      const [hx, hy] = r.poly ? polyHalf(r.poly) : [r.half[0], r.half[1]];
+      r.half = [hx, hy, Math.max(1e-3, r.half[2] * sz)];
+      g.scale.set(1, 1, 1);
+      this.dirty = true;
+      this.onRegionChange?.(r);
+      return;
+    }
     const min = 0.3;
     g.scale.set(Math.max(min, Math.abs(g.scale.x)), Math.max(min, Math.abs(g.scale.y)), Math.max(min, Math.abs(g.scale.z)));
     r.center = g.position.toArray() as [number, number, number];
@@ -558,6 +607,61 @@ export class Viewer {
       (el.querySelector('.y') as HTMLElement).style.display = r.role === 'pending' ? '' : 'none';
     }
     for (const [id, el] of this.slabels) if (!want.has(id)) { el.remove(); this.slabels.delete(id); }
+  }
+
+  /** Turn a polygon traced on screen into a prism region: the outline extruded along the view
+   *  direction of the camera that drew it.
+   *
+   *  The outline is converted from pixels to metres **at the orbit target's depth**, so what
+   *  was drawn around the points at the centre of the view lands exactly on them. The region's
+   *  frame is the camera's own rotation, so local X and Y are the screen's right and up and
+   *  local Z is the view axis; depth is symmetric about the centre, so which way Z points does
+   *  not matter. The default depth spans the whole cloud, because a drawn outline means "these
+   *  things, at whatever range" until the user says otherwise. */
+  prismFromScreen(poly: [number, number][], w: number, h: number, id: string, depthHalf?: number): Region {
+    if (poly.length < 3) throw new Error('a prism needs at least three points');
+    this.camera.updateMatrixWorld();
+    const e = this.camera.matrixWorld.elements;
+    const right = new THREE.Vector3(e[0], e[1], e[2]).normalize();
+    const up = new THREE.Vector3(e[4], e[5], e[6]).normalize();
+    const fwd = new THREE.Vector3(); this.camera.getWorldDirection(fwd);
+    const depth = Math.max(0.05, this.controls.target.clone().sub(this.camera.position).dot(fwd));
+    const tanV = Math.tan((this.camera.fov * Math.PI / 180) / 2);
+    const halfH = depth * tanV, halfW = halfH * (w / h);
+    // pixels -> metres on the plane through the orbit target
+    const local = poly.map(([px, py]) => [((px / w) * 2 - 1) * halfW, (1 - (py / h) * 2) * halfH] as [number, number]);
+    let cx = 0, cy = 0;
+    for (const [x, y] of local) { cx += x; cy += y; }
+    cx /= local.length; cy /= local.length;
+    let ring = local.map(([x, y]) => [x - cx, y - cy] as [number, number]);
+    // one uniform decides how many vertices the shader can hold, so simplify until it fits
+    let tol = Math.max(halfW, halfH) * 0.004;
+    for (let i = 0; i < 24 && ring.length > PRISM_MAX_V; i++) { ring = simplifyRing(ring, tol) as [number, number][]; tol *= 1.6; }
+    if (ring.length > PRISM_MAX_V) ring = ring.slice(0, PRISM_MAX_V);
+    const centre = this.camera.position.clone().addScaledVector(fwd, depth).addScaledVector(right, cx).addScaledVector(up, cy);
+    let hz = depthHalf ?? 0;
+    if (!(hz > 0)) {
+      const bb = this.bounds();
+      hz = 1;
+      if (!bb.isEmpty()) {
+        const v = new THREE.Vector3();
+        let reach = 0;
+        for (let i = 0; i < 8; i++) {
+          v.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z).sub(centre);
+          reach = Math.max(reach, Math.abs(v.dot(fwd)));
+        }
+        hz = reach * 1.05 + 0.05;
+      }
+    }
+    const [hx, hy] = polyHalf(ring);
+    const q = this.camera.quaternion;
+    return {
+      id, kind: 'prism', role: 'keep',
+      center: centre.toArray() as [number, number, number],
+      half: [hx, hy, hz], radius: Math.hypot(hx, hy),
+      quat: [q.x, q.y, q.z, q.w], poly: ring,
+      label: 'Drawn region',
+    };
   }
 
   // ------------------------------------------------------------ picking

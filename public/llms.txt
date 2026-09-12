@@ -32,6 +32,7 @@ inside, measure, pick, set_view, set, regions, transform, surface, history, stat
 {"session":"S","cmd":"set_view","args":{"pose":{"p":[10,10,5],"t":[0,0,0]}}}
 {"session":"S","cmd":"regions","args":{"op":"add","region":{"kind":"box","role":"delete","center":[10,4,2],"half":[2,2,2]}}}
 {"session":"S","cmd":"regions","args":{"op":"mode","role":"delete"}}
+{"session":"S","cmd":"regions","args":{"op":"lasso","pixels":[[420,300],[600,300],[600,470],[420,470]],"width":1024,"height":683}}
 {"session":"S","cmd":"regions","args":{"op":"apply"}}
 {"session":"S","cmd":"transform","args":{"op":"get"}}
 {"session":"S","cmd":"transform","args":{"op":"rotate","axis":"z","degrees":12,"about":"centre"}}
@@ -132,6 +133,21 @@ the surface rather than off a picture.
 A reply travels in one Firestore document capped at 1 MiB, so a large payload comes back as
 {part, parts, data}. Ask for the rest with the same command plus part: 1, 2, … and
 concatenate before decoding. Over MCP the server does that for you.
+
+## Regions are shapes, not cuts
+
+A region is a bounding shape — box, sphere, slab, or prism — added to a list and only applied
+when you say so. Nothing is dropped until `regions op:"apply"`, which commits the union of
+every keep region minus every delete region in one undoable step. So a region can be built,
+looked at from another angle with `view`, counted, moved and adjusted before it costs
+anything.
+
+A **prism** is an outline extruded along a view direction: `poly` in the region's own local XY
+plane (metres, centred on its own centroid) extruded to +/- `half[2]` along local Z, with
+`quat` placing that frame in the world. `regions op:"lasso"` builds one from screen pixels of
+the current camera, the same way the panel's draw tool does, and reports how many points it
+holds. Up to four prisms of 24 sides each can be active at once, because their outlines share
+one fixed array in the vertex shader.
 
 ## Cloud transform
 

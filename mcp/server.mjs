@@ -133,13 +133,18 @@ server.tool('viewer_set', 'Change display settings. Any subset: colorMode (0 rgb
   settings: z.record(z.union([z.number(), z.boolean()])) }, async ({ settings }) => withShot(await call('set', settings), true));
 
 const regionShape = z.object({
-  id: z.string().optional(), kind: z.enum(['box', 'sphere', 'slab']), role: z.enum(['keep', 'pending', 'delete']).default('keep'),
+  id: z.string().optional(), kind: z.enum(['box', 'sphere', 'slab', 'prism']), role: z.enum(['keep', 'pending', 'delete']).default('keep'),
   center: z.array(z.number()).length(3), half: z.array(z.number()).length(3).optional(), radius: z.number().optional(),
   quat: z.array(z.number()).length(4).optional().describe('x y z w'), label: z.string().optional(),
+  poly: z.array(z.array(z.number()).length(2)).optional().describe('prism: the outline in the region\'s own local XY plane, metres, extruded to +/- half[2] along local Z'),
 });
-server.tool('viewer_regions', 'List, add, update, remove or clear crop/delete regions (box, sphere, slab). role keep = crop to it; delete = remove inside. mode sets which way the panel\'s own crop region cuts (role: keep | delete) and shows it. apply drops points accordingly (undoable until Save).', {
-  op: z.enum(['list', 'add', 'update', 'remove', 'clear', 'mode', 'apply']), region: regionShape.optional(), id: z.string().optional(),
-  role: z.enum(['keep', 'delete']).optional().describe('op=mode: keep inside, or remove inside'),
+server.tool('viewer_regions', 'Bounding shapes that decide what survives: box, sphere, slab, or prism (an outline extruded along a view direction). role keep = crop to the union of the keeps; delete = remove what is inside. lasso is the shortcut for a prism: give screen pixels from the current camera and it builds the region the way the panel does, reporting how many points it holds. mode sets which way the panel\'s own crop region cuts. apply commits every keep and delete region in one undoable step. A region is not a cut until apply, so it can be inspected from any angle first.', {
+  op: z.enum(['list', 'add', 'update', 'remove', 'clear', 'mode', 'lasso', 'apply']), region: regionShape.optional(), id: z.string().optional(),
+  role: z.enum(['keep', 'delete']).optional().describe('op=mode or op=lasso: keep inside, or remove inside'),
+  pixels: z.array(z.array(z.number()).length(2)).optional().describe('op=lasso: [[x,y], …] of the image you measured'),
+  width: z.number().optional(), height: z.number().optional().describe('op=lasso: the pixel size of that image, if it was not the live canvas'),
+  depth: z.number().optional().describe('op=lasso: half depth along the view axis in metres; the default spans the cloud'),
+  label: z.string().optional(),
 }, async (a) => withShot(await call('regions', a, 120000), a.op !== 'list'));
 
 server.tool('viewer_pick', 'World point under a screen pixel (x,y in CSS px of the last screenshot scale), or null.', { x: z.number(), y: z.number() },

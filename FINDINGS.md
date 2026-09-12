@@ -745,3 +745,51 @@ say *"roughly 6,050 points removed, 6,050 kept"* whichever mode it is in.
 `drive-cropmode.mjs` checks the two modes are exact complements over the same box:
 **1,849 kept + 10,251 removed = 12,100**, with not one point inside the box surviving the
 remove, and both undoing.
+
+## A one-shot screen-space cut was the wrong shape for the job
+
+The freehand lasso worked exactly as designed and was not useful. You traced an outline, and
+the points were dropped immediately — which means you could never check what the selection
+was about to take. The selection was an invisible frustum extending away from one camera
+position, so there was nothing to look at, nothing to adjust, and no way to orbit round and
+see whether the thing behind the thing you wanted was also inside it. Undo was the only
+inspection tool, which is a poor one.
+
+The fix is not a better lasso, it is a different object. A traced outline now becomes a
+**prism**: the polygon extruded along the view direction of the camera that drew it, converted
+from pixels to metres at the orbit target's depth so what you drew around lands on the points
+you were looking at. From then on it is an ordinary region — visible in the 3D overlay as two
+outline caps and the edges between them, moved and rotated with the same gizmo as the box,
+adjustable in depth, switchable between Keep and Remove, unioned with the other regions, and
+cut only when Apply is pressed. `drive-segment.mjs` asserts the property the whole change
+exists for: **1,600 points inside, and still 1,600 after orbiting 90°, from the side, and from
+below.**
+
+**What it costs per point in the shader.** The region loop already transformed each point into
+each region's local frame; a prism adds `abs(l.z) <= half.z` and then an even-odd crossing
+test over its outline. The crossings are the cost: one compare, one divide and one multiply
+per edge, for points that pass the depth test. Twenty-four sides is the cap, so the worst case
+is 24 iterations — but only for points inside the depth band, and only for the prisms among
+the active regions. The outlines of every active prism live in one `vec2[96]` uniform with a
+per-region start and count, which is what fixes the limits at four prisms of 24 sides: a
+`vec2[96]` plus two `float[16]` is 896 bytes of uniform storage, against the 16 KB a WebGL2
+implementation must provide. Simplification keeps a traced outline inside 24 vertices with the
+same ring-safe Douglas-Peucker the contour tracer needed, doubling the tolerance until it
+fits. Measured: no change in frame time on the 16,900-point fixture, and the 4-vertex outline
+a mouse trace produces is the common case, not the 24-vertex worst case.
+
+The leaf-level rejection is where the real saving is, and a prism gets a tighter one than the
+bounding-sphere test the box and sphere use: the cell's eight corners are projected into the
+prism's frame, and the cell is rejected outright if its 2D bounding box misses the outline's
+bounding box or its Z range clears the depth band. A cell is accepted whole only when all
+eight projected corners are inside the outline *and* within the depth, so a cell the outline
+merely clips falls through to the per-point test, which is correct rather than conservative.
+
+Two smaller things this shook out. **Apply's direction is a property of the set, not of the
+crop box**: `removingInside()` first asked whether the crop box was in Remove mode, which was
+wrong as soon as a drawn region could be the only thing in the list — the dialog said "Apply
+crop?" while about to remove. It now asks whether the set has anything to keep at all. And a
+region's point count is worth showing in the list, but `countInside` reads cells back from the
+GPU, and the list is re-rendered on every gizmo frame; the count is now skipped while a handle
+is moving (falling back to the cheap cell-classification estimate) and recomputed once on
+release, which needed one extra `onRegionChange` when the drag ends.
