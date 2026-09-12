@@ -67,6 +67,13 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
 - **Cache** — after a decode you are asked whether to cache the decoded cells in the
   browser's private storage. A cached scan reopens in about a second. Cached scans are
   listed on the start screen, with a remove button, and reopen in one click in Chromium.
+- **Open another scan** — *Open…* in the top bar, in the Performance group, or **⌘O**. If the
+  loaded scan has unsaved work the viewer says what would be lost in plain words — *"1 edit ·
+  computed normals · a scalar field (Planarity) · a 5,832-triangle surface · a transform"* —
+  and offers *Cancel*, *Save as… first* or *Open anyway*. Drag-and-drop and the cached list
+  ask the same question. With nothing unsaved it opens straight away. One definition of
+  "unsaved" covers point edits, normals, fields, surfaces and transforms, and it is cleared
+  by a save, a reload or an open.
 - **Undo / redo / Save.** Every destructive edit is undoable (⌘Z / ⇧⌘Z). ⌘S opens *Save as…*,
   which writes a copy of the points in memory; the on-device cache is updated only if the
   scan was already cached, and history is cleared after a warning. Large undo steps spill

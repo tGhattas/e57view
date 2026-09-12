@@ -128,7 +128,7 @@ function fail(msg: string) { const e = $('err'); e.textContent = msg; e.classLis
 
 // ------------------------------------------------------------------ opening files
 function resetForLoad(name: string) {
-  revealed = false; gotRealLeaf = false; fromCache = false; cropped = false; cacheNote = '';
+  revealed = false; gotRealLeaf = false; fromCache = false; cropped = false; cacheNote = ''; clearDirty();
   (document.activeElement as HTMLElement | null)?.blur?.();
   $('drop').classList.add('hidden'); $('loading').classList.remove('hidden', 'over');
   $('ld-name').textContent = name; $('ld-stat').textContent = 'opening…'; $('ld-bar').style.width = '0%'; $('err').classList.add('hidden');
@@ -385,6 +385,7 @@ addEventListener('keydown', (e: KeyboardEvent) => {
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redoEdit() : undoEdit(); return; }
   if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redoEdit(); return; }
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); saveCurrent(); return; }
+  if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openAnother(); return; }
   if (e.key === 'Tab') {
     const inUi = (e.target as HTMLElement | null)?.closest?.('#panel, #labels, #modal, #topbar, button, a');
     if (inUi) return;
@@ -634,6 +635,7 @@ async function saveCurrent() {
     if (currentFile && fromCache) { try { await writeCache(); cacheUpdated = true; } catch {} }
     cacheNote = '';
     await hist.clear();
+    clearDirty();
     updateHistUI(); updateCacheUI();
     $('v-export').textContent = `saved ${r.name} · ${fmt(r.count)} points · ${mb(r.bytes)}`;
     $('tb-points').textContent = `${fmt(r.count)} pts · saved`;
@@ -641,17 +643,49 @@ async function saveCurrent() {
   } catch (e: any) { fail('Could not save: ' + (e?.message ?? e)); }
   finally { hideBusy(); }
 }
-async function confirmDiscardHistory(): Promise<boolean> {
-  if (hist.undo.length + hist.redo.length === 0) return true;
-  const ans = await modal('Discard unsaved history?',
-    `<p>There is unsaved history (${hist.undo.length} undo, ${hist.redo.length} redo). Continuing replaces the loaded scan and discards it.</p>`,
-    [{ label: 'Cancel', value: 'no' }, { label: 'Discard and continue', value: 'yes', cls: 'danger' }]);
+// -------------------------------------------------------- unsaved work
+// One notion of "dirty", so every route to another scan asks the same question and names the
+// same things. Point edits, normals and transforms are already recorded in the history — it
+// is exactly the list of changes that have not been written to a file — and the two that are
+// not (a scalar field, a reconstructed surface) are marked here. Cleared by Save as…, a
+// reload and an open, because each of those makes what is in memory match what is on disk.
+const dirtyMark = { field: '', surface: 0 };
+function clearDirty() { dirtyMark.field = ''; dirtyMark.surface = 0; }
+const triangles = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : fmt(n);
+/** What would be lost if the loaded scan were replaced now, in plain words. */
+function dirtyList(): string[] {
+  const out: string[] = [];
+  const kinds = hist.undo.map(e => e.kind);
+  const edits = kinds.filter(k => k === 'crop' || k === 'clean').length;
+  if (edits) out.push(`${edits} edit${edits > 1 ? 's' : ''}`);
+  if (kinds.includes('normals')) out.push('computed normals');
+  if (dirtyMark.field) out.push(`a scalar field (${dirtyMark.field})`);
+  if (dirtyMark.surface) out.push(`a ${triangles(dirtyMark.surface)}-triangle surface`);
+  if (kinds.includes('transform')) out.push('a transform');
+  return out;
+}
+const isDirty = () => dirtyList().length > 0;
+
+/** The one guard in front of replacing the loaded scan. Returns true to go ahead. */
+async function confirmReplace(): Promise<boolean> {
+  const lost = dirtyList();
+  if (!lost.length) return true;
+  const ans = await modal('Open another scan?',
+    `<p>This scan has unsaved work: <b>${lost.join(' · ')}</b>.</p>` +
+    `<p>Opening another scan discards it. The file on disk was never changed — <b>Save as…</b> writes a copy of what is in memory, including the crop and the transform, to a file you choose.</p>`,
+    [{ label: 'Cancel', value: 'no' }, { label: 'Save as… first', value: 'save' }, { label: 'Open anyway', value: 'yes', cls: 'danger' }]);
+  if (ans === 'save') {
+    await saveCurrent();
+    return !isDirty();          // a cancelled or failed save must not lose the work
+  }
   return ans === 'yes';
 }
 async function reloadScan() {
   if (!currentFile) return;
-  if (hist.canUndo || hist.canRedo) {
-    const ans = await modal('Reload the scan?', `<p>There is unsaved history (${hist.undo.length} undo, ${hist.redo.length} redo). Reload discards it and reads the scan again from ${fromCache ? 'the cache on this device' : 'disk'}.</p>`,
+  const lost = dirtyList();
+  if (lost.length) {
+    const ans = await modal('Reload the scan?',
+      `<p>This scan has unsaved work: <b>${lost.join(' · ')}</b>. Reload discards it and reads the scan again from ${fromCache ? 'the cache on this device' : 'disk'}.</p>`,
       [{ label: 'Cancel', value: 'no' }, { label: 'Reload anyway', value: 'yes', cls: 'danger' }]);
     if (ans !== 'yes') return;
   }
@@ -1039,6 +1073,7 @@ function perLeaf<T extends Float32Array | Uint8Array>(flat: T, counts: number[])
 function setScalarField(name: string, flat: Float32Array, counts: number[]) {
   viewer.cells.setScalarField(perLeaf(flat, counts).map(a => new Float32Array(a)));
   sfName = name;
+  dirtyMark.field = name;
   document.body.classList.add('has-sf');
   ($('k-color-sf') as HTMLOptionElement).disabled = false;
   knobs.colorMode = 5;
@@ -1049,7 +1084,7 @@ function setScalarField(name: string, flat: Float32Array, counts: number[]) {
 }
 function clearScalarField() {
   viewer.cells.clearScalarField();
-  sfName = '';
+  sfName = ''; dirtyMark.field = '';
   document.body.classList.remove('has-sf', 'sf-filtering');
   ($('k-color-sf') as HTMLOptionElement).disabled = true;
   ($('k-sffilter') as HTMLInputElement).checked = false;
@@ -1348,6 +1383,7 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
     meshData = { pos: done.pos, nrm: done.nrm, col: done.col, idx: done.idx };
     viewer.setMesh(meshData, builtWith);
     document.body.classList.toggle('has-mesh', !!meshData.idx.length);
+    dirtyMark.surface = done.stats.triangles || 0;
     setDisplay(meshData.idx.length ? 'mesh' : 'points');
     const st = done.stats;
     const mode = st.oriented > st.unoriented * 4 ? 'from normals' : 'density (no usable normals)';
@@ -1363,7 +1399,8 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
 $('k-mbuild').addEventListener('click', () => buildMesh().catch(e => { $('v-mesh').textContent = 'failed: ' + (e?.message ?? e); }));
 $('k-mclear').addEventListener('click', () => {
   meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
-  sfName = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
+  dirtyMark.surface = 0;
+  sfName = ''; dirtyMark.field = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
   ($('k-color-sf') as HTMLOptionElement).disabled = true;
   setDisplay('points'); $('v-mesh').textContent = '—';
 });
@@ -1500,7 +1537,7 @@ async function refreshCachedList() {
     rm.onclick = async (e) => { e.stopPropagation(); io.postMessage({ type: 'cache-delete', key: it.key }); await ioOnce('cache-deleted'); refreshCachedList(); };
     li.appendChild(rm);
     if (handle) li.querySelector('.nm')!.addEventListener('click', async () => {
-      if (!(await confirmDiscardHistory())) return;
+      if (!(await confirmReplace())) return;
       openCached(it.key).catch(e => fail(String(e?.message ?? e)));
     });
     ul.appendChild(li);
@@ -1551,7 +1588,7 @@ try { if (location.hash.length > 2) pendingView = JSON.parse(atob(location.hash.
 const agent = new AgentLink({
   state: () => ({
     file: currentFile?.name ?? null, points: viewer.loaded, cells: viewer.cells.leafCount, cropped, fromCache,
-    history: hist.steps,
+    history: hist.steps, dirty: isDirty(), unsaved: dirtyList(),
     view: viewer.getView(), knobs, regions: allRegions(), measurements: viewer.measureList.map(m => ({ a: m.a.toArray(), b: m.b.toArray(), dist: m.dist })),
     stations: viewer.stations.length, bubble: viewer.bubble?.index ?? null, cached: cachedItems.map(c => ({ key: c.key, name: c.name, points: c.points })),
     translation: meta?.scans?.[0]?.translation ?? null, bounds: viewer.bounds().isEmpty() ? null : { min: viewer.bounds().min.toArray(), max: viewer.bounds().max.toArray() },
@@ -1609,7 +1646,7 @@ const agent = new AgentLink({
     return { points: viewer.loaded };
   },
   surface: async (a) => {
-    if (a.op === 'clear') { meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh'); setDisplay('points'); viewer.render(); return { triangles: 0 }; }
+    if (a.op === 'clear') { meshData = null; dirtyMark.surface = 0; viewer.setMesh(null); document.body.classList.remove('has-mesh'); setDisplay('points'); viewer.render(); return { triangles: 0 }; }
     if (a.op === 'show') { setDisplay(a.mode === 'mesh' || a.mode === 'both' ? a.mode : 'points'); viewer.render(); return { display: viewer.display, triangles: viewer.mesh.triangles }; }
     if (a.op === 'build') {
       const st = await buildMesh({ voxel: a.voxelCm, smooth: a.smooth, trunc: a.fillGaps, confirm: false });
@@ -1796,12 +1833,16 @@ async function pickFile() {
   const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = '.e57,.ply,.las';
   inp.onchange = () => inp.files?.[0] && openFile(inp.files[0]); inp.click();
 }
+/** Open another scan: the same picker the start screen uses, behind the unsaved-work guard. */
+async function openAnother() { if (await confirmReplace()) await pickFile(); }
 $('pick').addEventListener('click', pickFile); $('pick2').addEventListener('click', pickFile);
+$('tb-open').addEventListener('click', () => openAnother());
+$('k-open').addEventListener('click', () => openAnother());
 const testInput = document.createElement('input');
 testInput.type = 'file'; testInput.id = 'file-input'; testInput.style.cssText = 'position:fixed;opacity:0;pointer-events:none;left:-9999px';
 testInput.onchange = async () => {
   if (!testInput.files?.[0]) return;
-  if (!(await confirmDiscardHistory())) return;
+  if (!(await confirmReplace())) return;
   openFile(testInput.files[0]);
 };
 document.body.appendChild(testInput);
@@ -1812,7 +1853,7 @@ addEventListener('drop', async e => {
   e.preventDefault(); drop.classList.remove('drag');
   const f = (e as DragEvent).dataTransfer?.files?.[0];
   if (!f) return;
-  if (!(await confirmDiscardHistory())) return;
+  if (!(await confirmReplace())) return;
   openFile(f);
 });
 addEventListener('beforeunload', e => {
@@ -1863,4 +1904,5 @@ refreshCachedList();
 (window as any).__viewer = viewer;
 (window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist,
   commitTransform, transformState, levelCloud, rowMajor, fromRowMajor, runExport, updateTransformUI,
+  dirtyList, isDirty, openAnother, confirmReplace,
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; } };

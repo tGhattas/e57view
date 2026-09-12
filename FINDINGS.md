@@ -632,3 +632,25 @@ The gizmo is shared rather than duplicated: `TransformControls` is attached to e
 object at a time, so turning on the cloud drag releases the crop region and showing the crop
 region releases the cloud. That is three lines and one invariant instead of a second gizmo
 instance and a z-fighting problem.
+
+## One definition of "unsaved"
+
+Before this there were two half-answers to "is there work to lose". `confirmDiscardHistory`
+counted undo and redo steps, which misses a scalar field and a reconstructed surface
+entirely — neither goes through the history — and the start screen, the only place that
+offered another file, was hidden as soon as a scan loaded, so drag-and-drop was the only way
+out.
+
+The useful realisation is that the undo stack **is** the list of unsaved point changes: a
+save clears it, a reload and an open replace it, and undoing a transform back to the identity
+genuinely does make the cloud clean again. Deriving the answer from `hist.undo`'s entry kinds
+rather than a flag means an undo un-dirties the scan for free, which a boolean would have got
+wrong. Only the two things that never enter the history — a field and a surface — need a mark
+of their own.
+
+Naming the losses rather than counting them is the part that matters. "There is unsaved
+history (5 undo, 0 redo)" tells a user nothing about whether they mind; "1 edit · computed
+normals · a scalar field (Planarity) · a 5,832-triangle surface · a transform" tells them
+exactly what they are about to throw away, and the same list is what `state.unsaved` hands an
+agent. *Save as… first* runs the save and then continues to the picker **only if the scan
+came out clean**, so a cancelled save cannot quietly discard the work it was meant to protect.
