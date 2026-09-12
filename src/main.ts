@@ -134,7 +134,7 @@ function resetForLoad(name: string) {
   $('ld-name').textContent = name; $('ld-stat').textContent = 'opening…'; $('ld-bar').style.width = '0%'; $('err').classList.add('hidden');
   viewer.clear();
   histogram = new Uint32Array(256); axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)]; axisCube = null;
-  sections.length = 0; deletes.length = 0; cropUI.on = false;
+  sections.length = 0; deletes.length = 0; cropUI.on = false; cropState.role = 'keep'; syncCropRoleUI();
   meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
   viewer.setModel(new THREE.Matrix4()); viewer.setModelGizmo(false);
   sfName = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
@@ -415,14 +415,34 @@ function cropFromSliders() {
   else if (cropState.kind === 'sphere') { cropState.radius = half[0]; cropState.half = [half[0], half[0], half[0]]; }
   else { const span = md * 3; cropState.half = [span, span, Math.max(0.05, half[0] * 0.2)]; }
 }
+/** Regions that decide what survives: keep regions and delete regions, the crop among them
+ *  whichever role it currently has. */
+function cutRegions(): Region[] { return allRegions().filter(r => r.role === 'keep' || r.role === 'delete'); }
+const removingInside = () => cropUI.on && cropState.role === 'delete';
+/** The Keep inside / Remove inside pair, and the Apply button that follows it. */
+function syncCropRoleUI() {
+  const del = cropState.role === 'delete';
+  $('k-cropkeep').classList.toggle('on', !del);
+  $('k-cropdel').classList.toggle('on', del);
+  $('k-cropapply').textContent = del ? 'Remove inside…' : 'Apply crop…';
+}
+function setCropRole(role: 'keep' | 'delete') {
+  cropState.role = role;
+  syncCropRoleUI();
+  updateCropUI();
+}
 function cropReadouts() {
   const box = cropState.kind === 'box', slab = cropState.kind === 'slab';
   document.querySelectorAll('.box-only').forEach(el => (el as HTMLElement).style.display = box ? '' : 'none');
   $('v-cropsize').textContent = box ? `${(cropState.half[0] * 2).toFixed(1)} m` : slab ? `${(cropState.half[2] * 2).toFixed(2)} m thick` : `r ${cropState.radius.toFixed(1)} m`;
   $('v-cropsy').textContent = `${(cropState.half[1] * 2).toFixed(1)} m`; $('v-cropsz').textContent = `${(cropState.half[2] * 2).toFixed(1)} m`;
-  const keeps = allRegions().filter(r => r.role === 'keep');
-  const est = keeps.length && viewer.loaded ? viewer.cells.estimateKept(keeps) : 0;
-  $('v-crop').textContent = cropped ? `cropped · ${fmt(viewer.loaded)} points in memory` : keeps.length ? `~${fmt(est)} of ${fmt(viewer.loaded)} points inside` : '—';
+  const cuts = cutRegions();
+  // estimateKept answers the same question either way: how many survive this set of regions
+  const est = cuts.length && viewer.loaded ? viewer.cells.estimateKept(cuts) : 0;
+  $('v-crop').textContent = cropped ? `cropped · ${fmt(viewer.loaded)} points in memory`
+    : !cuts.length ? '—'
+    : removingInside() ? `~${fmt(Math.max(0, viewer.loaded - est))} removed · ${fmt(est)} kept`
+    : `~${fmt(est)} of ${fmt(viewer.loaded)} points inside`;
   $('v-sections').textContent = sections.length ? `${sections.length} section${sections.length > 1 ? 's' : ''} · union` : '—';
 }
 function updateCropUI(recenter = false) {
@@ -469,20 +489,35 @@ function cancelStarted() {
   if (cropUI.on) { cancelCrop(); return; }
   viewer.setActiveRegion(null); renderSectionList();
 }
-async function applyKeep() {
-  const keeps = allRegions().filter(r => r.role === 'keep');
-  if (!viewer.loaded || !keeps.length) return null;
-  const est = viewer.cells.estimateKept(keeps);
-  const what = keeps.length === 1 ? `the ${keeps[0].kind}` : `${keeps.length} keep regions`;
-  const ans = await modal('Apply crop?', `<p>Everything outside ${what} will be dropped from memory — roughly <b>${fmt(est)}</b> of ${fmt(viewer.loaded)} points kept.</p><p>The file on disk is not touched. <b>Undo</b> puts the points back. <b>Save as…</b> writes a copy. AI suggestion tags are cleared (they come back if you undo). <b>Escape</b> cancels.</p>`,
-    [{ label: 'Cancel', value: 'no' }, { label: 'Drop outside points', value: 'yes', cls: 'danger' }]);
+/** Commit the crop: keep what is inside the region, or remove it, whichever mode it is in —
+ *  together with any keep sections and any delete regions an agent has added. */
+async function applyCrop() {
+  const cuts = cutRegions();
+  if (!viewer.loaded || !cuts.length) return null;
+  const kept = viewer.cells.estimateKept(cuts);
+  const gone = Math.max(0, viewer.loaded - kept);
+  const removing = removingInside();
+  const shape = cropUI.on ? `the ${cropState.kind}` : `${cuts.length} region${cuts.length > 1 ? 's' : ''}`;
+  const tail = `<p>The file on disk is not touched. <b>Undo</b> puts the points back. <b>Save as…</b> writes a copy. <b>Escape</b> cancels.</p>`;
+  const ans = removing
+    ? await modal('Remove the points inside?',
+        `<p>Everything inside ${shape} will be dropped from memory — roughly <b>${fmt(gone)}</b> points removed, <b>${fmt(kept)}</b> kept.</p>` + tail,
+        [{ label: 'Cancel', value: 'no' }, { label: `Remove ${fmt(gone)}`, value: 'yes', cls: 'danger' }])
+    : await modal('Apply crop?',
+        `<p>Everything outside ${shape} will be dropped from memory — roughly <b>${fmt(gone)}</b> points removed, <b>${fmt(kept)}</b> of ${fmt(viewer.loaded)} kept.</p>` + tail,
+        [{ label: 'Cancel', value: 'no' }, { label: 'Drop outside points', value: 'yes', cls: 'danger' }]);
   if (ans !== 'yes') return null;
-  return commitApply(keeps, 'crop', res => `Crop · dropped ${fmt(res.dropped)}`, () => {
-    cropped = true; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; sections.length = 0; deletes.length = 0;
-    viewer.setActiveRegion(null);
-  });
+  return commitApply(cuts, removing ? 'clean' : 'crop',
+    res => `${removing ? 'Remove inside' : 'Crop'} · dropped ${fmt(res.dropped)}`, () => {
+      cropped = true; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; sections.length = 0; deletes.length = 0;
+      viewer.setActiveRegion(null);
+    });
 }
-$('k-cropapply').addEventListener('click', () => { if (!cropUI.on && !sections.length) { cropUI.on = true; $<HTMLInputElement>('k-cropon').checked = true; updateCropUI(); } applyKeep(); });
+/** @deprecated the crop is not always a keep region; call applyCrop */
+const applyKeep = applyCrop;
+$('k-cropapply').addEventListener('click', () => { if (!cropUI.on && !sections.length) { cropUI.on = true; $<HTMLInputElement>('k-cropon').checked = true; updateCropUI(); } applyCrop(); });
+$('k-cropkeep').addEventListener('click', () => setCropRole('keep'));
+$('k-cropdel').addEventListener('click', () => setCropRole('delete'));
 $('k-cropcancel').addEventListener('click', () => cancelCrop());
 
 function snapUi() {
@@ -501,6 +536,7 @@ function restoreUi(s: ReturnType<History['snapshot']>) {
   $<HTMLInputElement>('k-cropsz').value = String(cropUI.frac[2] ?? cropUI.frac[0]);
   sections.length = 0; sections.push(...cloneRegions(s.sections));
   deletes.length = 0; deletes.push(...cloneRegions(s.deletes));
+  syncCropRoleUI();
   syncRegions(); renderSectionList(); cropReadouts();
   if (cropUI.on) viewer.setActiveRegion('crop'); else if (viewer.activeRegion === 'crop') viewer.setActiveRegion(null);
   syncZLabels(); updateCacheUI(); updateHistUI(); viewer.touch();
@@ -2135,6 +2171,13 @@ const agent = new AgentLink({
   },
   regions: async (a) => {
     if (a.op === 'list') return allRegions();
+    if (a.op === 'mode') {
+      // which way the crop region cuts: keep what is inside it, or remove it
+      setCropRole(a.role === 'delete' ? 'delete' : 'keep');
+      cropUI.on = true; $<HTMLInputElement>('k-cropon').checked = true;
+      updateCropUI(); viewer.render();
+      return { crop: cropState, mode: cropState.role === 'delete' ? 'remove inside' : 'keep inside' };
+    }
     if (a.op === 'clear') { sections.length = 0; deletes.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; syncRegions(); renderSectionList(); return []; }
     if (a.op === 'add' || a.op === 'update') {
       const r: Region = { id: a.region.id ?? uid(a.region.role === 'keep' ? 'sec-' : 'ai-'), kind: a.region.kind, role: a.region.role ?? 'keep', center: a.region.center, half: a.region.half ?? [1, 1, 1], radius: a.region.radius ?? (a.region.half?.[0] ?? 1), quat: a.region.quat ?? [0, 0, 0, 1], label: a.region.label };
@@ -2469,7 +2512,7 @@ updateTransformUI();
 refreshCachedList();
 (function loop() { viewer.render(); requestAnimationFrame(loop); })();
 (window as any).__viewer = viewer;
-(window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist,
+(window as any).__app = { openFile, openCached, writeCache, applyKeep, applyCrop, setCropRole, get cropState() { return cropState; }, addSection, undoEdit, redoEdit, saveCurrent, hist,
   commitTransform, transformState, levelCloud, rowMajor, fromRowMajor, runExport, updateTransformUI,
   dirtyList, isDirty, openAnother, confirmReplace,
   stateRecord, recommendedSource, surfaceRecord, heightmapCmd, contourCmd, fitPlaneCmd, dispatchAgent,

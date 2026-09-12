@@ -726,3 +726,22 @@ the stale orbit target — so the first orthographic top view was quietly swung 
 mapping described a frame that had never been rendered. The probe caught it immediately: 100
 pixels apart measured 1.0108 m against 0.8744 m predicted. `renderTopDown` had the same latent
 bug and is fixed with it.
+
+## A crop region that only ever kept
+
+The crop region was hard-wired as a keep region: Apply dropped everything outside it, and
+removing a parked van or a tripod from the middle of a scan meant drawing a lasso or asking an
+agent to add a delete-role region by hand. The region machinery had supported both roles since
+the beginning — the shader dims outside a keep region and inside a delete region, and
+`applyRegions` unions keeps and subtracts deletes — so the gap was one flag and one filter.
+
+`applyKeep` filtered `allRegions()` down to keep-role regions, which is what made the crop
+mode invisible: switching its role to `delete` would have made the region disappear from the
+apply set entirely and Apply would have done nothing. It now commits every keep and delete
+region together (`cutRegions()`), which is the same call either way, and `estimateKept`
+answers the same question in both directions — how many survive this set — so the dialog can
+say *"roughly 6,050 points removed, 6,050 kept"* whichever mode it is in.
+
+`drive-cropmode.mjs` checks the two modes are exact complements over the same box:
+**1,849 kept + 10,251 removed = 12,100**, with not one point inside the box surviving the
+remove, and both undoing.

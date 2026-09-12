@@ -43,6 +43,7 @@ const AGENT_HELP = {
     { cmd: 'inside', args: { box: { center: [3, 2, 0.02], half: [4, 3, 0.05] } } },
     { cmd: 'surface', args: { op: 'build', voxelCm: 6 } },
     { cmd: 'surface', args: { op: 'export', format: 'ply', part: 0 } },
+    { cmd: 'regions', args: { op: 'mode', role: 'delete' } },
     { cmd: 'transform', args: { op: 'level' } },
     { cmd: 'history', args: { op: 'undo' } },
     { cmd: 'revoke' },

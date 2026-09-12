@@ -175,6 +175,10 @@
       </label>
       <label class="row"><span>Show region</span><input type="checkbox" id="k-cropon"></label>
       <div class="seg">
+        <button id="k-cropkeep" class="ghost on">Keep inside</button>
+        <button id="k-cropdel" class="ghost">Remove inside</button>
+      </div>
+      <div class="seg">
         <button id="k-cropmove" class="ghost on">Move</button>
         <button id="k-croprotate" class="ghost">Rotate</button>
         <button id="k-cropresize" class="ghost">Resize</button>
@@ -185,7 +189,7 @@
       <label class="row box-only"><span>Height</span><input type="range" id="k-cropsz" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsz">—</b></label>
       <button id="k-cropcentre" class="ghost wide">Centre on orbit point</button>
       <button id="k-segment" class="ghost wide">Draw a selection (S)</button>
-      <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. Points outside every keep region are dimmed in preview. <b>Escape</b> cancels the region.</p>
+      <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. <b>Keep inside</b> dims everything outside the region; <b>Remove inside</b> dims what is inside it — either way the preview is what Apply will leave behind. <b>Escape</b> cancels the region.</p>
       <div class="seg">
         <button id="k-cropcancel" class="ghost">Cancel region</button>
         <button id="k-cropapply" class="primary">Apply crop…</button>

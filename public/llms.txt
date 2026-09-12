@@ -31,6 +31,7 @@ inside, measure, pick, set_view, set, regions, transform, surface, history, stat
 {"session":"S","cmd":"set_view","args":{"preset":"top"}}
 {"session":"S","cmd":"set_view","args":{"pose":{"p":[10,10,5],"t":[0,0,0]}}}
 {"session":"S","cmd":"regions","args":{"op":"add","region":{"kind":"box","role":"delete","center":[10,4,2],"half":[2,2,2]}}}
+{"session":"S","cmd":"regions","args":{"op":"mode","role":"delete"}}
 {"session":"S","cmd":"regions","args":{"op":"apply"}}
 {"session":"S","cmd":"transform","args":{"op":"get"}}
 {"session":"S","cmd":"transform","args":{"op":"rotate","axis":"z","degrees":12,"about":"centre"}}

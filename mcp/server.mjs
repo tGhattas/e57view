@@ -137,8 +137,9 @@ const regionShape = z.object({
   center: z.array(z.number()).length(3), half: z.array(z.number()).length(3).optional(), radius: z.number().optional(),
   quat: z.array(z.number()).length(4).optional().describe('x y z w'), label: z.string().optional(),
 });
-server.tool('viewer_regions', 'List, add, update, remove or clear crop/delete regions (box, sphere, slab). role keep = crop to it; delete = remove inside. apply drops points accordingly (undoable until Save).', {
-  op: z.enum(['list', 'add', 'update', 'remove', 'clear', 'apply']), region: regionShape.optional(), id: z.string().optional(),
+server.tool('viewer_regions', 'List, add, update, remove or clear crop/delete regions (box, sphere, slab). role keep = crop to it; delete = remove inside. mode sets which way the panel\'s own crop region cuts (role: keep | delete) and shows it. apply drops points accordingly (undoable until Save).', {
+  op: z.enum(['list', 'add', 'update', 'remove', 'clear', 'mode', 'apply']), region: regionShape.optional(), id: z.string().optional(),
+  role: z.enum(['keep', 'delete']).optional().describe('op=mode: keep inside, or remove inside'),
 }, async (a) => withShot(await call('regions', a, 120000), a.op !== 'list'));
 
 server.tool('viewer_pick', 'World point under a screen pixel (x,y in CSS px of the last screenshot scale), or null.', { x: z.number(), y: z.number() },

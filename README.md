@@ -50,10 +50,12 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
 
 ## Tools
 
-- **Crop** — a box or sphere you drag around with a gizmo (arrows move it, handles resize it),
-  or place on the orbit centre and size with sliders. Outside points are dimmed in preview or
-  hidden. *Apply crop* asks for confirmation, then drops outside points from memory. The file
-  on disk is never touched; *Reload* brings everything back.
+- **Crop** — a box, sphere or slab you drag around with a gizmo (arrows move it, handles
+  resize it), or place on the orbit centre and size with sliders. It cuts either way:
+  **Keep inside** drops everything outside it, **Remove inside** drops what is inside it, and
+  the preview dims whichever half is going so what you see is what Apply will leave. The
+  confirmation counts both sides — *"roughly 6,050 points removed, 6,050 kept"*. The file on
+  disk is never touched; *Undo* puts the points back and *Reload* brings everything back.
 - **Export** — save what is in memory (the crop, if you applied one, optionally every Nth
   point) as **E57**, **LAS 1.2** or binary **PLY**. E57 keeps colour, intensity and normals
   (`nor` extension) with the original pose, so coordinates stay georeferenced. Written by
