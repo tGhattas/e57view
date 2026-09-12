@@ -20,3 +20,5 @@ tmp/
 
 # built by npm run build:mcp
 public/mcp.mjs
+dist-desktop/
+desktop/gen/

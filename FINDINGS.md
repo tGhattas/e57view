@@ -1167,3 +1167,115 @@ Three smaller decisions that each came from a concrete failure mode:
 bounds, count what is on it at the height the fit found, measure the diagonal from two
 whole-array variables — and then checks the failure paths: an unknown command stops the run, a
 bad variable is named, `stopOnError:false` finishes anyway, and a nested script is refused.
+
+## A desktop app, and the three things a web page cannot do
+
+The viewer did not need porting. The desktop build runs the same TypeScript, the same Rust
+compiled to WebAssembly, the same WebGL2 renderer, the same workers and the same OPFS cache,
+inside a WKWebView instead of Chrome. What a native shell adds is exactly three things, and
+everything in `desktop/` exists to provide one of them: **files by path**, **real Save
+dialogs**, and **an MCP server that needs no Node and no network**.
+
+Tauri v2 rather than Electron, because the Rust toolchain was already here and the numbers are
+not close: the whole macOS app is **4.7 MB** and the disk image **3.1 MB**, against something
+over 100 MB for an Electron shell of the same page.
+
+### Reading a 3 GB file with no `File` object
+
+Every decoder in this project is written against `readRange(offset, length) -> Uint8Array`,
+because the point of the E57 reader is that the file never enters memory. In a browser that is
+`FileReaderSync` over `File.slice()` inside a worker. In the desktop app there is no `File` —
+the user chose a path, or dropped one from Finder, which Tauri delivers as a path rather than
+a drop event.
+
+So the shell serves byte ranges over a custom URL scheme and the worker reads them with a
+**synchronous XHR**, which a worker is allowed to do. The alternatives were worse. A
+`SharedArrayBuffer` with an `Atomics.wait` handshake needs cross-origin isolation and a main
+thread that is never busy — and the main thread here is the one rendering. Making the reader
+async means rewriting the Rust `Read` implementation and everything above it. A blocking range
+request inside a worker is the small answer, and because it has the same shape as the browser
+path, nothing downstream changed: one ternary in each of three workers.
+
+**It hung on the first run, silently.** Sixty seconds at 6% CPU and flat memory. The cause was
+the Content Security Policy: `connect-src` did not list the custom scheme, so WKWebView refused
+the request without an error a worker could see. Adding `e57vfile:` to `connect-src` fixed it
+outright. Worth writing down because the symptom — a hang, not a failure — points nowhere near
+the cause.
+
+### The bug that made every fix invisible
+
+For an hour the app kept behaving as though half the fixes had not been made, because they had
+not. `tauri::generate_context!()` bakes the built front-end into the binary **at macro
+expansion time**, and cargo does not know that happened: rebuild `dist-desktop`, leave `src/`
+alone, and cargo cheerfully skips the compile and ships the *previous* front-end inside a
+freshly bundled app. Everything compiles, the app runs, and it is the wrong app. The same trap
+caught `include_str!("../../mcp/tools.json")` — the binary served 29 tools for a while after
+the file had 30.
+
+Two lines in `build.rs` fix it, and they are the kind of line that is obvious only afterwards:
+
+    println!("cargo:rerun-if-changed=../dist-desktop");
+    println!("cargo:rerun-if-changed=../mcp/tools.json");
+
+### Offline means the bytes, not the behaviour
+
+"No network" is a claim about what ships, not about what runs. Three things in the web build
+reach out: the analytics tag, the Google Fonts stylesheet, and Firebase for the hosted agent
+relay. Guarding them at runtime would still ship them.
+
+So the desktop build is a separate Vite mode. An `enforce: 'pre'` plugin strips the analytics
+script and the font links out of the HTML (the font stacks already name `system-ui` and
+`ui-monospace` as fallbacks, so this costs the typeface and nothing else), and resolves
+`./session` to a four-line stub that throws with an explanation — which takes **458 KB of
+Firestore client** out of the bundle rather than merely not calling it. It also blanks the
+web-only install snippet, because a URL in a `<pre>` is still a URL in the shipped bytes.
+Afterwards the only absolute URLs left in `dist-desktop` are the two XML namespaces that SVG
+requires. The one socket the process opens is a listener on 127.0.0.1 for the agent bridge.
+
+### One source of truth for 30 tools
+
+The desktop app serves MCP from Rust, and the web build serves it from Node. Two
+implementations describing the same thirty tools in two languages would drift the week after
+they were written — so neither describes them. `mcp/tools.json` holds every name, description,
+JSON Schema, timeout and reply shape; `mcp/server.mjs` reads it and converts each schema back
+into the zod shape the SDK wants, and `desktop/src/mcp.rs` embeds it and serves `tools/list`
+verbatim.
+
+Pushing the *reply* shape into the same file is what made the two actually identical rather
+than merely similar. Each tool carries a small `ui` record — `shot: always | never | own-image
+| own-png`, an optional `noShotWhen: {op: [...]}`, an optional `writesFile: {arg, via}` — and
+both servers implement that one algorithm instead of twenty-nine hand-written handlers. The
+Node server went from 282 lines to 171 in the process. `test-mcp.mjs` drives each server over
+stdio the way an agent does and compares every name, description, property list and required
+list against the file: 23 checks, and it runs in CI on all three platforms.
+
+The split that made this possible: in the web build the Node MCP server *is* the WebSocket
+endpoint, but the desktop app is already running when an agent starts, so the app owns a small
+router — one viewer, any number of agents — and `e57view --mcp` is just another agent that
+happens to speak MCP on its own stdin and stdout. The wire protocol is byte-for-byte the one
+the web build already used, so `agent.ts` cannot tell which server it is talking to.
+
+### Measured, on this machine, on the real scan
+
+`drive-desktop.mjs` drives the **built app** through its own MCP server — there is no
+Playwright, because a WKWebView is not a browser you can attach to, and the interface an agent
+will actually use is the right one to test through. Against `1973-registered.e57`, 3.23 GB:
+
+| | |
+|---|---|
+| open by path, 73,757,292 points | **17.1 s** (Chrome, same file: 13.5 s) |
+| resident memory, whole scan loaded | **97 MB** (the 1,033 MB of records live in GPU buffers) |
+| cache the decoded cells to OPFS | **1.1 s** |
+| reopen from that cache | **0.6 s — 27.9x faster than decoding** |
+| export 1-in-40 as LAS to a chosen path | 48.0 MB in 1.0 s, byte-exact |
+| exact point-in-box count over all 73.8M | passes |
+
+WKWebView was the risk and it carried everything: `FileReaderSync` was not needed in the end,
+OPFS sync access handles work, and the float render targets the eye-dome pass needs are there.
+
+### `viewer_cache`, which the desktop made obvious
+
+Driving the app headlessly exposed a real gap in the agent surface: an agent could *open* a
+cached scan but never *create* one, because caching was a modal the user answered. Since a
+scan that takes seventeen seconds to decode reopens in half a second, caching one you will come
+back to is among the most useful things an agent can do for the next session. It is a tool now.

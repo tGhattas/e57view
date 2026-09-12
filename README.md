@@ -248,6 +248,16 @@ of the same room register to **0.000 mm** and their distance field reads **0.00 
   **−1.98%** for plain Laplacian); *Decimate* is **vertex clustering** with a quadric-optimal
   representative per cell, which is linear and fast but takes a cell size rather than a
   triangle target. Saves as PLY, OBJ or STL with the transform and the global shift baked in.
+- **Desktop app** — the same viewer as a **Tauri v2** application: 4.7 MB, works with no
+  network at all, and adds the three things a web page cannot have. Files open **by path**
+  (Finder drops, a File menu with Open Recent, `e57view scan.e57` from a shell), exports go
+  through **native Save dialogs**, and the **MCP server is built in** — `e57view --mcp` speaks
+  MCP on stdio with no Node and no install, from the same `mcp/tools.json` the web server
+  reads. Measured on a 3.23 GB, 73.8M-point E57: **17.1 s to open by path, 97 MB resident,
+  0.6 s to reopen from the on-device cache**. `npm run desktop:build`.
+- **On-device cache** — decoded cells written to private storage and reopened in a fraction of
+  the decode time (**0.6 s against 17.1 s** on that scan). An agent can write, list and drop
+  them, which is the cheapest thing it can do for its next session.
 - **Scripts** — *Run script…* in the Agent group, and a `script` command over the agent link,
   take a JSON array of `{cmd, args}` steps and run them in order on the tab, with each step's
   result available to the next as `$last`, or under a name it chose with `save`. `$layers` and

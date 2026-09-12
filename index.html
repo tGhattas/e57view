@@ -491,23 +491,30 @@
 
     <div class="grp" data-grp="agent">
       <h3>Agent</h3>
-      <label class="row"><span>Local MCP</span><input type="checkbox" id="k-agent"></label>
+      <label class="row web-only"><span>Local MCP</span><input type="checkbox" id="k-agent"></label>
       <p class="hint mono" id="v-agent">off</p>
       <button id="k-script" class="ghost wide">Run script…</button>
       <p class="hint mono" id="v-script">—</p>
-      <p class="hint">Lets an agent on <b>this machine</b> drive the viewer through the e57view MCP server. It is one file and needs only Node 20; a web page cannot start it for you, so download it and register it once:</p>
-      <div class="seg">
+      <p class="hint web-only">Lets an agent on <b>this machine</b> drive the viewer through the e57view MCP server. It is one file and needs only Node 20; a web page cannot start it for you, so download it and register it once:</p>
+      <div class="seg web-only">
         <button id="k-mcpget" class="ghost">Download server</button>
         <button id="k-mcpcopy" class="ghost">Copy install</button>
       </div>
-      <pre class="snip" id="v-mcp">curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
+      <pre class="snip web-only" id="v-mcp">curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
 claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"</pre>
-      <p class="hint">Then tick <b>Local MCP</b> above. The server listens on 127.0.0.1 only, so nothing is exposed off this machine; Chrome asks once to allow local network access.</p>
-      <label class="row"><span>Allow edits</span><input type="checkbox" id="k-agentedits"></label>
-      <button id="k-agenturl" class="ghost wide">Copy agent URL…</button>
-      <button id="k-agentstop" class="ghost wide hidden">Stop session</button>
-      <p class="hint mono" id="v-agenturl">—</p>
-      <p class="hint">Copies a page link plus a bearer token for <span class="mono">POST /agent</span>, so an agent can drive this tab from anywhere without MCP. The token is shown once and never appears in the URL. A session dies when you close this tab, and expires after 8 hours; tick <b>Allow edits</b> to let an agent crop, delete or save. Keep this tab open.</p>
+      <p class="hint web-only">Then tick <b>Local MCP</b> above. The server listens on 127.0.0.1 only, so nothing is exposed off this machine; Chrome asks once to allow local network access.</p>
+      <p class="hint desktop-only">The MCP server is <b>inside this app</b>: no Node, no install, no network. Register the app itself once and any agent on this machine can drive it.</p>
+      <pre class="snip desktop-only" id="v-mcpdesk">…</pre>
+      <div class="seg desktop-only">
+        <button id="k-mcpdeskcopy" class="ghost">Copy for Claude Code</button>
+        <button id="k-mcpjson" class="ghost">Copy JSON</button>
+      </div>
+      <p class="hint desktop-only">Claude Desktop and Cursor take the JSON form. The bridge listens on 127.0.0.1 only and this app opens no other socket.</p>
+      <label class="row web-only"><span>Allow edits</span><input type="checkbox" id="k-agentedits"></label>
+      <button id="k-agenturl" class="ghost wide web-only">Copy agent URL…</button>
+      <button id="k-agentstop" class="ghost wide hidden web-only">Stop session</button>
+      <p class="hint mono web-only" id="v-agenturl">—</p>
+      <p class="hint web-only">Copies a page link plus a bearer token for <span class="mono">POST /agent</span>, so an agent can drive this tab from anywhere without MCP. The token is shown once and never appears in the URL. A session dies when you close this tab, and expires after 8 hours; tick <b>Allow edits</b> to let an agent crop, delete or save. Keep this tab open.</p>
     </div>
 
     <div class="grp" data-grp="measure">

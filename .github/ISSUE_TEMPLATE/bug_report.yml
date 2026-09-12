@@ -1,0 +1,32 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not attach scan data. A description of the file — format, size, point count,
+        which scanner wrote it — is almost always enough, and anything you attach here is public.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations: { required: true }
+  - type: input
+    id: build
+    attributes:
+      label: Which build
+      placeholder: "web (opensketch.web.app), or desktop 0.1.0 on macOS 15"
+    validations: { required: true }
+  - type: input
+    id: file
+    attributes:
+      label: The file
+      placeholder: "E57, 3.2 GB, 73.8M points, NavVis VLX — or: not file-specific"
+  - type: textarea
+    id: console
+    attributes:
+      label: Anything in the console
+      description: In the browser, the developer console. In the desktop app, the terminal if you started it there.
+      render: text

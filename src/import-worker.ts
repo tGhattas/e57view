@@ -5,6 +5,7 @@
 import init, { PointSink, LazReader } from './wasm/e57_wasm.js';
 import wasmUrl from './wasm/e57_wasm_bg.wasm?url';
 import { sniff, parsePly, parseLas, parseAscii, parsePtx } from '../shared/importers.mjs';
+import { isNative, nativeReadRange } from '../shared/nativefile.mjs';
 
 const post = (m: any, t?: Transferable[]) => (self as any).postMessage(m, t ?? []);
 let ready: Promise<unknown> | null = null;
@@ -16,9 +17,14 @@ self.onmessage = async (ev: MessageEvent) => {
     if (!ready) ready = init({ module_or_path: wasmUrl });
     await ready;
     const file: File = m.file;
-    const fr = new FileReaderSync();
-    const readRange = (offset: number, length: number) =>
-      new Uint8Array(fr.readAsArrayBuffer(file.slice(offset, Math.min(offset + length, file.size))));
+    // a path in the desktop build, a File in the browser; the callback is the same either way
+    const readRange = isNative(file)
+      ? nativeReadRange(file as any)
+      : (() => {
+          const fr = new FileReaderSync();
+          return (offset: number, length: number) =>
+            new Uint8Array(fr.readAsArrayBuffer(file.slice(offset, Math.min(offset + length, file.size))));
+        })();
     const kind = m.kind ?? sniff(file.name, readRange);
     if (!['ply', 'las', 'laz', 'ascii', 'ptx'].includes(kind)) throw new Error(`Unrecognised file type: ${file.name}`);
 

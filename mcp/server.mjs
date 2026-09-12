@@ -6,9 +6,14 @@
 //
 //   claude mcp add e57view -- node /path/to/mcp/server.mjs
 //   then open https://opensketch.web.app/?agent=1 in Chrome (or toggle "Agent link").
+//
+// The desktop build serves the same tools from Rust with no Node at all. Neither server
+// describes a tool itself: mcp/tools.json holds every name, description, argument schema,
+// timeout and reply shape, and both read it. Two descriptions of the same 29 tools in two
+// languages drift the week after they are written; one file cannot.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import TOOLS from './tools.json' with { type: 'json' };
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import TOOLS from './tools.json' with { type: 'json' };
 import { WebSocketServer } from 'ws';
 import { z } from 'zod';
 import { writeFileSync } from 'node:fs';
@@ -47,45 +52,8 @@ function call(cmd, args = {}, timeoutMs = 60000) {
     app.send(JSON.stringify({ id, cmd, args }));
   });
 }
-const text = (v) => ({ content: [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }] });
-/** Collect a payload the viewer handed back in parts (its HTTP relay caps a reply at 1 MiB;
- *  this websocket does not, but the command is the same either way). */
-async function collect(cmd, args, first, field = 'image') {
-  const p = first?.[field];
-  if (!p || typeof p.data !== 'string') return null;
-  let all = p.data;
-  for (let i = 1; i < (p.parts || 1); i++) {
-    const r = await call(cmd, { ...args, part: i }, 180000);
-    all += r?.[field]?.data ?? '';
-  }
-  return all;
-}
-/** A command that answers with its own calibrated image: show the image, then the record. */
-async function withOwnImage(cmd, args) {
-  const r = await call(cmd, args, 180000);
-  const b64 = await collect(cmd, args, r);
-  const { image, ...rest } = r ?? {};
-  const c = [];
-  if (b64) c.push({ type: 'image', data: b64, mimeType: image?.mime ?? 'image/jpeg' });
-  c.push({ type: 'text', text: JSON.stringify(rest, null, 2) });
-  return { content: c };
-}
-const withShot = async (v, shot) => {
-  const c = [{ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) }];
-  if (shot) { const s = await call('screenshot', { width: 1280 }); c.push({ type: 'image', data: s.png, mimeType: 'image/png' }); }
-  return { content: c };
-};
 
-// ---------------------------------------------------------------- tool definitions
-//
-// The names, descriptions and argument schemas live in tools.json, which the Rust desktop
-// build embeds as well. Two servers describing the same tools in two languages drift the
-// week after they are written; one file cannot. Only the handlers live here, and registering
-// one whose definition is missing — or leaving a definition with no handler — is an error at
-// start-up rather than a tool that quietly does nothing.
-const server = new McpServer({ name: 'e57view', version: '0.1.0' });
-const defs = new Map(TOOLS.map(t => [t.name, t]));
-
+// ---------------------------------------------------------------- shared definitions
 /** JSON Schema back to the zod shape the MCP SDK wants. Only the constructs tools.json uses. */
 function zod(s) {
   let t;
@@ -122,101 +90,82 @@ function shape(s) {
   }
   return out;
 }
-function reg(name, handler) {
-  const d = defs.get(name);
-  if (!d) throw new Error(`${name} has a handler but no definition in mcp/tools.json`);
-  defs.delete(name);
-  server.tool(name, d.description, shape(d.inputSchema), handler);
+
+// ---------------------------------------------------------------- turning a reply into content
+const json = (v) => ({ type: 'text', text: typeof v === 'string' ? v : JSON.stringify(v, null, 2) });
+/** True when this call's arguments match a `{op:[...]}`-style condition from tools.json. */
+const matches = (cond, args) => !cond || Object.entries(cond).every(([k, vs]) => vs.includes(args?.[k]));
+/** Collect a payload the viewer handed back in parts (its HTTP relay caps a reply at 1 MiB;
+ *  this websocket does not, but the command is the same either way). */
+async function collectParts(cmd, args, first, timeoutMs, field = 'image') {
+  const p = first?.[field];
+  if (!p || typeof p.data !== 'string') return null;
+  let all = p.data;
+  for (let i = 1; i < (p.parts || 1); i++) {
+    const r = await call(cmd, { ...args, part: i }, timeoutMs);
+    all += r?.[field]?.data ?? '';
+  }
+  return all;
 }
 
-reg('viewer_state', async () => text(await call('state')));
+/** One handler for every tool, driven entirely by the `ui` record in tools.json. */
+async function run(def, args) {
+  const { cmd, timeoutMs, ui } = def;
+  const wf = ui.writesFile;
 
-reg('viewer_view', async (a) => withOwnImage('view', a));
-
-reg('viewer_section', async (a) => withOwnImage('section', a));
-
-reg('viewer_probe', async (a) => text(await call('probe', a)));
-
-reg('viewer_heightmap', async (a) => withOwnImage('heightmap', a));
-
-reg('viewer_contour', async (a) => text(await call('contour', a, 180000)));
-
-reg('viewer_fitplane', async (a) => text(await call('fitplane', a, 180000)));
-
-reg('viewer_distance', async (a) => text(await call('distance', a)));
-
-reg('viewer_inside', async (a) => text(await call('inside', a, 180000)));
-
-reg('viewer_screenshot', async ({ width }) => { const s = await call('screenshot', { width: width ?? 1280 }); return { content: [{ type: 'image', data: s.png, mimeType: 'image/png' }, { type: 'text', text: JSON.stringify({ view: s.view, camera: s.camera }, null, 2) }] }; });
-
-reg('viewer_set_view', async (a) => withShot(await call('set_view', a), true));
-
-reg('viewer_set', async ({ settings }) => withShot(await call('set', settings), true));
-
-reg('viewer_regions', async (a) => withShot(await call('regions', a, 120000), a.op !== 'list'));
-
-reg('viewer_pick', async (a) => text(await call('pick', a)));
-
-reg('viewer_measure', async (a) => withShot(await call('measure', a), true));
-
-reg('viewer_export', async ({ path, format, stride }) => {
-  const r = await call('export', { format, stride }, 30 * 60 * 1000);
-  const parts = chunks.get(r.transferId) ?? []; chunks.delete(r.transferId);
-  const buf = Buffer.concat(parts);
-  writeFileSync(path, buf);
-  return text({ saved: path, bytes: buf.length, points: r.count });
-});
-
-reg('viewer_open', async (a) => withShot(await call('open', a, 15 * 60 * 1000), true));
-
-reg('viewer_surface', async (a) => {
-  if (a.op === 'export') {
-    if (!a.path) throw new Error('op=export needs path');
-    const args = { op: 'export', format: a.format ?? 'ply', part: 0 };
-    const first = await call('surface', args, 600000);
-    let all = first.data ?? '';
-    for (let i = 1; i < (first.parts || 1); i++) all += (await call('surface', { ...args, part: i }, 600000)).data ?? '';
-    const buf = Buffer.from(all, 'base64');
-    writeFileSync(a.path, buf);
-    return text({ saved: a.path, bytes: buf.length, parts: first.parts, triangles: first.triangles, vertices: first.vertices, holeRatio: first.holeRatio });
+  // a tool that writes a file on this machine: two ways the bytes come back
+  if (wf && matches(wf.when, args) && args?.[wf.arg]) {
+    const path = args[wf.arg];
+    const { [wf.arg]: _drop, ...rest } = args;
+    if (wf.via === 'chunks') {
+      const r = await call(cmd, rest, timeoutMs);
+      const parts = chunks.get(r.transferId) ?? []; chunks.delete(r.transferId);
+      const buf = Buffer.concat(parts);
+      writeFileSync(path, buf);
+      return { content: [json({ saved: path, bytes: buf.length, ...(wf.count ? { [wf.count]: r[wf.count] } : {}) })] };
+    }
+    // the other way: base64 in the reply itself, paged because the HTTP relay caps a reply
+    const first = await call(cmd, { ...rest, part: 0 }, timeoutMs);
+    let b64 = first.data ?? '';
+    for (let i = 1; i < (first.parts || 1); i++) b64 += (await call(cmd, { ...rest, part: i }, timeoutMs)).data ?? '';
+    const buf = Buffer.from(b64, 'base64');
+    writeFileSync(path, buf);
+    const { data: _d, ...meta } = first;
+    return { content: [json({ saved: path, bytes: buf.length, ...meta })] };
   }
-  return withShot(await call('surface', a, 600000), true);
-});
 
-reg('viewer_script', async (a) => withShot(await call('script', a, 30 * 60 * 1000), true));
+  const r = await call(cmd, args ?? {}, timeoutMs);
 
-reg('viewer_mesh', async (a) => {
-  if (a.op === 'save') {
-    if (!a.path) throw new Error('op=save needs path');
-    const r = await call('mesh', { op: 'save', format: a.format ?? 'ply' }, 600000);
-    const parts = chunks.get(r.transferId) ?? []; chunks.delete(r.transferId);
-    const buf = Buffer.concat(parts);
-    writeFileSync(a.path, buf);
-    return text({ saved: a.path, bytes: buf.length, triangles: r.triangles });
+  if (ui.shot === 'own-image') {
+    const b64 = await collectParts(cmd, args ?? {}, r, timeoutMs);
+    const { image, ...rest } = r ?? {};
+    const c = [];
+    if (b64) c.push({ type: 'image', data: b64, mimeType: image?.mime ?? 'image/jpeg' });
+    c.push(json(rest));
+    return { content: c };
   }
-  return withShot(await call('mesh', a, 900000), a.op !== 'list' && a.op !== 'measure');
-});
+  if (ui.shot === 'own-png') {
+    const { png, ...rest } = r ?? {};
+    const c = [];
+    if (png) c.push({ type: 'image', data: png, mimeType: 'image/png' });
+    c.push(json(rest));
+    return { content: c };
+  }
+  // a courtesy picture of what changed, unless this call is one of the read-only ops
+  let shot = ui.shot === 'always';
+  if (shot && matches(ui.noShotWhen, args) && ui.noShotWhen) shot = false;
+  if (ui.onlyShotWhenPresent && args?.[ui.onlyShotWhenPresent] === undefined) shot = false;
+  const c = [json(r)];
+  if (shot) {
+    try { const s = await call('screenshot', { width: 1280 }); c.push({ type: 'image', data: s.png, mimeType: 'image/png' }); }
+    catch { /* the picture is a courtesy; the answer is the point */ }
+  }
+  return { content: c };
+}
 
-reg('viewer_entities', async (a) => withShot(await call('entities', a, 300000), a.op !== 'list'));
-
-reg('viewer_register', async (a) => withShot(await call('register', a, 900000), true));
-
-reg('viewer_distance_to', async (a) => withShot(await call('distance_to', a, 900000), true));
-
-reg('viewer_volume', async (a) => withShot(await call('volume', a, 600000), true));
-
-reg('viewer_fit', async (a) => withShot(await call('fit', a, 300000), true));
-
-reg('viewer_detect', async (a) => withShot(await call('detect', a, 900000), true));
-
-reg('viewer_transform', async (a) => withShot(await call('transform', a, 120000), a.op !== 'get'));
-
-reg('viewer_history', async (a) => withShot(await call('history', a, 180000), a.op !== 'status'));
-
-reg('viewer_stations', async (a) => withShot(await call('stations', a, 60000), a.enter !== undefined));
-
-if (defs.size) throw new Error(`mcp/tools.json defines tools with no handler here: ${[...defs.keys()].join(', ')}`);
+const server = new McpServer({ name: 'e57view', version: '0.1.0' });
+for (const def of TOOLS) server.tool(def.name, def.description, shape(def.inputSchema), (a) => run(def, a));
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-process.stderr.write(`[e57view-mcp] ready; bridge on ws://127.0.0.1:${PORT}\n`);
+process.stderr.write(`[e57view-mcp] ready; ${TOOLS.length} tools; bridge on ws://127.0.0.1:${PORT}\n`);

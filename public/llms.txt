@@ -209,6 +209,26 @@ against 64.274 m³, -0.11%.**
 The viewer's own Raster group does the same things with a draped grid you can see, plus PNG
 and world-file export, contours at an interval, and DXF or GeoJSON out in the global frame.
 
+## Two builds, one interface
+
+There is a browser build at opensketch.web.app and a desktop app, and every command below
+behaves identically in both. Two differences are worth knowing:
+
+- **`open`** takes `path` in the desktop app — a file on that machine, with `add:true` to bring
+  it in as another layer. A browser tab has no file system, so there it is `cached:<key>` or
+  `cloud:<id>` and the file itself has to be chosen in the page.
+- **The desktop app serves MCP itself**, from the same tool definitions, with no Node and no
+  network: `claude mcp add e57view -- /Applications/e57view.app/Contents/MacOS/e57view --mcp`.
+  The hosted HTTP session described at the top of this file is the browser build's way in.
+
+{"session":"S","cmd":"cache","args":{"op":"write"}}
+
+`cache` is the on-device store of decoded cells. A 3.2 GB scan that takes seventeen seconds to
+decode reopens from it in **0.6 s**, so caching a scan you will come back to is the single
+biggest thing you can do for the next session. `op:"write"` caches what is in memory including
+any crop and transform, `op:"list"` reports what is there with point counts, `op:"drop"`
+removes one, and `open` with `cached:<key>` reopens it. Chromium and the desktop app only.
+
 ## Scripts: several commands in one call
 
 {"session":"S","cmd":"script","args":{"steps":[{"cmd":"state","save":"s"},{"cmd":"view","args":{"preset":"top"}}]}}

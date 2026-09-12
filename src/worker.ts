@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import init, { E57Handle, set_window_size } from './wasm/e57_wasm.js';
 import wasmUrl from './wasm/e57_wasm_bg.wasm?url';
+import { isNative, nativeReadRange } from '../shared/nativefile.mjs';
 
 let ready: Promise<unknown> | null = null;
 const post = (m: any, t?: Transferable[]) => (self as any).postMessage(m, t ?? []);
@@ -13,17 +14,22 @@ self.onmessage = async (ev: MessageEvent) => {
     if (msg.type !== 'open') return;
 
     const file: File = msg.file;
-    // FileReaderSync is worker-only and synchronous: exactly what the Rust
-    // `Read` impl needs. The multi-GB file never enters wasm memory, and this
-    // needs no SharedArrayBuffer / COOP / COEP.
-    const fr = new FileReaderSync();
     let bytesPulled = 0;
-    const readRange = (offset: number, length: number): Uint8Array => {
-      const end = Math.min(offset + length, file.size);
-      const buf = fr.readAsArrayBuffer(file.slice(offset, end));
-      bytesPulled += buf.byteLength;
-      return new Uint8Array(buf);
-    };
+    // FileReaderSync is worker-only and synchronous: exactly what the Rust `Read` impl
+    // needs. The multi-GB file never enters wasm memory, and this needs no
+    // SharedArrayBuffer / COOP / COEP. The desktop build has no `File` to slice — the user
+    // gave a path — so the same callback is served by the shell over a custom URL scheme.
+    const readRange = isNative(file)
+      ? nativeReadRange(file as any, (n: number) => { bytesPulled += n; })
+      : (() => {
+          const fr = new FileReaderSync();
+          return (offset: number, length: number): Uint8Array => {
+            const end = Math.min(offset + length, file.size);
+            const buf = fr.readAsArrayBuffer(file.slice(offset, end));
+            bytesPulled += buf.byteLength;
+            return new Uint8Array(buf);
+          };
+        })();
 
     set_window_size(8 * 1024 * 1024);
     const t0 = performance.now();

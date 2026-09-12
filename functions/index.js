@@ -14,7 +14,7 @@ const AGENT_HELP = {
   name: 'e57view agent',
   how: 'In the viewer: Agent → Copy agent URL. That copies a page link plus a bearer token. Keep the tab open and POST commands here with the token in an Authorization header. No MCP config required.',
   auth: "Authorization: Bearer <token from Copy agent URL>  (or JSON { token }). The session id names the mailbox; the token is the credential. Sessions expire after 8 hours and are read-only unless the viewer ticks Allow edits.",
-  post: { session: 'session id', cmd: 'state | screenshot | view | section | probe | heightmap | contour | fitplane | distance | inside | measure | pick | set_view | set | regions | entities | register | distance_to | fit | detect | volume | mesh | script | transform | surface | history | stations | open', args: {} },
+  post: { session: 'session id', cmd: 'state | screenshot | view | section | probe | heightmap | contour | fitplane | distance | inside | measure | pick | set_view | set | regions | entities | register | distance_to | fit | detect | volume | mesh | script | transform | surface | history | stations | open | cache', args: {} },
   scripts: 'script runs several commands in order in one call, with each step\'s result available to the next: steps is an array of { cmd, args, save?, label? }, and args may hold $last, $layers, $active or any name an earlier step saved, with dotted paths ("$last.area", "$layers.0.id") and ${...} interpolation inside longer strings. The reply lists every step with its result, its error and its time; stopOnError defaults to true. Most steps in a modelling session are decided entirely by the previous answer, so this is the difference between twenty round trips and one.',
   meshes: 'A PLY, OBJ or STL opened in the viewer becomes a layer of triangles rather than points (entities reports kind:"mesh"), drawn alongside the clouds and moved by transform like one. mesh measure gives area and volume with the boundary edge count beside them, because the volume of an open mesh is not an enclosed volume; mesh sample scatters area-weighted points over the triangles into a new point layer; mesh distance measures the active cloud to the nearest triangle of a mesh layer as a scalar field; flip, smooth (Taubin, so the volume stays) and decimate (vertex clustering) edit one; save writes it out.',
   layers: 'Several clouds can be open at once. Every visible one is drawn; exactly one is active, and every other command works on the active one. entities lists, activates, shows, hides, renames, clones, merges and removes them; register (centres | scales | icp) moves the active layer onto a reference; distance_to writes the distance between them as a scalar field on the active layer.',
@@ -56,6 +56,7 @@ const AGENT_HELP = {
     { cmd: 'fit', args: { shape: 'plane', box: { center: [3, 2, 0], half: [2.5, 1.8, 0.02] } } },
     { cmd: 'detect', args: { tolerance: 0.006, minPoints: 3000 } },
     { cmd: 'volume', args: { reference: 'Ground', cell: 0.05 } },
+    { cmd: 'cache', args: { op: 'write' } },
     { cmd: 'mesh', args: { op: 'measure' } },
     { cmd: 'mesh', args: { op: 'sample', density: 400 } },
     { cmd: 'mesh', args: { op: 'distance', mesh: 'design' } },
@@ -96,6 +97,7 @@ function needsEdit(cmd, args = {}) {
   if (cmd === 'entities') return ['add', 'remove', 'clone', 'merge'].includes(args.op ?? 'list');
   if (cmd === 'register' || cmd === 'distance_to' || cmd === 'detect' || cmd === 'volume') return true;
   if (cmd === 'mesh') return !['list', 'measure', 'show'].includes(args.op ?? 'measure');
+  if (cmd === 'cache') return (args.op ?? 'list') !== 'list';
   // a script is exactly as privileged as the steps in it
   if (cmd === 'script') return (Array.isArray(args.steps) ? args.steps : []).some(st => needsEdit(String(st?.cmd ?? ''), st?.args ?? {}));
   return false;

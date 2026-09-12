@@ -10,6 +10,13 @@ import { sniffMesh, parseMesh, meshToStl, MESH_EXT } from '../shared/meshio.mjs'
 import { measureMesh, flipMesh, smoothMesh, decimateMesh, samplePoints, recomputeNormals, type MeshMeasure } from './meshops';
 import type { MeshData } from './meshview';
 
+/** True only in the desktop build, and only when the shell is actually there. The build flag
+ *  alone would be a lie in `vite preview`; the Tauri global alone would drag the shell module
+ *  into the web bundle. Both, and the web build never carries a byte of it. */
+declare const __DESKTOP__: boolean;
+export const DESKTOP = __DESKTOP__ && typeof (window as any).__TAURI__ !== 'undefined';
+let shell: typeof import('./desktop') | null = null;
+
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const fmt = (n: number) => Math.round(n).toLocaleString();
 const mb = (b: number) => b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(0)} MB`;
@@ -355,7 +362,10 @@ function onDone(stats: any, how: string) {
   });
   drawHistogram(); viewer.fit(); applyPendingView(); applyUrlCommands(); updateCropUI(true);
   worker?.terminate(); worker = null;
+  // A browser hands back a FileSystemHandle; the desktop shell has something better — the
+  // path itself, which survives a restart with no permission prompt.
   if (currentHandle) idbPut(cacheKey, currentHandle);
+  else if (DESKTOP && (currentFile as any)?.path) idbPut(cacheKey, { __path: (currentFile as any).path });
   updateCacheUI(); updateHistUI();
   renderLayers(); updateNames();          // the row's point count is only final now
   if (!fromCache && localStorage.getItem('nocache:' + cacheKey) !== '1') setTimeout(offerCache, 600);
@@ -666,6 +676,11 @@ async function removeLayer(e: Entity, ask = true) {
 $('k-layeradd').addEventListener('click', () => addFile());
 /** Add a scan alongside the ones already open. Never warns: nothing is replaced. */
 async function addFile() {
+  if (DESKTOP && shell) {
+    const paths = await shell.openDialog({ title: 'Add a layer', multiple: true });
+    for (const p of paths) await openPath(p, true);
+    return;
+  }
   const anyWin = window as any;
   if (anyWin.showOpenFilePicker) {
     try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las', '.laz', '.ptx', '.obj', '.stl', ...ASCII_EXT.map(e => '.' + e)] } }] }); openFile(await h.getFile(), h, true); } catch {}
@@ -1163,6 +1178,12 @@ function exportFormat(): 'e57' | 'las' | 'ply' | 'laz' {
   return 'e57';
 }
 async function pickSaveHandle(name: string, fmtSel: string): Promise<any | null | undefined> {
+  if (DESKTOP && shell) {
+    // a real Save dialog, and a path the shell writes to — the browser's download fallback
+    // would land the file in Downloads with no say in it
+    const p = await shell.saveDialog(name, [fmtSel]);
+    return p ? { __path: p } : null;
+  }
   const anyWin = window as any;
   if (!anyWin.showSaveFilePicker) return undefined; // no picker: caller will trigger a download
   try {
@@ -1173,6 +1194,11 @@ async function pickSaveHandle(name: string, fmtSel: string): Promise<any | null 
   } catch { return null; } // user cancelled
 }
 async function writeOutFile(r: { file: File; name: string; scratch: string }, handle: any | undefined) {
+  if (handle?.__path && shell) {
+    await shell.writeBlobTo(r.file, handle.__path, (done, total) => busy(`Writing ${mb(done)} of ${mb(total)}…`, done / Math.max(total, 1)));
+    io.postMessage({ type: 'export-cleanup', name: r.scratch });
+    return;
+  }
   if (handle) { const w = await handle.createWritable(); await r.file.stream().pipeTo(w); io.postMessage({ type: 'export-cleanup', name: r.scratch }); }
   else {
     const url = URL.createObjectURL(r.file); const a = document.createElement('a'); a.href = url; a.download = r.name; document.body.appendChild(a); a.click(); a.remove();
@@ -2827,6 +2853,11 @@ async function importMesh(f: File): Promise<Entity | null> {
 }
 $('k-meshopen').addEventListener('click', () => pickMeshFile());
 async function pickMeshFile() {
+  if (DESKTOP && shell) {
+    const [p] = await shell.openDialog({ title: 'Import a mesh', extensions: [...MESH_EXT] });
+    if (p) await openPath(p, true);
+    return;
+  }
   const anyWin = window as any;
   const accept = MESH_EXT.map(x => '.' + x);
   if (anyWin.showOpenFilePicker) {
@@ -3145,7 +3176,11 @@ async function writeCache() {
     if (++n % 6 === 0) await tick();
   }
   io.postMessage({ type: 'cache-finish' }); const done = await ioOnce('cache-done');
-  hideBusy(); fromCache = true; cacheNote = ''; $('v-cache').textContent = `cached · ${mb(done.bytes)} on this device`; updateCacheUI(); refreshCachedList();
+  hideBusy(); fromCache = true; cacheNote = '';
+  // so the cached scan can be reopened later: a path on the desktop, a handle in a browser
+  if (currentHandle) idbPut(cacheKey, currentHandle);
+  else if (DESKTOP && (currentFile as any)?.path) idbPut(cacheKey, { __path: (currentFile as any).path });
+  $('v-cache').textContent = `cached · ${mb(done.bytes)} on this device`; updateCacheUI(); await refreshCachedList();
 }
 /** Why the on-device cache no longer matches what is in memory. Cleared by a save, a
  *  reload or a new file; shown by updateCacheUI so the user knows Save as… is needed. */
@@ -3179,10 +3214,20 @@ async function refreshCachedList() {
   }
 }
 async function openCached(key: string) {
-  const it = cachedItems.find(c => c.key === key); const handle = await idbGet(key);
-  if (!it || !handle) throw new Error('no stored handle for that scan');
+  const it = cachedItems.find(c => c.key === key);
+  if (!it) { await refreshCachedList(); }
+  const item = it ?? cachedItems.find(c => c.key === key);
+  if (!item) throw new Error(`nothing cached under ${key}`);
+  const handle = await idbGet(key);
+  if (!handle) throw new Error('no stored handle for that scan');
+  if (item.stride) $<HTMLSelectElement>('k-load').value = String(item.stride);
+  // the desktop build stored a path: rebuild the file-shaped thing from it
+  if (handle.__path) {
+    if (!shell) throw new Error('that scan was cached by the desktop app');
+    await openFile(await shell.nativeFile(handle.__path) as unknown as File, null);
+    return;
+  }
   const perm = await handle.requestPermission?.({ mode: 'read' }); if (perm && perm !== 'granted') throw new Error('permission denied');
-  if (it.stride) $<HTMLSelectElement>('k-load').value = String(it.stride);
   await openFile(await handle.getFile(), handle);
 }
 
@@ -3986,9 +4031,38 @@ const agent = new AgentLink({
   },
   open: async (a) => {
     if (a.stride) $<HTMLSelectElement>('k-load').value = String(a.stride);
-    if (a.cached) await openCached(a.cached); else throw new Error('give cached: <key>');
+    // a path is the desktop build's own door: there is a real file system there, and asking
+    // an agent to go through the cache for a file it can name would be theatre
+    if (a.path) {
+      if (!DESKTOP || !shell) throw new Error('path only works in the desktop app; in a browser tab open the file there, or give cached: <key>');
+      await openPath(String(a.path), !!a.add);
+    }
+    else if (a.cached) await openCached(a.cached);
+    else throw new Error(DESKTOP ? 'give path: <file> or cached: <key>' : 'give cached: <key>');
+    // Wait for the upload queue as well as the decode. Leaves reach the GPU a frame at a
+    // time, so `loaded` lags the loader by a second or two — long enough for an agent's next
+    // command to measure a cloud that is still arriving.
     await new Promise<void>(res => { const iv = setInterval(() => { if (/(loaded|from cache|streamed) in/.test($('tb-points').textContent || '')) { clearInterval(iv); res(); } }, 200); });
-    return { points: viewer.loaded };
+    await new Promise<void>(res => afterUploads(res));
+    return { points: viewer.loaded, cached: fromCache, file: currentFile?.name ?? null };
+  },
+  cache: async (a) => {
+    const op = String(a.op ?? 'list');
+    if (op === 'list') { await refreshCachedList(); return { cached: cachedItems.map(c => ({ key: c.key, name: c.name, points: c.points, bytes: c.bytes })) }; }
+    if (op === 'write') {
+      if (!viewer.loaded || !currentFile) throw new Error('nothing loaded to cache');
+      const t0 = performance.now();
+      await writeCache();
+      return { key: cacheKey, points: viewer.loaded, ms: Math.round(performance.now() - t0), note: $('v-cache').textContent };
+    }
+    if (op === 'drop') {
+      const key = String(a.key ?? cacheKey);
+      io.postMessage({ type: 'cache-delete', key });
+      await ioOnce('cache-deleted');
+      await refreshCachedList();
+      return { dropped: key, cached: cachedItems.map(c => c.key) };
+    }
+    throw new Error(`unknown cache op: ${op}. Use list, write or drop.`);
   },
   surface: async (a) => {
     if (a.op === 'clear') { meshData = null; meshInfo = null; dirtyMark.surface = 0; viewer.setMesh(null); document.body.classList.remove('has-mesh'); setDisplay('points'); viewer.render(); return { triangles: 0 }; }
@@ -4219,7 +4293,7 @@ $('k-mcpcopy').addEventListener('click', async () => {
   catch { $('v-agent').textContent = 'select the text below and copy it'; }
 });
 $('k-agent').addEventListener('change', e => { const on = (e.target as HTMLInputElement).checked; localStorage.setItem('agent', on ? '1' : '0'); on ? agent.start() : agent.stop(); });
-if (new URLSearchParams(location.search).get('agent') === '1' || localStorage.getItem('agent') === '1') { $<HTMLInputElement>('k-agent').checked = true; agent.start(); }
+if (!DESKTOP && (new URLSearchParams(location.search).get('agent') === '1' || localStorage.getItem('agent') === '1')) { $<HTMLInputElement>('k-agent').checked = true; agent.start(); }
 
 /** Commands a remote session may run only when this tab has ticked Allow edits:
  *  anything that drops points, writes a file, loads another scan or spends provider credit. */
@@ -4235,6 +4309,7 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   // reading a mesh's numbers is free; editing it, sampling it into a new layer or measuring a
   // cloud against it is not
   if (cmd === 'mesh') return !['list', 'measure', 'show'].includes(String(a.op ?? 'measure'));
+  if (cmd === 'cache') return String(a.op ?? 'list') !== 'list';
   // a script is exactly as privileged as the steps in it
   if (cmd === 'script') {
     const steps = Array.isArray(a?.steps) ? a.steps : Array.isArray(a) ? a : [];
@@ -4361,11 +4436,16 @@ addEventListener('pagehide', (e) => {
     } else sessionMod?.stopAgentSession(sid);
   } catch {}
 });
-const sessionParam = new URLSearchParams(location.search).get('session');
+const sessionParam = DESKTOP ? null : new URLSearchParams(location.search).get('session');
 if (sessionParam) import('./session').then(m => { sessionMod = m; startRemoteSession(sessionParam); }).catch(e => agentStatus('session: ' + ((e as any)?.message ?? e)));
 
 // ------------------------------------------------------------------ entry
 async function pickFile() {
+  if (DESKTOP && shell) {
+    const [p] = await shell.openDialog({ title: 'Open a scan or a mesh' });
+    if (p) await openPath(p, false);
+    return;
+  }
   const anyWin = window as any;
   if (anyWin.showOpenFilePicker) {
     try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las', '.laz', '.ptx', '.obj', '.stl', ...ASCII_EXT.map(e => '.' + e)] } }] }); openFile(await h.getFile(), h); } catch {}
@@ -4374,6 +4454,25 @@ async function pickFile() {
   const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = ['.e57', '.ply', '.las', '.laz', '.ptx', '.obj', '.stl', ...ASCII_EXT.map(e => '.' + e)].join(',');
   inp.onchange = () => inp.files?.[0] && openFile(inp.files[0]); inp.click();
 }
+/** Open a file the shell gave us by path.
+ *
+ *  The viewer has never needed a real `File` — it needs a name, a size and a way to read a
+ *  byte range — so a path becomes a `NativeFile` with the same three and everything
+ *  downstream, including the workers, is unchanged. `add` false replaces what is open, which
+ *  is the destructive one, so it goes through the same unsaved-work guard as every other door.
+ */
+async function openPath(path: string, add: boolean) {
+  if (!shell) return;
+  if (!add && !(await confirmReplace())) return;
+  try {
+    const f = await shell.nativeFile(path);
+    shell.notifyRecents();
+    await openFile(f as unknown as File, null, add && viewer.loadedAll > 0);
+  } catch (e: any) {
+    fail(`Could not open ${path}: ${e?.message ?? e}`);
+  }
+}
+
 /** Open another scan: the same picker the start screen uses, behind the unsaved-work guard. */
 async function openAnother() { if (await confirmReplace()) await pickFile(); }
 $('pick').addEventListener('click', pickFile); $('pick2').addEventListener('click', pickFile);
@@ -4452,6 +4551,70 @@ renderLayers(); updateNames();
 refreshCachedList();
 (function loop() { viewer.render(); requestAnimationFrame(loop); })();
 (window as any).__viewer = viewer;
+// ------------------------------------------------------------------ the desktop shell
+//
+// Loaded last and only in the desktop build: the page works exactly as it does in a browser
+// until this runs, and everything it adds is a door — a menu item, a Finder drop, a native
+// dialog — not a change to how anything works.
+async function startDesktop() {
+  document.body.classList.add('desktop');
+  const m = await import('./desktop');
+  shell = m;
+  await m.init({
+    openPath: (p, add) => openPath(p, add),
+    addLayer: () => addFile(),
+    importMesh: () => pickMeshFile(),
+    save: () => saveCurrent(),
+    exportPoints: () => saveCurrent(),
+    undo: () => undoEdit(),
+    redo: () => redoEdit(),
+    fit: () => viewer.fit(),
+    top: () => viewer.topDown(),
+    panel: () => { $('panel').classList.toggle('hidden'); viewer.resize(); viewer.touch(); },
+    agentPanel: () => {
+      $('panel').classList.remove('hidden');
+      const g = document.querySelector('[data-grp="agent"]') as HTMLElement | null;
+      g?.classList.remove('closed');
+      g?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      viewer.resize();
+    },
+    about: () => modal('e57view',
+      `<p>An offline viewer for E57, LAS, LAZ, PTX, PLY and text point clouds, and for PLY, OBJ and STL meshes.</p>`
+      + `<p>Everything happens on this machine. The app opens no network connection at all; the only socket it listens on is 127.0.0.1 for the agent bridge.</p>`
+      + `<p class="hint mono">GPL-3.0-only</p>`,
+      [{ label: 'Close', value: 'ok', cls: 'primary' }]),
+  });
+  // the bridge is always there in the desktop build, so the agent link is on by default
+  agent.start();
+  refreshBridge();
+  setInterval(refreshBridge, 4000);
+}
+/** What the Agent panel says about the built-in MCP server. */
+let bridgeExe = '';
+async function refreshBridge() {
+  if (!shell) return;
+  try {
+    const b = await shell.bridgeStatus();
+    bridgeExe = b.exe ?? bridgeExe;
+    $('v-agent').textContent = `MCP: on · port ${b.port} · ${b.viewer ? 'viewer connected' : 'waiting for the viewer'}`
+      + (b.agents ? ` · ${b.agents} agent${b.agents > 1 ? 's' : ''} attached` : '');
+    $('v-mcpdesk').textContent = mcpAddLine();
+  } catch { $('v-agent').textContent = 'MCP: the bridge did not answer'; }
+}
+const mcpAddLine = () => `claude mcp add e57view -- "${bridgeExe || '/Applications/e57view.app/Contents/MacOS/e57view'}" --mcp`;
+const mcpJson = () => JSON.stringify({
+  mcpServers: { e57view: { command: bridgeExe || '/Applications/e57view.app/Contents/MacOS/e57view', args: ['--mcp'] } },
+}, null, 2);
+$('k-mcpdeskcopy')?.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(mcpAddLine()); $('v-agent').textContent = 'copied — paste it in a terminal, then restart the agent'; }
+  catch { $('v-agent').textContent = 'could not reach the clipboard; select the line above'; }
+});
+$('k-mcpjson')?.addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(mcpJson()); $('v-agent').textContent = 'copied the JSON — paste it into claude_desktop_config.json'; }
+  catch { $('v-agent').textContent = 'could not reach the clipboard'; }
+});
+if (DESKTOP) startDesktop().catch(e => { $('v-agent').textContent = 'desktop shell: ' + (e?.message ?? e); });
+
 (window as any).__app = { openFile, openCached, writeCache, applyKeep, applyCrop, setCropRole, get cropState() { return cropState; }, addSection, undoEdit, redoEdit, saveCurrent, hist,
   commitTransform, transformState, levelCloud, rowMajor, fromRowMajor, runExport, updateTransformUI,
   dirtyList, isDirty, openAnother, confirmReplace,

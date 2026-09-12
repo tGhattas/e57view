@@ -1,0 +1,29 @@
+[package]
+name = "e57view"
+version = "0.1.0"
+edition = "2021"
+description = "View E57 laser scans offline"
+authors = ["e57view contributors"]
+license = "GPL-3.0-only"
+repository = "https://github.com/tamerg/e57view"
+default-run = "e57view"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "io-std", "io-util", "time"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+base64 = "0.22"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

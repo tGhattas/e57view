@@ -4,6 +4,7 @@
 //  - cache   : write the in-memory cells to OPFS, list / read / delete cached scans
 //  - image   : pull a panorama JPEG out of the source E57
 import init, { E57Handle, E57Export, LazWriter, laz_vlr, set_window_size } from './wasm/e57_wasm.js';
+import { isNative, nativeReadRange } from '../shared/nativefile.mjs';
 import wasmUrl from './wasm/e57_wasm_bg.wasm?url';
 
 const post = (m: any, t?: Transferable[]) => (self as any).postMessage(m, t ?? []);
@@ -283,9 +284,14 @@ async function image(m: any) {
   await ensureWasm();
   const file: File = m.file;
   if (!imgHandle || imgHandle.file !== file) {
-    const fr = new FileReaderSync();
-    const readRange = (offset: number, length: number) =>
-      new Uint8Array(fr.readAsArrayBuffer(file.slice(offset, Math.min(offset + length, file.size))));
+    // a path in the desktop build, a File in the browser; the callback is the same either way
+    const readRange = isNative(file)
+      ? nativeReadRange(file as any)
+      : (() => {
+          const fr = new FileReaderSync();
+          return (offset: number, length: number) =>
+            new Uint8Array(fr.readAsArrayBuffer(file.slice(offset, Math.min(offset + length, file.size))));
+        })();
     set_window_size(2 * 1024 * 1024);
     imgHandle = { file, h: new E57Handle(readRange, file.size) };
   }

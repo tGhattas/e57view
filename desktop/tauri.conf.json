@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "e57view",
+  "version": "0.1.0",
+  "identifier": "app.e57view.desktop",
+  "build": {
+    "frontendDist": "../dist-desktop",
+    "devUrl": "http://localhost:5180",
+    "beforeDevCommand": "npm run dev:desktop",
+    "beforeBuildCommand": "npm run build:desktop"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "e57view",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "dragDropEnabled": true,
+        "backgroundColor": "#05090b"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost e57vfile: e57vfile://localhost http://e57vfile.localhost ws://127.0.0.1:7337 ws://localhost:7337 blob: data:; worker-src 'self' blob:; media-src 'self' blob: data:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "deb",
+      "appimage"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Graphics and Design",
+    "shortDescription": "Offline E57 laser scan viewer",
+    "longDescription": "View, crop, analyse and export multi-gigabyte E57, LAS, LAZ, PTX and PLY point clouds entirely on this machine. Nothing is uploaded.",
+    "copyright": "GPL-3.0-only",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      }
+    }
+  }
+}
