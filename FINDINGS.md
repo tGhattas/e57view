@@ -981,3 +981,35 @@ everything is the one that most needs undoing, and there was no way back from it
 over a region that also contains noise reports a worse residual — which is correct, and meant
 the test fixture had to keep its noise out of the boxes it fits in, rather than the code
 pretending the noise was not there.
+
+## A volume is a subtraction, and the asymmetry in it is the whole answer
+
+A 2.5D volume is the difference between two height rasters, one cell area at a time. The
+arithmetic is trivial; getting the right answer was about which side gets its holes filled.
+
+Against a flat plane the first attempt was already right: **64.202 m³ against an arithmetic
+64.274 m³, −0.11%**, for a pyramid (a²h/3) plus a half-cylinder mound (πr²L/2). Against a
+*reference layer* it came out at **16.019 m³ — a quarter of the answer** — and the reason is
+worth keeping. The reference was sampled at 0.1 m and the raster cell was 0.05 m, so only about
+one cell in four of the reference had a point in it, and every cell where the reference was
+empty was skipped. Not reported as missing: silently skipped, in a number that looked
+plausible.
+
+Filling both sides fixed that and broke something else: **+8.4%**, because filling the *active*
+layer extends its surface up to twelve cells past its own edge and invents volume that was
+never scanned. So the reference is hole-filled and the active layer is not, and the asymmetry
+is the point: a cell the reference has no point in still has ground under it, but a cell the
+active layer has no point in has nothing measured above it. Both ways now agree: **64.202 m³,
+−0.11%**.
+
+The same reach cap that makes filling safe means it does not fill everything — the two shapes
+in the fixture are 4.5 m apart and the ground between them stays empty at a twelve-cell reach.
+That is the intended behaviour and the driver asserts it rather than asserting full coverage.
+
+Contours interpolate the crossing along each cell edge rather than taking the midpoint, which
+is the difference between a contour and a staircase: the pyramid's contour at half height comes
+out **3.050 m across against an exact 3.000**, at a 0.1 m cell.
+
+A world file is six numbers and the only one that needs thought is the last: the *centre* of
+the top-left pixel, in the global frame, with a negative y scale because image rows run down
+and northings run up.

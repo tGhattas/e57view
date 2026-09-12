@@ -208,6 +208,12 @@ server.tool('viewer_distance_to', 'Distance from every point of the ACTIVE layer
   reference: z.string(), signed: z.boolean().optional(),
 }, async (a) => withShot(await call('distance_to', a, 900000), true));
 
+server.tool('viewer_volume', 'A 2.5D volume between the ACTIVE layer and a reference — another layer, or a flat plane at a height. Reports added (fill), removed (cut) and net separately, because their sum hides both, plus the area it covered. The reference is hole-filled first and the active layer is not: a cell the reference has no point in still has ground under it, but filling the active layer would invent surface past its own edge. Draws the difference as a coloured grid.', {
+  reference: z.string().optional().describe('a layer id or name; omit or "plane" for a flat plane'),
+  plane: z.number().optional().describe('the plane height in local metres, when there is no reference layer'),
+  cell: z.number().optional().describe('cell size in metres, default 0.25'),
+}, async (a) => withShot(await call('volume', a, 600000), true));
+
 server.tool('viewer_fit', 'Fit a primitive to the ACTIVE REGION\'s contents, or to the whole layer when no region is active — or give a box and it fits inside that. Returns the parameters and the RMS, which is the number that decides whether to believe them: a cylinder fitted to a flat wall has a radius and an axis and means nothing, and only the residual says so. The fitted shape is drawn in the view.', {
   shape: z.enum(['plane', 'sphere', 'cylinder', 'circle']),
   box: z.object({ center: z.array(z.number()).length(3), half: z.array(z.number()).length(3), quat: z.array(z.number()).length(4).optional() }).optional(),

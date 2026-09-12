@@ -26,7 +26,7 @@ curl -s https://opensketch.web.app/agent \
 
 Commands: state, screenshot, view, section, probe, heightmap, contour, fitplane, distance,
 inside, measure, pick, set_view, set, regions, entities, register, distance_to, fit, detect,
-transform, surface, history, stations, open.
+volume, transform, surface, history, stations, open.
 
 {"session":"S","cmd":"screenshot","args":{"width":1024}}
 {"session":"S","cmd":"set_view","args":{"preset":"top"}}
@@ -76,6 +76,7 @@ The server listens on ws://127.0.0.1:7337 and the tab connects out to it; nothin
 off the machine, which makes this the safer option when the agent runs beside the browser.
 
 Tools: viewer_entities, viewer_register, viewer_distance_to, viewer_fit, viewer_detect,
+viewer_volume,
 viewer_state, viewer_screenshot, viewer_view, viewer_section, viewer_probe,
 viewer_heightmap, viewer_contour, viewer_fitplane, viewer_distance, viewer_inside,
 viewer_set_view, viewer_set, viewer_regions, viewer_pick, viewer_measure, viewer_transform,
@@ -191,6 +192,22 @@ the only thing that says so. A cylinder needs normals, because its axis comes fr
 looking for the next — which is also what stops two fits of the same wall both surviving. It
 writes a scalar field named `Shape` holding each point's shape index, so the colour ramp shows
 them and the value filter isolates one; points no shape claimed have no value.
+
+## Rasters, contours and volumes
+
+{"session":"S","cmd":"heightmap","args":{"resolution":512}}
+{"session":"S","cmd":"contour","args":{"z":1.5,"thickness":0.3}}
+{"session":"S","cmd":"volume","args":{"reference":"Ground","cell":0.05}}
+
+`volume` is the 2.5D difference between the active layer and a reference — another layer, or a
+flat plane — reported as added, removed and net separately, because their sum hides both. The
+reference is hole-filled and the active layer is not: a cell the reference has no point in
+still has ground under it, while filling the active layer would invent surface past its own
+edge. Measured against a pyramid and a half-cylinder whose volumes are arithmetic: **64.202 m³
+against 64.274 m³, -0.11%.**
+
+The viewer's own Raster group does the same things with a draped grid you can see, plus PNG
+and world-file export, contours at an interval, and DXF or GeoJSON out in the global frame.
 
 ## Regions are shapes, not cuts
 

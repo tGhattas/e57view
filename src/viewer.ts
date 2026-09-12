@@ -598,6 +598,80 @@ export class Viewer {
     this.onRegionChange?.(r);
   }
 
+  // ------------------------------------------------------- raster and contour overlays
+  private rasterMesh: THREE.Object3D | null = null;
+  private contourLines: THREE.Object3D | null = null;
+  /** Drape a height grid over the cloud as a coloured surface. Seeing it in the same view as
+   *  the points is what makes a raster judgeable rather than merely produced. */
+  setRaster(o: { grid: Float32Array; w: number; h: number; cell: number; ox: number; oy: number; lo: number; hi: number; axis: number } | null) {
+    if (this.rasterMesh) { this.overlay.remove(this.rasterMesh); this.rasterMesh = null; }
+    if (o) {
+      const { grid, w, h, cell, ox, oy, lo, hi } = o;
+      const pos: number[] = [], col: number[] = [], idx: number[] = [];
+      const span = Math.max(hi - lo, 1e-9);
+      const ramp = (t: number): [number, number, number] => {
+        t = Math.max(0, Math.min(1, t));
+        if (t < 0.25) return [0, t * 4, 1];
+        if (t < 0.5) return [0, 1, 1 - (t - 0.25) * 4];
+        if (t < 0.75) return [(t - 0.5) * 4, 1, 0];
+        return [1, 1 - (t - 0.75) * 4, 0];
+      };
+      const at = new Int32Array(w * h).fill(-1);
+      for (let v = 0; v < h; v++) for (let u = 0; u < w; u++) {
+        const g = grid[v * w + u];
+        if (!isFinite(g)) continue;
+        at[v * w + u] = pos.length / 3;
+        const x = ox + (u + 0.5) * cell, y = oy + (v + 0.5) * cell;
+        // the axis being measured decides which way the grid lies
+        if (o.axis === 2) pos.push(x, y, g);
+        else if (o.axis === 0) pos.push(g, x, y);
+        else pos.push(x, g, y);
+        const c = ramp((g - lo) / span);
+        col.push(c[0], c[1], c[2]);
+      }
+      for (let v = 0; v < h - 1; v++) for (let u = 0; u < w - 1; u++) {
+        const a = at[v * w + u], b = at[v * w + u + 1], c = at[(v + 1) * w + u + 1], d = at[(v + 1) * w + u];
+        if (a < 0 || b < 0 || c < 0 || d < 0) continue;   // a cell with no data makes no surface
+        idx.push(a, b, c, a, c, d);
+      }
+      if (idx.length) {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+        g.setIndex(idx);
+        g.computeVertexNormals();
+        const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: 0.8 }));
+        this.overlay.add(m);
+        this.rasterMesh = m;
+      }
+    }
+    this.dirty = true;
+  }
+  setRasterVisible(v: boolean) { if (this.rasterMesh) { this.rasterMesh.visible = v; this.dirty = true; } }
+  get hasRaster() { return !!this.rasterMesh; }
+  /** Contour polylines, each at its own level. */
+  setContours(lines: { z: number; pts: number[][] }[] | null, axis = 2) {
+    if (this.contourLines) { this.overlay.remove(this.contourLines); this.contourLines = null; }
+    if (lines && lines.length) {
+      const p: number[] = [];
+      for (const l of lines) {
+        for (let i = 0; i + 1 < l.pts.length; i++) {
+          const a = l.pts[i], b = l.pts[i + 1];
+          if (axis === 2) p.push(a[0], a[1], l.z, b[0], b[1], l.z);
+          else if (axis === 0) p.push(l.z, a[0], a[1], l.z, b[0], b[1]);
+          else p.push(a[0], l.z, a[1], b[0], l.z, b[1]);
+        }
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+      const o = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x46c6d2, transparent: true, opacity: 0.95, depthTest: false }));
+      this.overlay.add(o);
+      this.contourLines = o;
+    }
+    this.dirty = true;
+  }
+  get hasContours() { return !!this.contourLines; }
+
   // ------------------------------------------------------- fitted primitives
   private primitive: THREE.Object3D | null = null;
   /** Draw a fitted primitive in the overlay, or clear it. Seeing the shape against the points

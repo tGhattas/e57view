@@ -614,7 +614,7 @@ function renderLayers() {
   $<HTMLInputElement>('k-layertint').checked = viewer.active.tint.on;
   $<HTMLInputElement>('k-layercolor').value = viewer.active.tint.color;
   ($('k-layermerge') as HTMLButtonElement).disabled = viewer.visibleEntities.length < 2;
-  refreshRegisterUI();
+  refreshRegisterUI(); refreshVolumeRefs();
 }
 async function removeLayer(e: Entity, ask = true) {
   if (viewer.entities.length <= 1) return;
@@ -2011,6 +2011,335 @@ $('k-sfapply').addEventListener('click', async () => {
     masks, `<p>Keeps points whose <b>${sfName}</b> is between ${sfFmt(lo)} and ${sfFmt(hi)}. <b>{n}</b> points will be dropped, leaving {k}.</p>`);
 });
 
+// ------------------------------------------------------------------ raster, contours, volume
+// A 2.5D height model over a regular grid, which is what a terrain question turns into: a
+// contour is a level set of it, and a volume is the difference between two of them, one cell
+// area at a time.
+
+interface Raster { grid: Float32Array; w: number; h: number; cell: number; ox: number; oy: number; lo: number; hi: number; axis: number; filled: number; sampled: number }
+const rasterUi = { cell: 0.25, interval: 0.5 };
+for (const [id, key, lab, f] of [['k-rcell', 'cell', 'v-rcell', (v: number) => `${v.toFixed(2)} m`],
+                                 ['k-cint', 'interval', 'v-cint', (v: number) => `${v.toFixed(2)} m`]] as [string, 'cell' | 'interval', string, (v: number) => string][]) {
+  $(id).addEventListener('input', e => { rasterUi[key] = Number((e.target as HTMLInputElement).value); $(lab).textContent = f(rasterUi[key]); });
+  $(lab).textContent = f(rasterUi[key]);
+}
+
+/** Build a raster from an entity's points. Every statistic is one pass; "field" reads the
+ *  entity's scalar field, so a raster of roughness or of a distance field costs no more than
+ *  a raster of height. */
+function buildRaster(e: Entity, opts: { cell?: number; stat?: string; axis?: string; fill?: string; box?: THREE.Box3 } = {}): Raster | null {
+  const cell = Math.max(0.005, opts.cell ?? rasterUi.cell);
+  const stat = opts.stat ?? 'max';
+  const axisName = (opts.axis ?? 'z').toLowerCase();
+  const iAx = axisName === 'x' ? 0 : axisName === 'y' ? 1 : 2;
+  const [uAx, vAx] = [[1, 2], [0, 2], [0, 1]][iAx];
+  const b = opts.box ?? e.bounds();
+  if (b.isEmpty()) return null;
+  const mn = b.min.toArray(), size = b.getSize(new THREE.Vector3()).toArray();
+  const w = Math.max(1, Math.min(2048, Math.ceil(Math.max(size[uAx], cell) / cell)));
+  const h = Math.max(1, Math.min(2048, Math.ceil(Math.max(size[vAx], cell) / cell)));
+  const grid = new Float32Array(w * h).fill(NaN);
+  const sum = stat === 'mean' || stat === 'field' ? new Float64Array(w * h) : null;
+  const cnt = new Uint32Array(w * h);
+  let sampled = 0;
+  for (const leaf of e.cells.leavesForMask()) {
+    const recs = leaf.readback(e.cells.gl2);
+    const xyz = e.cells.transformRecordsInto(recs, leaf.count, leaf, new Float64Array(leaf.count * 3));
+    for (let i = 0; i < leaf.count; i++) {
+      const u = Math.floor((xyz[i * 3 + uAx] - mn[uAx]) / cell);
+      const v = Math.floor((xyz[i * 3 + vAx] - mn[vAx]) / cell);
+      if (u < 0 || v < 0 || u >= w || v >= h) continue;
+      const k = v * w + u;
+      const q = stat === 'field' ? (leaf.sf ? leaf.sf[i] : NaN) : xyz[i * 3 + iAx];
+      sampled++;
+      if (stat === 'density') { cnt[k]++; continue; }
+      if (!isFinite(q)) continue;
+      cnt[k]++;
+      if (sum) sum[k] += q;
+      else if (!isFinite(grid[k])) grid[k] = q;
+      else if (stat === 'min') grid[k] = Math.min(grid[k], q);
+      else grid[k] = Math.max(grid[k], q);
+    }
+  }
+  if (stat === 'density') for (let k = 0; k < grid.length; k++) grid[k] = cnt[k] || NaN;
+  else if (sum) for (let k = 0; k < grid.length; k++) grid[k] = cnt[k] ? sum[k] / cnt[k] : NaN;
+  let filled = 0;
+  for (const g of grid) if (isFinite(g)) filled++;
+  if (!filled) return null;
+  const fill = opts.fill ?? 'none';
+  if (fill !== 'none') fillEmpty(grid, w, h, fill === 'idw');
+  let lo = Infinity, hi = -Infinity;
+  for (const g of grid) if (isFinite(g)) { if (g < lo) lo = g; if (g > hi) hi = g; }
+  return { grid, w, h, cell, ox: mn[uAx], oy: mn[vAx], lo, hi, axis: iAx, filled, sampled };
+}
+/** Fill the holes a scan leaves: nearest value, or inverse-distance over the nearest few.
+ *  A single expanding-ring search per empty cell, capped, because a hole in the middle of a
+ *  car park should not be filled from the far side of the site. */
+function fillEmpty(grid: Float32Array, w: number, h: number, idw: boolean, maxRing = 12) {
+  const src = Float32Array.from(grid);
+  for (let v = 0; v < h; v++) for (let u = 0; u < w; u++) {
+    const k = v * w + u;
+    if (isFinite(src[k])) continue;
+    let best = NaN, bestD = Infinity, wsum = 0, vsum = 0, found = 0;
+    for (let r = 1; r <= maxRing && (idw ? found < 8 : !isFinite(best)); r++) {
+      for (let dv = -r; dv <= r; dv++) for (let du = -r; du <= r; du++) {
+        if (Math.max(Math.abs(du), Math.abs(dv)) !== r) continue;
+        const uu = u + du, vv = v + dv;
+        if (uu < 0 || vv < 0 || uu >= w || vv >= h) continue;
+        const q = src[vv * w + uu];
+        if (!isFinite(q)) continue;
+        const d = Math.hypot(du, dv);
+        if (idw) { const wt = 1 / (d * d); wsum += wt; vsum += q * wt; found++; }
+        else if (d < bestD) { bestD = d; best = q; }
+      }
+    }
+    grid[k] = idw ? (wsum ? vsum / wsum : NaN) : best;
+  }
+}
+
+let raster: Raster | null = null;
+let contours: { z: number; pts: number[][] }[] = [];
+function rasterStat() { return $<HTMLSelectElement>('k-rstat').value; }
+async function rasterize() {
+  if (!viewer.loaded) return null;
+  busy('Rasterizing…'); await tick();
+  try {
+    const t0 = performance.now();
+    const stat = rasterStat();
+    if (stat === 'field' && !viewer.cells.hasScalarField) { $('v-raster').textContent = 'no scalar field on this layer to rasterize'; return null; }
+    raster = buildRaster(viewer.active, { cell: rasterUi.cell, stat, axis: $<HTMLSelectElement>('k-raxis').value, fill: $<HTMLSelectElement>('k-rfill').value });
+    if (!raster) { $('v-raster').textContent = 'nothing fell in the raster'; return null; }
+    viewer.setRaster(raster);
+    viewer.setRasterVisible($<HTMLInputElement>('k-rshow').checked);
+    document.body.classList.add('has-raster');
+    const unit = stat === 'density' ? ' points' : ' m';
+    $('v-raster').textContent = `${raster.w} x ${raster.h} cells of ${raster.cell} m · ${fmt(raster.filled)} filled of ${fmt(raster.w * raster.h)} · ${raster.lo.toFixed(3)} to ${raster.hi.toFixed(3)}${unit} · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+    viewer.touch();
+    return raster;
+  } catch (e: any) { $('v-raster').textContent = 'failed: ' + (e?.message ?? e); return null; }
+  finally { hideBusy(); }
+}
+$('k-rasterize').addEventListener('click', () => rasterize());
+$('k-rshow').addEventListener('change', e => viewer.setRasterVisible((e.target as HTMLInputElement).checked));
+
+/** The raster as a PNG, plus the world file that says where each pixel is on the ground. */
+function rasterPng(r: Raster): { png: Blob; pgw: string } {
+  const cv = document.createElement('canvas'); cv.width = r.w; cv.height = r.h;
+  const ctx = cv.getContext('2d')!;
+  const img = ctx.createImageData(r.w, r.h);
+  const span = Math.max(r.hi - r.lo, 1e-9);
+  for (let v = 0; v < r.h; v++) for (let u = 0; u < r.w; u++) {
+    const g = r.grid[v * r.w + u];
+    const k = ((r.h - 1 - v) * r.w + u) * 4;          // PNG rows run top to bottom
+    const q = isFinite(g) ? Math.round(((g - r.lo) / span) * 254) + 1 : 0;
+    img.data[k] = q; img.data[k + 1] = q; img.data[k + 2] = q; img.data[k + 3] = isFinite(g) ? 255 : 0;
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = (meta?.scans?.[0]?.translation ?? [0, 0, 0]) as number[];
+  const [uAx, vAx] = [[1, 2], [0, 2], [0, 1]][r.axis];
+  // a world file is six lines: x and y pixel size, two rotations, and the centre of the
+  // top-left pixel — in the global frame, because that is the only frame a GIS knows
+  const pgw = [r.cell, 0, 0, -r.cell,
+    r.ox + t[uAx] + r.cell / 2,
+    r.oy + t[vAx] + (r.h - 0.5) * r.cell].map(v => v.toFixed(6)).join('\n') + '\n';
+  const bin = atob(cv.toDataURL('image/png').split(',')[1]);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return { png: new Blob([buf], { type: 'image/png' }), pgw };
+}
+$('k-rsavepng').addEventListener('click', async () => {
+  if (!raster) return;
+  const base = (currentFile?.name ?? 'scan').replace(/\.[^.]+$/, '') + '-raster';
+  const { png, pgw } = rasterPng(raster);
+  const h1 = await pickSaveHandle(`${base}.png`, 'png');
+  if (h1 === null) return;
+  await writeOutFile({ file: new File([png], `${base}.png`), name: `${base}.png`, scratch: '' }, h1);
+  const h2 = await pickSaveHandle(`${base}.pgw`, 'pgw');
+  if (h2 !== null) await writeOutFile({ file: new File([pgw], `${base}.pgw`), name: `${base}.pgw`, scratch: '' }, h2);
+  $('v-raster').textContent = `saved ${base}.png and its world file · ${raster.w} x ${raster.h} cells of ${raster.cell} m`;
+});
+
+/** Marching squares at a real level, interpolating where each edge crosses it — which is
+ *  what makes a contour smooth rather than staircased. */
+function contourAt(r: Raster, level: number): number[][][] {
+  const segs: number[][] = [];
+  const g = (u: number, v: number) => r.grid[v * r.w + u];
+  for (let v = 0; v < r.h - 1; v++) for (let u = 0; u < r.w - 1; u++) {
+    const q = [g(u, v), g(u + 1, v), g(u + 1, v + 1), g(u, v + 1)];
+    if (q.some(x => !isFinite(x))) continue;
+    let code = 0;
+    for (let i = 0; i < 4; i++) if (q[i] >= level) code |= 1 << i;
+    if (code === 0 || code === 15) continue;
+    const lerp = (a: number, b: number) => (level - a) / ((b - a) || 1e-12);
+    const e = [
+      [u + lerp(q[0], q[1]), v],                 // bottom
+      [u + 1, v + lerp(q[1], q[2])],             // right
+      [u + lerp(q[3], q[2]), v + 1],             // top
+      [u, v + lerp(q[0], q[3])],                 // left
+    ];
+    const push = (a: number, b: number) => segs.push([e[a][0], e[a][1], e[b][0], e[b][1]]);
+    switch (code) {
+      case 1: case 14: push(3, 0); break;
+      case 2: case 13: push(0, 1); break;
+      case 3: case 12: push(3, 1); break;
+      case 4: case 11: push(1, 2); break;
+      case 6: case 9: push(0, 2); break;
+      case 7: case 8: push(3, 2); break;
+      case 5: push(3, 0); push(1, 2); break;
+      case 10: push(0, 1); push(2, 3); break;
+    }
+  }
+  return stitch(segs).map(l => l.map(([u, v]) => [r.ox + (u + 0.5) * r.cell, r.oy + (v + 0.5) * r.cell]));
+}
+/** Join segments into polylines through their shared endpoints. */
+function stitch(segs: number[][]): number[][][] {
+  const key = (x: number, y: number) => `${Math.round(x * 512)},${Math.round(y * 512)}`;
+  const node = new Map<string, { p: number[]; to: string[] }>();
+  for (const [x1, y1, x2, y2] of segs) {
+    const k1 = key(x1, y1), k2 = key(x2, y2);
+    if (k1 === k2) continue;
+    if (!node.has(k1)) node.set(k1, { p: [x1, y1], to: [] });
+    if (!node.has(k2)) node.set(k2, { p: [x2, y2], to: [] });
+    node.get(k1)!.to.push(k2); node.get(k2)!.to.push(k1);
+  }
+  const used = new Set<string>();
+  const ek = (a: string, b: string) => a < b ? a + '|' + b : b + '|' + a;
+  const keys = [...node.keys()].sort((a, b) => node.get(a)!.to.length - node.get(b)!.to.length);
+  const out: number[][][] = [];
+  for (const s of keys) for (const first of node.get(s)!.to) {
+    if (used.has(ek(s, first))) continue;
+    const line = [node.get(s)!.p];
+    let cur = s, nxt: string | undefined = first;
+    while (nxt) {
+      used.add(ek(cur, nxt));
+      line.push(node.get(nxt)!.p);
+      const n2: string = nxt;
+      nxt = node.get(n2)!.to.find((t: string) => !used.has(ek(n2, t)));
+      cur = n2;
+      if (line.length > 200_000) break;
+    }
+    if (line.length >= 2) out.push(line);
+  }
+  return out;
+}
+async function drawContours(interval?: number) {
+  const iv = Math.max(0.001, interval ?? rasterUi.interval);
+  if (!raster) { await rasterize(); }
+  if (!raster) return null;
+  busy('Tracing contours…'); await tick();
+  try {
+    const t0 = performance.now();
+    contours = [];
+    const first = Math.ceil(raster.lo / iv) * iv;
+    let vertices = 0;
+    for (let z = first; z <= raster.hi + 1e-9 && contours.length < 400; z += iv) {
+      for (const l of contourAt(raster, z)) {
+        const simple = simplifyRing(l, raster.cell * 0.4);
+        contours.push({ z, pts: simple });
+        vertices += simple.length;
+      }
+    }
+    viewer.setContours(contours, raster.axis);
+    document.body.classList.toggle('has-contours', contours.length > 0);
+    const levels = new Set(contours.map(c => +c.z.toFixed(4))).size;
+    $('v-contours').textContent = `${contours.length} polylines over ${levels} levels at ${iv} m · ${fmt(vertices)} vertices · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+    viewer.touch();
+    return contours;
+  } finally { hideBusy(); }
+}
+$('k-contours').addEventListener('click', () => drawContours());
+
+/** A minimal DXF of LWPOLYLINEs at their own elevations. Every CAD package reads this. */
+function contoursDxf(): string {
+  const t = (meta?.scans?.[0]?.translation ?? [0, 0, 0]) as number[];
+  const [uAx, vAx] = [[1, 2], [0, 2], [0, 1]][raster?.axis ?? 2];
+  const iAx = raster?.axis ?? 2;
+  const out: string[] = ['0', 'SECTION', '2', 'ENTITIES'];
+  for (const c of contours) {
+    out.push('0', 'LWPOLYLINE', '8', 'CONTOURS', '100', 'AcDbEntity', '100', 'AcDbPolyline',
+      '90', String(c.pts.length), '70', '0', '38', (c.z + t[iAx]).toFixed(4));
+    for (const [x, y] of c.pts) out.push('10', (x + t[uAx]).toFixed(4), '20', (y + t[vAx]).toFixed(4));
+  }
+  out.push('0', 'ENDSEC', '0', 'EOF');
+  return out.join('\n') + '\n';
+}
+function contoursGeoJson(): string {
+  const t = (meta?.scans?.[0]?.translation ?? [0, 0, 0]) as number[];
+  const [uAx, vAx] = [[1, 2], [0, 2], [0, 1]][raster?.axis ?? 2];
+  const iAx = raster?.axis ?? 2;
+  return JSON.stringify({
+    type: 'FeatureCollection',
+    features: contours.map(c => ({
+      type: 'Feature',
+      properties: { elevation: +(c.z + t[iAx]).toFixed(4) },
+      geometry: { type: 'LineString', coordinates: c.pts.map(([x, y]) => [+(x + t[uAx]).toFixed(4), +(y + t[vAx]).toFixed(4), +(c.z + t[iAx]).toFixed(4)]) },
+    })),
+  });
+}
+async function saveContours(kind: 'dxf' | 'geojson') {
+  if (!contours.length) return;
+  const base = (currentFile?.name ?? 'scan').replace(/\.[^.]+$/, '') + '-contours';
+  const name = `${base}.${kind === 'dxf' ? 'dxf' : 'geojson'}`;
+  const text = kind === 'dxf' ? contoursDxf() : contoursGeoJson();
+  const h = await pickSaveHandle(name, kind);
+  if (h === null) return;
+  await writeOutFile({ file: new File([text], name), name, scratch: '' }, h);
+  $('v-contours').textContent = `saved ${name} · ${contours.length} polylines · coordinates are global`;
+}
+$('k-cdxf').addEventListener('click', () => saveContours('dxf'));
+$('k-cgeojson').addEventListener('click', () => saveContours('geojson'));
+
+/** 2.5D volume between the active layer and a reference — another layer, or a flat plane. */
+function measureVolume(opts: { cell?: number; reference?: string | null; plane?: number } = {}) {
+  if (!viewer.loaded) return null;
+  const cell = opts.cell ?? rasterUi.cell;
+  const refId = opts.reference !== undefined ? opts.reference : $<HTMLSelectElement>('k-vref').value;
+  const ref = refId && refId !== 'plane' ? viewer.entities.find(e => e.id === refId) : null;
+  // both rasters must be over the same cells, or the subtraction is meaningless
+  const box = viewer.active.bounds().clone();
+  if (ref) box.union(ref.bounds());
+  // The reference is hole-filled, the active layer is not, and the asymmetry is deliberate.
+  // A cell the reference happens to have no point in is not a cell with no ground under it,
+  // and dropping it drops that cell's volume silently — a reference sampled more coarsely than
+  // the cell size came out at a quarter of the right answer. But filling the *active* layer
+  // invents surface past its own edge, which adds volume that was never scanned.
+  const a = buildRaster(viewer.active, { cell, stat: 'max', axis: 'z', box });
+  if (!a) return null;
+  const plane = opts.plane !== undefined ? Number(opts.plane) : Number($<HTMLInputElement>('k-vplane').value);
+  const b = ref ? buildRaster(ref, { cell, stat: 'max', axis: 'z', box, fill: 'idw' }) : null;
+  const area = cell * cell;
+  let cut = 0, fill = 0, cells = 0;
+  const diff = new Float32Array(a.grid.length).fill(NaN);
+  for (let k = 0; k < a.grid.length; k++) {
+    const av = a.grid[k];
+    const bv = b ? b.grid[k] : plane;
+    if (!isFinite(av) || !isFinite(bv)) continue;
+    const d = av - bv;
+    diff[k] = d; cells++;
+    if (d > 0) fill += d * area; else cut += -d * area;
+  }
+  const res = { added: fill, removed: cut, net: fill - cut, cells, area: cells * area, cell,
+                reference: ref ? layerName(ref) : `a plane at z = ${plane}` };
+  let dlo = 0, dhi = 0;
+  for (const d of diff) if (isFinite(d)) { if (d < dlo) dlo = d; if (d > dhi) dhi = d; }
+  raster = { ...a, grid: diff, lo: dlo, hi: dhi, filled: cells };
+  viewer.setRaster(raster);
+  document.body.classList.add('has-raster');
+  $('v-volume').textContent = `against ${res.reference} · added ${res.added.toFixed(3)} m³ · removed ${res.removed.toFixed(3)} m³ · net ${res.net.toFixed(3)} m³ · over ${res.area.toFixed(2)} m² of ${fmt(cells)} cells`;
+  viewer.touch();
+  return res;
+}
+function refreshVolumeRefs() {
+  const sel = $<HTMLSelectElement>('k-vref');
+  const others = viewer.entities.filter(e => e.id !== viewer.activeId);
+  const want = 'plane|' + others.map(e => e.id).join('|');
+  if (sel.dataset.ids === want) return;
+  sel.innerHTML = '<option value="plane">a flat plane</option>';
+  for (const e of others) { const o = document.createElement('option'); o.value = e.id; o.textContent = layerName(e); sel.appendChild(o); }
+  sel.dataset.ids = want;
+}
+$('k-volume').addEventListener('click', () => measureVolume());
+
 // ------------------------------------------------------------------ fitting and detection
 // A fit answers with an RMS as well as its parameters, because the parameters alone are never
 // enough: a cylinder fitted to a flat wall has a radius and an axis and means nothing, and
@@ -3236,6 +3565,20 @@ const agent = new AgentLink({
       note: $('v-register').textContent,
     };
   },
+  volume: async (a) => {
+    if (!viewer.loaded) throw new Error('nothing loaded');
+    let reference: string | null = 'plane';
+    if (a.reference !== undefined && a.reference !== null && a.reference !== 'plane') {
+      const e = viewer.entities.find(x => x.id === String(a.reference) || x.name === String(a.reference));
+      if (!e) throw new Error(`no such layer: ${a.reference}`);
+      if (e.id === viewer.activeId) throw new Error('the reference cannot be the active layer');
+      reference = e.id;
+    }
+    const r = measureVolume({ cell: a.cell !== undefined ? Number(a.cell) : undefined, reference, plane: a.plane !== undefined ? Number(a.plane) : undefined });
+    if (!r) throw new Error('nothing fell in the raster');
+    viewer.render();
+    return { ...r, added: r6(r.added), removed: r6(r.removed), net: r6(r.net), area: r6(r.area), units: 'm³', note: $('v-volume').textContent };
+  },
   fit: async (a) => {
     if (a.box) { const r = regionFrom(a.box, 'fit-region'); sections.push(r); syncRegions(); viewer.setActiveRegion(r.id); renderSectionList(); }
     const kind = String(a.shape ?? 'plane');
@@ -3310,7 +3653,7 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   if (cmd === 'transform') return (a.op ?? 'get') !== 'get';
   if (cmd === 'entities') return ['add', 'remove', 'clone', 'merge'].includes(String(a.op ?? 'list'));
   if (cmd === 'register' || cmd === 'distance_to') return true;
-  if (cmd === 'detect') return true;               // real time, and it writes a scalar field
+  if (cmd === 'detect' || cmd === 'volume') return true;               // real time, and it writes a scalar field
   return false;
 }
 /** An agent reply is written into a Firestore document, so it must be small and plain.
@@ -3507,7 +3850,7 @@ addEventListener('orientationchange', () => setTimeout(() => { viewer.resize(); 
 document.querySelectorAll<HTMLElement>('#panel .grp').forEach((g, i) => {
   const h = g.querySelector('h3'); if (!h) return;
   const name = g.dataset.grp ?? h.textContent ?? String(i); const key = 'grp:' + name;
-  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface', 'analysis', 'field', 'transform', 'register', 'fit'].includes(name);
+  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface', 'analysis', 'field', 'transform', 'register', 'fit', 'raster'].includes(name);
   const stored = localStorage.getItem(key); g.classList.toggle('closed', stored ? stored === '1' : defaultClosed);
   h.addEventListener('click', () => { g.classList.toggle('closed'); localStorage.setItem(key, g.classList.contains('closed') ? '1' : '0'); });
 });
@@ -3529,6 +3872,8 @@ refreshCachedList();
   stateRecord, recommendedSource, surfaceRecord, heightmapCmd, contourCmd, fitPlaneCmd, dispatchAgent,
   createPrismRegion, placeRegion, scaleRegion, fitToContents, activeRegion, startSize, buildClassificationField,
   fitShape, detectShapes, fitPoints, applyShapeMask, get shapes() { return shapes; },
+  rasterize, buildRaster, drawContours, measureVolume, contoursDxf, contoursGeoJson, rasterPng,
+  get raster() { return raster; }, get contours() { return contours; },
   get sections() { return sections; }, renderSectionList, regionCount, syncRegions,
   activateEntity, cloneActive, mergeIntoActive, renderLayers, entityList, setReference,
   matchCentres, matchScales, runIcp, distanceToReference, removeLayer, addFile,

@@ -222,6 +222,10 @@ input[type=color]{width:44px;height:22px;padding:0;border:1px solid var(--line);
 .mlist li.act .nm{color:var(--teal);font-weight:500}
 .mlist li .nm{cursor:pointer;color:var(--ink)}
 #tb-layer{background:#1c2c32;border:1px solid #3d555e;color:var(--ink)}
+.raster-have,.contour-have{display:none}
+body.has-raster .raster-have{display:flex}
+body.has-raster button.raster-have{display:block}
+body.has-contours .contour-have{display:flex}
 .det-have{display:none}
 body.has-shapes .det-have{display:flex}
 .prism-only{display:none}

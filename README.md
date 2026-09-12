@@ -221,6 +221,17 @@ of the same room register to **0.000 mm** and their distance field reads **0.00 
   natively against known primitives with a millimetre of noise: plane normal to **0.008°**,
   sphere centre and radius to **0.01 mm**, cylinder axis to **0.0000°**, and three planted
   planes plus a sphere recovered from a scene that is a fifth noise.
+- **Raster, contours and volume** — a height model over a regular grid (highest, lowest, mean,
+  point density, or the mean of a scalar field, along any axis), draped over the cloud as a
+  coloured surface so it can be judged rather than merely produced, and saved as a PNG with its
+  **world file** so a GIS puts it in the right place. Empty cells can be left alone, filled
+  from the nearest value or by inverse distance — capped in reach, because a hole in a car park
+  should not be filled from the far side of the site. **Contours** at an interval are traced by
+  marching squares with the crossing interpolated along each edge, drawn at their own heights,
+  and exported as **DXF** (LWPOLYLINE) or **GeoJSON** in the global frame. **Volume** is the
+  2.5D difference against another layer or a flat plane, with cut and fill reported separately
+  because their sum hides both: measured against a pyramid and a half-cylinder whose volumes
+  are arithmetic, **64.202 m³ against 64.274 m³ — 0.11%**.
 - **View link** — copies a URL that restores the camera and colour mode when the same file
   is opened again.
 

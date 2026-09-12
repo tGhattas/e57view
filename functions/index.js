@@ -14,7 +14,7 @@ const AGENT_HELP = {
   name: 'e57view agent',
   how: 'In the viewer: Agent → Copy agent URL. That copies a page link plus a bearer token. Keep the tab open and POST commands here with the token in an Authorization header. No MCP config required.',
   auth: "Authorization: Bearer <token from Copy agent URL>  (or JSON { token }). The session id names the mailbox; the token is the credential. Sessions expire after 8 hours and are read-only unless the viewer ticks Allow edits.",
-  post: { session: 'session id', cmd: 'state | screenshot | view | section | probe | heightmap | contour | fitplane | distance | inside | measure | pick | set_view | set | regions | entities | register | distance_to | fit | detect | transform | surface | history | stations | open', args: {} },
+  post: { session: 'session id', cmd: 'state | screenshot | view | section | probe | heightmap | contour | fitplane | distance | inside | measure | pick | set_view | set | regions | entities | register | distance_to | fit | detect | volume | transform | surface | history | stations | open', args: {} },
   layers: 'Several clouds can be open at once. Every visible one is drawn; exactly one is active, and every other command works on the active one. entities lists, activates, shows, hides, renames, clones, merges and removes them; register (centres | scales | icp) moves the active layer onto a reference; distance_to writes the distance between them as a scalar field on the active layer.',
   units: 'metres, everywhere. Coordinates are local unless a field says global; global = local + state.translation.',
   modelling: {
@@ -53,6 +53,7 @@ const AGENT_HELP = {
     { cmd: 'distance_to', args: { reference: 'Scan 1', signed: true } },
     { cmd: 'fit', args: { shape: 'plane', box: { center: [3, 2, 0], half: [2.5, 1.8, 0.02] } } },
     { cmd: 'detect', args: { tolerance: 0.006, minPoints: 3000 } },
+    { cmd: 'volume', args: { reference: 'Ground', cell: 0.05 } },
     { cmd: 'transform', args: { op: 'level' } },
     { cmd: 'history', args: { op: 'undo' } },
     { cmd: 'revoke' },
@@ -87,7 +88,7 @@ function needsEdit(cmd, args = {}) {
   if (cmd === 'surface') return args.op === 'build';
   if (cmd === 'transform') return (args.op ?? 'get') !== 'get';
   if (cmd === 'entities') return ['add', 'remove', 'clone', 'merge'].includes(args.op ?? 'list');
-  if (cmd === 'register' || cmd === 'distance_to' || cmd === 'detect') return true;
+  if (cmd === 'register' || cmd === 'distance_to' || cmd === 'detect' || cmd === 'volume') return true;
   return false;
 }
 

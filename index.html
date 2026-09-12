@@ -352,6 +352,46 @@
       <p class="hint mono" id="v-analysis">—</p>
     </div>
 
+    <div class="grp" data-grp="raster">
+      <h3>Raster</h3>
+      <label class="row"><span>Cell size</span><input type="range" id="k-rcell" min="0.01" max="2" step="0.01" value="0.25"><b class="mono" id="v-rcell">0.25 m</b></label>
+      <label class="row"><span>Value</span>
+        <select id="k-rstat">
+          <option value="max">Highest point</option>
+          <option value="min">Lowest point</option>
+          <option value="mean">Mean height</option>
+          <option value="density">Points per cell</option>
+          <option value="field">Mean scalar field</option>
+        </select>
+      </label>
+      <label class="row"><span>Along</span>
+        <select id="k-raxis"><option value="z">Z (a height model)</option><option value="x">X</option><option value="y">Y</option></select>
+      </label>
+      <label class="row"><span>Fill empty cells</span>
+        <select id="k-rfill"><option value="none">Leave empty</option><option value="nearest">Nearest</option><option value="idw">Inverse distance</option></select>
+      </label>
+      <button id="k-rasterize" class="primary wide">Rasterize</button>
+      <p class="hint mono" id="v-raster">—</p>
+      <label class="row raster-have"><span>Show the draped grid</span><input type="checkbox" id="k-rshow" checked></label>
+      <button id="k-rsavepng" class="ghost wide raster-have">Save PNG + world file…</button>
+
+      <p class="lab mono">CONTOURS</p>
+      <label class="row"><span>Interval</span><input type="range" id="k-cint" min="0.05" max="5" step="0.05" value="0.5"><b class="mono" id="v-cint">0.50 m</b></label>
+      <button id="k-contours" class="ghost wide">Draw contours</button>
+      <div class="seg contour-have">
+        <button id="k-cdxf" class="ghost">Save DXF…</button>
+        <button id="k-cgeojson" class="ghost">Save GeoJSON…</button>
+      </div>
+      <p class="hint mono" id="v-contours">—</p>
+
+      <p class="lab mono">VOLUME</p>
+      <label class="row"><span>Against</span><select id="k-vref"></select></label>
+      <label class="row"><span>Plane height</span><input type="number" id="k-vplane" step="0.1" value="0"></label>
+      <button id="k-volume" class="ghost wide">Measure the volume</button>
+      <p class="hint mono" id="v-volume">—</p>
+      <p class="hint">A 2.5D volume: the difference between two height rasters over the same cells, one cell area at a time. Cut and fill are reported separately because their sum hides both.</p>
+    </div>
+
     <div class="grp" data-grp="fit">
       <h3>Fit</h3>
       <p class="hint">Fits a primitive to the <b>active region's contents</b>, or to the whole layer when no region is active. The RMS is the number that says whether to believe it.</p>
