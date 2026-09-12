@@ -31,6 +31,10 @@
   "description": "View, measure and edit multi-gigabyte point clouds in the browser or as a desktop app. Nothing is uploaded.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/OWNER/e57view"
-  }
+    "url": "git+https://github.com/tGhattas/e57view.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tGhattas/e57view/issues"
+  },
+  "homepage": "https://github.com/tGhattas/e57view"
 }

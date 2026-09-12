@@ -6,7 +6,7 @@ edition = "2021"
 description = "View E57 laser scans offline"
 authors = ["e57view contributors"]
 license = "GPL-3.0-only"
-repository = "https://github.com/tamerg/e57view"
+repository = "https://github.com/tGhattas/e57view"
 default-run = "e57view"
 
 [build-dependencies]
