@@ -163,6 +163,22 @@ const hdrEnd = buf.indexOf('end_header\n') + 'end_header\n'.length;
 const first = [0, 1, 2].map(i => buf.readDoubleLE(hdrEnd + i * 8));
 ok('its coordinates are global', first.every((c, i) => c > st.translation[i] - 1 && c < st.translation[i] + Math.max(...size) + 1), first.map(n => n.toFixed(3)).join(', '));
 
+// ---------------------------------------------------------------- a script over the relay
+// Nested arrays of objects are the shape Firestore refuses directly, so a script travelling
+// the production relay is worth checking here and not only in the tab.
+const sc = (await call('script', {
+  steps: [
+    { cmd: 'state', save: 's', label: 'what is loaded' },
+    { cmd: 'inside', args: { box: { center: '$s.bounds.local.centre', half: [20, 20, 20] } } },
+    { cmd: 'measure', args: { a: '$s.bounds.local.min', b: '$s.bounds.local.max' } },
+  ],
+})).result;
+console.log('SCRIPT', JSON.stringify({ ok: sc.ok, ran: sc.ran, ms: sc.ms }));
+ok('a script runs every step over the relay', sc.ok && sc.ran === 3, `${sc.ran} of ${sc.of}, ${sc.failed} failed`);
+ok('a later step saw an earlier one', sc.steps[1].result.count === st.points, `${sc.steps[1].result.count} of ${st.points} points inside`);
+ok('a whole-array variable kept its type', Math.abs(sc.steps[2].result.dist - Math.hypot(...size)) < 0.05,
+   `${sc.steps[2].result.dist.toFixed(3)} m against ${Math.hypot(...size).toFixed(3)}`);
+
 console.log(fails ? `\n${fails} CHECK(S) FAILED` : '\nALL CHECKS PASSED');
 await b.close();
 process.exit(fails ? 1 : 0);
