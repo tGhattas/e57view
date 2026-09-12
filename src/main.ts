@@ -385,26 +385,37 @@ function setMode(fly: boolean) {
   updatePill(); syncToolbar();
 }
 $('k-fly').addEventListener('click', () => setMode(true)); $('k-orbit').addEventListener('click', () => setMode(false));
-function setTool(t: 'none' | 'measure' | 'segment') {
+function setTool(t: 'none' | 'measure' | 'segment' | 'place') {
   if (viewer.tool === 'segment' && t !== 'segment') endSegment();
   viewer.setTool(t);
   $('k-measure').classList.toggle('on', t === 'measure');
   $('k-segment').classList.toggle('on', t === 'segment');
+  $('k-place').classList.toggle('on', t === 'place');
   $('gl').classList.toggle('measure', t === 'measure');
   $('gl').classList.toggle('segment', t === 'segment');
+  $('gl').classList.toggle('place', t === 'place');
   $('segbar').classList.toggle('hidden', t !== 'segment');
   $('seg').classList.toggle('hidden', t !== 'segment');
+  $('placebar').classList.toggle('hidden', t !== 'place');
   if (t === 'segment') resetSegment();
+  if (t === 'place') $('place-hint').textContent = `Click a point to place a ${$<HTMLSelectElement>('k-newshape').value} · Esc cancels`;
   updatePill(); syncToolbar();
 }
-function updatePill() { const p = $('tb-tool'); const txt = viewer.bubble ? 'photo' : viewer.tool === 'measure' ? 'measure' : viewer.tool === 'segment' ? 'select' : viewer.fly.enabled ? 'fly' : ''; p.textContent = txt; p.classList.toggle('hidden', !txt); }
+function updatePill() { const p = $('tb-tool'); const txt = viewer.bubble ? 'photo' : viewer.tool === 'measure' ? 'measure' : viewer.tool === 'place' ? 'place' : viewer.tool === 'segment' ? 'outline' : viewer.fly.enabled ? 'fly' : ''; p.textContent = txt; p.classList.toggle('hidden', !txt); }
 $('k-measure').addEventListener('click', () => setTool(viewer.tool === 'measure' ? 'none' : 'measure'));
 $('k-measureclear').addEventListener('click', () => { viewer.clearMeasures(); updateMeasureList(); });
 function updateMeasureList() {
   const ul = $('measure-list'); ul.innerHTML = '';
   for (const m of viewer.measureList) { const li = document.createElement('li'); const dz = m.b.z - m.a.z; li.innerHTML = `<b>${m.dist.toFixed(3)} m</b> · Δz ${dz >= 0 ? '+' : ''}${dz.toFixed(3)} m`; ul.appendChild(li); }
 }
-viewer.onClick = (world) => {
+viewer.onClick = (world, cx, cy) => {
+  if (viewer.tool === 'place') {
+    if (!world) { $('place-hint').textContent = 'that click missed the cloud — aim at a surface · Esc cancels'; return; }
+    placeRegion(world, $<HTMLSelectElement>('k-newshape').value as 'box' | 'sphere');
+    setTool('none');
+    return;
+  }
+  void cx; void cy;
   if (viewer.tool === 'measure') updateMeasureList();
   const c = $('coord'); if (!world || !meta) { c.classList.add('hidden'); return; }
   const t = meta.scans[0].translation as number[];
@@ -412,7 +423,7 @@ viewer.onClick = (world) => {
   c.classList.remove('hidden');
 };
 function syncToolbar() {
-  const cur = viewer.bubble ? 'photo' : viewer.tool === 'measure' ? 'measure' : viewer.fly.enabled ? 'fly' : 'orbit';
+  const cur = viewer.bubble ? 'photo' : viewer.tool === 'measure' ? 'measure' : viewer.tool === 'place' || viewer.tool === 'segment' ? 'segment' : viewer.fly.enabled ? 'fly' : 'orbit';
   document.querySelectorAll<HTMLButtonElement>('#toolbar button').forEach(b => b.classList.toggle('on', b.dataset.tool === cur));
   const photoBtn = document.querySelector<HTMLButtonElement>('#toolbar [data-tool="photo"]'); if (photoBtn) photoBtn.classList.toggle('hidden', !viewer.bubble);
 }
@@ -421,7 +432,7 @@ document.querySelectorAll<HTMLButtonElement>('#toolbar button').forEach(b => b.a
   if (t === 'orbit') { setTool('none'); setMode(false); }
   else if (t === 'fly') { setTool('none'); setMode(true); }
   else if (t === 'measure') { setMode(false); setTool('measure'); }
-  else if (t === 'segment') { setMode(false); setTool('segment'); }
+  else if (t === 'segment') { setMode(false); setTool('place'); }
   else if (t === 'crop') { setMode(false); setTool('none'); document.querySelector('[data-grp="crop"]')?.classList.remove('closed'); toggleSheet(true); cropUI.on = true; $<HTMLInputElement>('k-cropon').checked = true; updateCropUI(); }
   else if (t === 'photo') viewer.exitBubble();
 }));
@@ -450,7 +461,8 @@ addEventListener('keydown', (e: KeyboardEvent) => {
   }
   else if (e.key === 'f' || e.key === 'F') setMode(!viewer.fly.enabled);
   else if (e.key === 'm' || e.key === 'M') setTool(viewer.tool === 'measure' ? 'none' : 'measure');
-  else if (e.key === 's' || e.key === 'S') setTool(viewer.tool === 'segment' ? 'none' : 'segment');
+  else if (e.key === 's') setTool(viewer.tool === 'place' ? 'none' : 'place');
+  else if (e.key === 'S') setTool(viewer.tool === 'segment' ? 'none' : 'segment');   // shift: the outline tool
   else if (e.key === 'Enter' && viewer.tool === 'segment') { segHover = null; drawSegment(); if (segPts.length >= 3) createPrismRegion(); }
   else if (e.key === 'Escape') cancelStarted();
   else if (e.key === 'Home') viewer.fit();
@@ -897,6 +909,7 @@ function cancelCrop() {
   updateCropUI();
 }
 function cancelStarted() {
+  if (viewer.tool === 'place') { setTool('none'); return; }
   if (viewer.tool === 'segment') { if (segPts.length) { resetSegment(); return; } setTool('none'); return; }
   if (viewer.bubble) { viewer.exitBubble(); return; }
   if (viewer.tool !== 'none') { setTool('none'); return; }
@@ -1215,7 +1228,7 @@ function renderSectionList() {
     li.innerHTML = `<span class="ok">${s.label ?? s.kind}</span> <span class="mono">${what} · ~${fmt(regionCount(s))} pts</span>`
       + `<span class="x" title="Remove this region">✕</span>`
       + `<span class="rr${s.role === 'delete' ? ' del' : ''}" title="Keep what is inside, or remove it">${s.role === 'delete' ? 'Remove' : 'Keep'}</span>`;
-    li.querySelector('.ok')!.addEventListener('click', () => { viewer.setActiveRegion(s.id); renderSectionList(); });
+    li.querySelector('.ok')!.addEventListener('click', () => { viewer.setActiveRegion(s.id); renderSectionList(); syncRegionButtons(); });
     li.querySelector('.rr')!.addEventListener('click', () => {
       s.role = s.role === 'delete' ? 'keep' : 'delete';
       syncRegions(); renderSectionList(); cropReadouts(); viewer.touch();
@@ -1227,7 +1240,7 @@ function renderSectionList() {
     });
     ul.appendChild(li);
   }
-  syncPrismUI();
+  syncPrismUI(); syncRegionButtons();
 }
 
 // ------------------------------------------------------------------ cloud transform
@@ -1460,6 +1473,110 @@ async function shiftModal() {
   updateTransformUI(); updateCacheUI();
 }
 $('k-tshift').addEventListener('click', () => shiftModal());
+
+// ------------------------------------------------------------------ placing a region
+// The common gesture is not tracing an outline round a thing, it is pointing at the thing and
+// then making the shape big enough. So: click a point, get a small box or sphere centred
+// exactly there, and enlarge it however you like — handles, sliders, Grow, Alt-scroll, or
+// Fit to contents, which grows until it stops finding new points and then tightens onto them.
+
+/** A region small enough to be obviously a starting point, and big enough to hold something. */
+function startSize(): number {
+  const b = viewer.bounds();
+  const span = b.isEmpty() ? 10 : Math.max(...b.getSize(new THREE.Vector3()).toArray());
+  return Math.max(0.25, viewer.cells.medianSpacing * 6, span * 0.02);
+}
+function activeRegion(): Region | null {
+  return allRegions().find(r => r.id === viewer.activeRegion) ?? null;
+}
+function syncRegionButtons() {
+  const r = activeRegion();
+  document.body.classList.toggle('has-region', !!r && r.id !== 'crop');
+}
+/** Create a region centred on a world point and hand it to the gizmo, ready to resize. */
+function placeRegion(at: THREE.Vector3, kind: 'box' | 'sphere' = 'box', size?: number): Region {
+  const h = Math.max(1e-3, (size ?? startSize()) / 2);
+  const r: Region = {
+    id: uid(kind === 'sphere' ? 'sph-' : 'box-'), kind, role: 'keep',
+    label: `Region ${sections.length + 1}`,
+    center: at.toArray() as [number, number, number],
+    half: [h, h, h], radius: h, quat: [0, 0, 0, 1],
+  };
+  sections.push(r);
+  syncRegions();
+  viewer.setActiveRegion(r.id);
+  setGizmoMode('scale');                 // the next thing anyone does is make it bigger
+  renderSectionList(); cropReadouts(); syncRegionButtons(); viewer.touch();
+  return r;
+}
+$('k-place').addEventListener('click', () => setTool(viewer.tool === 'place' ? 'none' : 'place'));
+$('place-cancel').addEventListener('click', () => setTool('none'));
+$('k-newshape').addEventListener('change', () => { if (viewer.tool === 'place') setTool('place'); });
+
+/** Scale the active region about its own centre. */
+function scaleRegion(f: number) {
+  const r = activeRegion(); if (!r) return null;
+  if (r.kind === 'prism') {
+    if (r.poly) r.poly = r.poly.map(v => [v[0] * f, v[1] * f] as [number, number]);
+    r.half = [r.half[0] * f, r.half[1] * f, r.half[2] * f];
+  } else if (r.kind === 'sphere') {
+    r.radius = Math.max(0.01, r.radius * f); r.half = [r.radius, r.radius, r.radius];
+  } else {
+    r.half = r.half.map(h => Math.max(0.01, h * f)) as [number, number, number];
+  }
+  if (r.id === 'crop') { const md = maxDim(); cropUI.frac = r.half.map(h => Math.min(1, (h * 2) / md)) as number[]; }
+  syncRegions(); renderSectionList(); cropReadouts(); syncPrismUI(); viewer.touch();
+  return r;
+}
+$('k-grow').addEventListener('click', () => scaleRegion(1.5));
+$('k-shrink').addEventListener('click', () => scaleRegion(1 / 1.5));
+// Alt (Option) and the wheel: the gesture everyone already has in their fingers. Captured
+// before OrbitControls sees it, or the camera would dolly at the same time.
+$('gl').addEventListener('wheel', e => {
+  if (!e.altKey || !activeRegion()) return;
+  e.preventDefault(); e.stopPropagation();
+  scaleRegion(e.deltaY < 0 ? 1.1 : 1 / 1.1);
+}, { capture: true, passive: false });
+
+/** Grow the active region until it stops finding new points, then tighten onto what it holds.
+ *  Two iterations of a count per axis is enough to reach the edge of an object; the exact
+ *  bounding box of the contained points is what makes the result tight rather than merely big. */
+async function fitToContents() {
+  const r = activeRegion(); if (!r || !viewer.loaded) return null;
+  busy('Growing to fit…'); await tick();
+  try {
+    const count = () => viewer.cells.countInside(r, 8);
+    const axes = r.kind === 'sphere' ? [0] : [0, 1, 2];
+    for (const a of axes) {
+      for (let i = 0; i < 8; i++) {
+        const before = count();
+        if (r.kind === 'sphere') { r.radius *= 1.5; r.half = [r.radius, r.radius, r.radius]; }
+        else r.half[a] *= 1.5;
+        const after = count();
+        if (after <= before * 1.02) break;         // nothing new came in: this is the edge
+      }
+    }
+    const inside = viewer.cells.insideExact(r);
+    if (inside.count && inside.min && inside.max) {
+      // a margin of a point spacing, but never a large fraction of the thing being fitted:
+      // a sparse cloud's spacing estimate can be tens of centimetres
+      const extent = Math.max(...inside.max.map((v, i) => v - inside.min![i]), 0.01);
+      const pad = Math.max(0.005, Math.min(viewer.cells.medianSpacing, extent * 0.02));
+      const c = inside.min.map((v, i) => (v + inside.max![i]) / 2);
+      r.center = c as [number, number, number];
+      if (r.kind === 'sphere') {
+        r.radius = Math.max(0.01, Math.hypot(...inside.max.map((v, i) => (v - inside.min![i]) / 2)) + pad);
+        r.half = [r.radius, r.radius, r.radius];
+      } else {
+        r.half = inside.max.map((v, i) => Math.max(0.01, (v - inside.min![i]) / 2 + pad)) as [number, number, number];
+      }
+    }
+    syncRegions(); renderSectionList(); cropReadouts(); viewer.touch();
+    $('v-crop').textContent = `fitted · ${fmt(viewer.cells.insideExact(r).count)} points inside`;
+    return r;
+  } finally { hideBusy(); }
+}
+$('k-fitcontents').addEventListener('click', () => { fitToContents(); });
 
 // ------------------------------------------------------------------ freehand selection
 // A polygon traced on screen, then kept or cut. The points are tested in screen space, so
@@ -2669,6 +2786,35 @@ const agent = new AgentLink({
       return { crop: cropState, mode: cropState.role === 'delete' ? 'remove inside' : 'keep inside' };
     }
     if (a.op === 'clear') { sections.length = 0; deletes.length = 0; cropUI.on = false; $<HTMLInputElement>('k-cropon').checked = false; syncRegions(); renderSectionList(); return []; }
+    if (a.op === 'place') {
+      // point at a thing and get a small shape there, the same gesture the panel offers
+      let at: THREE.Vector3 | null = null;
+      if (Array.isArray(a.at) && a.at.length === 3) at = new THREE.Vector3(...a.at.map(Number));
+      else if (Array.isArray(a.pixel) && a.pixel.length === 2) { viewer.render(); at = viewer.pickWorld(Number(a.pixel[0]), Number(a.pixel[1])); }
+      if (!at) throw new Error('at: [x,y,z] in local metres, or pixel: [x,y] over a point of the cloud');
+      const r = placeRegion(at, a.kind === 'sphere' ? 'sphere' : 'box', a.size !== undefined ? Number(a.size) : undefined);
+      if (a.role === 'delete') { r.role = 'delete'; syncRegions(); renderSectionList(); }
+      viewer.render();
+      return { region: r, pointsInside: viewer.cells.insideExact(r).count, startSize: r.kind === 'sphere' ? r.radius * 2 : r.half[0] * 2 };
+    }
+    if (a.op === 'grow') {
+      const id = a.id ?? viewer.activeRegion;
+      if (id && id !== viewer.activeRegion) viewer.setActiveRegion(String(id));
+      const f = Number(a.factor ?? 1.5);
+      if (!(f > 0)) throw new Error('factor must be greater than zero');
+      const r = scaleRegion(f);
+      if (!r) throw new Error('no active region to grow');
+      viewer.render();
+      return { region: r, pointsInside: viewer.cells.insideExact(r).count };
+    }
+    if (a.op === 'fit') {
+      const id = a.id ?? viewer.activeRegion;
+      if (id && id !== viewer.activeRegion) viewer.setActiveRegion(String(id));
+      const r = await fitToContents();
+      if (!r) throw new Error('no active region to fit');
+      viewer.render();
+      return { region: r, pointsInside: viewer.cells.insideExact(r).count };
+    }
     if (a.op === 'lasso') {
       // the same construction the UI uses: an outline from the current camera, extruded
       const px = a.pixels;
@@ -3095,7 +3241,8 @@ refreshCachedList();
   commitTransform, transformState, levelCloud, rowMajor, fromRowMajor, runExport, updateTransformUI,
   dirtyList, isDirty, openAnother, confirmReplace,
   stateRecord, recommendedSource, surfaceRecord, heightmapCmd, contourCmd, fitPlaneCmd, dispatchAgent,
-  createPrismRegion, get sections() { return sections; }, renderSectionList, regionCount, syncRegions,
+  createPrismRegion, placeRegion, scaleRegion, fitToContents, activeRegion, startSize,
+  get sections() { return sections; }, renderSectionList, regionCount, syncRegions,
   activateEntity, cloneActive, mergeIntoActive, renderLayers, entityList, setReference,
   matchCentres, matchScales, runIcp, distanceToReference, removeLayer, addFile,
   get entities() { return viewer.entities; }, get activeId() { return viewer.activeId; },

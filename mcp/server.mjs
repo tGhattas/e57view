@@ -138,8 +138,13 @@ const regionShape = z.object({
   quat: z.array(z.number()).length(4).optional().describe('x y z w'), label: z.string().optional(),
   poly: z.array(z.array(z.number()).length(2)).optional().describe('prism: the outline in the region\'s own local XY plane, metres, extruded to +/- half[2] along local Z'),
 });
-server.tool('viewer_regions', 'Bounding shapes that decide what survives: box, sphere, slab, or prism (an outline extruded along a view direction). role keep = crop to the union of the keeps; delete = remove what is inside. lasso is the shortcut for a prism: give screen pixels from the current camera and it builds the region the way the panel does, reporting how many points it holds. mode sets which way the panel\'s own crop region cuts. apply commits every keep and delete region in one undoable step. A region is not a cut until apply, so it can be inspected from any angle first.', {
-  op: z.enum(['list', 'add', 'update', 'remove', 'clear', 'mode', 'lasso', 'apply']), region: regionShape.optional(), id: z.string().optional(),
+server.tool('viewer_regions', 'Bounding shapes that decide what survives: box, sphere, slab, or prism (an outline extruded along a view direction). The usual way to make one is place: point at a thing (a world point, or a pixel of the last view) and get a small box or sphere centred exactly there, then grow it by a factor or fit it to what it holds. role keep = crop to the union of the keeps; delete = remove what is inside. lasso is the shortcut for a prism: give screen pixels from the current camera and it builds the region the way the panel does, reporting how many points it holds. mode sets which way the panel\'s own crop region cuts. apply commits every keep and delete region in one undoable step. A region is not a cut until apply, so it can be inspected from any angle first.', {
+  op: z.enum(['list', 'place', 'grow', 'fit', 'add', 'update', 'remove', 'clear', 'mode', 'lasso', 'apply']), region: regionShape.optional(), id: z.string().optional(),
+  at: z.array(z.number()).length(3).optional().describe('op=place: where to put it, local metres'),
+  pixel: z.array(z.number()).length(2).optional().describe('op=place: a pixel of the last view instead'),
+  kind: z.enum(['box', 'sphere']).optional().describe('op=place'),
+  size: z.number().optional().describe('op=place: starting size across, metres'),
+  factor: z.number().optional().describe('op=grow: multiply the active region by this'),
   role: z.enum(['keep', 'delete']).optional().describe('op=mode or op=lasso: keep inside, or remove inside'),
   pixels: z.array(z.array(z.number()).length(2)).optional().describe('op=lasso: [[x,y], …] of the image you measured'),
   width: z.number().optional(), height: z.number().optional().describe('op=lasso: the pixel size of that image, if it was not the live canvas'),

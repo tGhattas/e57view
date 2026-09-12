@@ -219,7 +219,19 @@
       <label class="row box-only"><span>Height</span><input type="range" id="k-cropsz" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsz">—</b></label>
       <label class="row prism-only"><span>Prism depth</span><input type="range" id="k-prismdepth" min="0.004" max="1" step="0.004" value="1"><b class="mono" id="v-prismdepth">—</b></label>
       <button id="k-cropcentre" class="ghost wide">Centre on orbit point</button>
-      <button id="k-segment" class="ghost wide">Draw a region (S)</button>
+
+      <p class="lab mono">NEW REGION</p>
+      <div class="row"><span>Shape</span>
+        <select id="k-newshape"><option value="box">Box</option><option value="sphere">Sphere</option></select>
+      </div>
+      <button id="k-place" class="primary wide">Create region (S)</button>
+      <div class="seg region-active">
+        <button id="k-grow" class="ghost">Grow ×1.5</button>
+        <button id="k-shrink" class="ghost">Shrink ÷1.5</button>
+      </div>
+      <button id="k-fitcontents" class="ghost wide region-active">Fit to contents</button>
+      <button id="k-segment" class="ghost wide">Draw an outline… (⇧S)</button>
+      <p class="hint">Click <b>Create region</b> then click a point on the cloud: a small shape appears there, ready to resize. <b>Grow</b>, the handles, the size sliders, or <b>Alt</b> + scroll while it is active all enlarge it; <b>Fit to contents</b> grows it until it stops finding new points and then tightens onto them.</p>
       <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. <b>Keep inside</b> dims everything outside the region; <b>Remove inside</b> dims what is inside it — either way the preview is what Apply will leave behind. <b>Escape</b> cancels the region.</p>
       <div class="seg">
         <button id="k-cropcancel" class="ghost">Cancel region</button>
@@ -465,7 +477,7 @@ claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"</pre>
     <button data-tool="orbit" class="on">Orbit</button>
     <button data-tool="fly">Fly</button>
     <button data-tool="measure">Measure</button>
-    <button data-tool="segment">Select</button>
+    <button data-tool="segment">Region</button>
     <button data-tool="crop">Crop</button>
     <button data-tool="photo" class="hidden">Leave photo</button>
   </div>
@@ -479,6 +491,10 @@ claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"</pre>
     <div class="vert"><button data-key="e">up</button><button data-key="q">down</button></div>
   </div>
   <svg id="seg" class="hidden"><polygon id="seg-fill"></polygon><polyline id="seg-line"></polyline></svg>
+  <div id="placebar" class="hidden">
+    <span class="mono" id="place-hint">Click a point to place a region · Esc cancels</span>
+    <button id="place-cancel" class="ghost">Cancel</button>
+  </div>
   <div id="segbar" class="hidden">
     <span class="mono" id="seg-hint">Click to trace a shape · double-click to close · Esc to cancel</span>
     <button id="seg-region" class="primary" disabled>Create region</button>

@@ -876,3 +876,29 @@ Per-entity surfaces are stored per entity and re-uploaded on a switch, but only 
 layer's surface is drawn — one `MeshView`, not one per layer. Stations are likewise the active
 layer's only. Both are honest limits rather than oversights: drawing every layer's surface
 needs a program and a VAO set per layer, and the panorama bubble assumes one scan's pose.
+
+## Pointing at a thing beats drawing round it
+
+The outline tool works, and it was the wrong default. Tracing a polygon is a careful,
+two-handed operation that has to be done from a viewpoint where the thing is unobstructed;
+what people actually do is look at something and say *that one*. So the primary gesture is now
+one click: **S**, click a point on the cloud, and a small box or sphere appears centred exactly
+on the surface point under the cursor — `pickWorld` already gave the millimetre-accurate answer
+for the measure tool, so the placement is free.
+
+Making it big enough is then the whole job, and there are four ways because different sizes
+want different ones: the gizmo handles for a shape you are watching, the sliders for a number
+you know, **Alt + scroll** for the gesture everyone's fingers already have (captured before
+OrbitControls sees the wheel, or the camera dollies at the same time), and **Fit to contents**
+for "as big as that object". Fit grows each axis by half until a `countInside` stops rising —
+that is the edge of whatever the region is sitting on — and then replaces the region with the
+exact bounding box of the points it holds. Growing alone would leave it 50% too big; the
+tightening is what makes it a fit. On the test blob: **1,600 of 1,600 points, radius 1.42 m
+against a true half-diagonal of 1.379 m**, having started at 0.2 m.
+
+The margin it leaves after tightening had to stop being "two point spacings". A sparse cloud's
+spacing estimate can be a quarter of a metre, which on a 2 m object is a 25% overshoot; it is
+now the smaller of one spacing and 2% of the fitted extent.
+
+The outline tool stays, on ⇧S and a secondary button, because for an awkwardly shaped thing it
+is still the right answer.

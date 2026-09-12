@@ -130,7 +130,14 @@ of the same room register to **0.000 mm** and their distance field reads **0.00 
   scan was already cached, and history is cleared after a warning. Large undo steps spill
   to the origin-private file system so a multi-million-point crop does not pin hundreds of
   megabytes in RAM.
-- **Draw a region** — press <b>S</b>, trace a shape over the view, then **Create region**.
+- **Create a region** — press <b>S</b> (or *Create region*), then click a point on the cloud: a
+  small box or sphere appears centred exactly there, active with the gizmo already in Resize.
+  Make it the right size however suits: the handles, the size sliders, *Grow ×1.5* / *Shrink
+  ÷1.5*, **Alt** (Option) and the scroll wheel, or **Fit to contents**, which grows it until it
+  stops finding new points and then tightens onto the ones it holds — the "enlarge to the
+  object" gesture in one click. Each Create adds another; they union, and any row can be
+  flipped to *Remove*.
+- **Draw an outline** — <b>⇧S</b>, trace a shape over the view, then **Create region**.
   The outline becomes a **prism**: extruded along the direction you drew it from, scaled to
   metres at the orbit centre so it lands on the points you were looking at. From then on it is
   a bounding shape like the box — drawn in 3D so you can orbit around it and see exactly what

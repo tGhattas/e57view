@@ -66,8 +66,8 @@ const view = await aim(blobZ);
 console.log('POLY', JSON.stringify(view.poly));
 
 // ---------------------------------------------------------------- draw, then create a region
-await p.keyboard.press('s');
-ok('S arms the tool', await p.evaluate(() => window.__viewer.tool === 'segment'), '');
+await p.keyboard.press('Shift+S');
+ok('Shift+S arms the outline tool', await p.evaluate(() => window.__viewer.tool === 'segment'), '');
 ok('the bar offers Create region', await p.evaluate(() => !document.getElementById('segbar').classList.contains('hidden') && document.getElementById('seg-region').textContent.trim() === 'Create region'), '');
 for (const [x, y] of view.poly) await p.mouse.click(view.rect.x + x, view.rect.y + y);
 await p.waitForTimeout(200);
@@ -228,7 +228,7 @@ await p.click('#tb-undo'); await idle();
 ok('and that undoes too', await loaded() === TOTAL, `${await loaded()} points`);
 
 // ---------------------------------------------------------------- Escape still backs out
-await p.keyboard.press('s');
+await p.keyboard.press('Shift+S');
 await p.mouse.click(view.rect.x + view.poly[0][0], view.rect.y + view.poly[0][1]);
 await p.keyboard.press('Escape');
 const afterEsc = await p.evaluate(() => ({ hint: document.getElementById('seg-hint').textContent, tool: window.__viewer.tool, n: window.__viewer.loaded }));

@@ -24,7 +24,7 @@ export type Knobs = {
   budget: number; density: number; movingQuality: number;
   flySpeed: number;
 };
-export type Tool = 'none' | 'measure' | 'segment';
+export type Tool = 'none' | 'measure' | 'segment' | 'place';
 export type Display = 'points' | 'mesh' | 'both';
 export type GizmoMode = 'translate' | 'rotate' | 'scale';
 
@@ -792,6 +792,7 @@ export class Viewer {
   setTool(t: Tool) {
     this.tool = t;
     // a lasso needs the pointer for drawing, so orbiting stands down while it is armed
+    // Placement keeps the orbit alive: you look around for the thing you want, then click it.
     this.controls.enabled = t !== 'segment' && !this.fly.enabled && !this.bubble;
     if (t !== 'measure') { this.pending = null; if (this.pendingMark) { this.overlay.remove(this.pendingMark); this.pendingMark = null; } } this.dirty = true; }
 
