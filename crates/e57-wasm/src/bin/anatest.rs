@@ -249,6 +249,92 @@ fn main() {
     let want = (6.0f32 / 0.2).powi(2) as usize;         // the plane is 6 x 6 m
     ck("spatial subsample hits the spacing", (n_keep as i64 - want as i64).abs() < (want as i64 / 4), format!("{} kept, about {} expected", n_keep, want));
 
+    // ---------------------------------------------------- fine registration (point-to-plane ICP)
+    // The room again, as the reference. A copy is moved by a known rigid transform with noise
+    // on top; ICP has to undo it. A tighter quantisation cube than the rest of this file uses,
+    // because the tolerance here is a millimetre and 100 m / 65536 is 1.5 of them.
+    let cube = ([8.0f32, 8.0, 8.0], 20.0f32);
+    let mk_cube = |pts: &[[f32; 3]], cell: f32| {
+        let mut a = Analyzer::new(cell);
+        a.add_records(cube.0, cube.1, &recs(pts, cube.0, cube.1), None);
+        a.build();
+        a
+    };
+    let known = {
+        // 2 degrees about Z through the room centre, then 0.15 m of translation
+        let (s2, c2) = 2.0f32.to_radians().sin_cos();
+        let piv = [mid, mid, mid];
+        let rr = [[c2, -s2, 0.0], [s2, c2, 0.0], [0.0, 0.0, 1.0]];
+        let mut m = [0.0f32; 16];
+        for i in 0..3 {
+            for j in 0..3 { m[i * 4 + j] = rr[i][j]; }
+            m[i * 4 + 3] = piv[i] - (rr[i][0] * piv[0] + rr[i][1] * piv[1] + rr[i][2] * piv[2]);
+        }
+        m[3] += 0.15; m[7] -= 0.08; m[11] += 0.05;
+        m[15] = 1.0;
+        m
+    };
+    let apply = |m: &[f32; 16], p: &[f32; 3]| [
+        m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
+        m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
+        m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11]];
+    // a cheap deterministic jitter, so the test is repeatable
+    let mut seed = 0x9E3779B9u32;
+    let mut noise = move || { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; (seed as f32 / u32::MAX as f32 - 0.5) * 0.002 };
+    let moved: Vec<[f32; 3]> = room.iter().map(|p| {
+        let q = apply(&known, p);
+        [q[0] + noise(), q[1] + noise(), q[2] + noise()]
+    }).collect();
+
+    let mut reference = mk_cube(&room, 0.15);
+    reference.compute_normals(16, |_| {});
+    let report = |name: &str, m: &[f32; 16]| {
+        // m composed with the known transform should be the identity
+        let mut c = [0.0f32; 16];
+        for r in 0..4 { for k in 0..4 {
+            let mut t = 0.0; for q in 0..4 { t += m[r * 4 + q] * known[q * 4 + k]; }
+            c[r * 4 + k] = t;
+        }}
+        let trans = (c[3] * c[3] + c[7] * c[7] + c[11] * c[11]).sqrt();
+        let tr = (c[0] + c[5] + c[10]).clamp(-1.0, 3.0);
+        let ang = (((tr - 1.0) / 2.0).clamp(-1.0, 1.0)).acos().to_degrees();
+        println!("      {name}: residual {:.4} mm and {:.4} deg", trans * 1000.0, ang);
+        (trans, ang)
+    };
+
+    let mut moving = mk_cube(&moved, 0.15);
+    let r = moving.icp(&reference, 40, 0.45, 200_000, |_, _| {});
+    let (trans, ang) = report("full overlap", &r.matrix);
+    ck("ICP undoes a known transform", trans < 0.001 && ang < 0.05,
+       format!("RMS {:.3} mm, {} pairs, {:.0}% overlap, {} iterations", r.rms * 1000.0, r.pairs, r.overlap * 100.0, r.iterations));
+    ck("and converges rather than drifting", r.rms_history.len() >= 2 && r.rms <= r.rms_history[0],
+       format!("RMS {:.3} -> {:.3} mm over {} iterations", r.rms_history[0] * 1000.0, r.rms * 1000.0, r.rms_history.len()));
+
+    // 60% overlap: the moving cloud only covers part of the reference
+    let cut = lo + (hi - lo) * 0.6;
+    let partial: Vec<[f32; 3]> = moved.iter().filter(|p| {
+        // the same 60% slice measured in the reference frame, so the walls stay walls
+        let q = [p[0], p[1], p[2]];
+        q[0] <= cut + 0.2
+    }).copied().collect();
+    let mut moving2 = mk_cube(&partial, 0.15);
+    let r2 = moving2.icp(&reference, 40, 0.45, 200_000, |_, _| {});
+    let (t2, a2) = report("60% overlap", &r2.matrix);
+    ck("ICP works at 60% overlap", t2 < 0.001 && a2 < 0.05,
+       format!("{} of {} points, RMS {:.3} mm, {:.0}% of pairs kept", partial.len(), moved.len(), r2.rms * 1000.0, r2.overlap * 100.0));
+
+    // and cloud-to-cloud distance on the registered result
+    let mut aligned = mk_cube(&room.iter().map(|p| [p[0] + 0.01, p[1], p[2]]).collect::<Vec<_>>(), 0.15);
+    let d = aligned.distance_to(&reference, false, 2.0, |_| {});
+    let mut dv: Vec<f32> = d.iter().copied().filter(|v| v.is_finite()).collect();
+    let md = med(&mut dv);
+    ck("cloud-to-cloud distance reads the offset", (md - 0.01).abs() < 0.002,
+       format!("median {:.4} m against a planted 0.0100 m", md));
+    let ds = aligned.distance_to(&reference, true, 2.0, |_| {});
+    let signed_span = ds.iter().copied().filter(|v| v.is_finite()).fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v), b.max(v)));
+    ck("signed distance keeps both sides", signed_span.0 < -0.005 && signed_span.1 > 0.005,
+       format!("{:.4} to {:.4} m", signed_span.0, signed_span.1));
+
     println!("\n{}", if fails == 0 { "ALL CHECKS PASSED".into() } else { format!("{fails} CHECK(S) FAILED") });
     std::process::exit(if fails == 0 { 0 } else { 1 });
 }

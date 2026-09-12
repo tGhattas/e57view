@@ -793,3 +793,86 @@ region's point count is worth showing in the list, but `countInside` reads cells
 GPU, and the list is re-rendered on every gizmo frame; the count is now skipped while a handle
 is moving (falling back to the cheap cell-classification estimate) and recomputed once on
 release, which needed one extra `onRegionChange` when the drag ends.
+
+## Two clouds, and the smallest change that got there
+
+Registration, cloud-to-cloud distance and merging are the payoff, and all three need two
+clouds in memory at once. The renderer had exactly one `CellRenderer` and `main.ts` had about
+a dozen module variables that *were* the loaded scan — its file, its metadata, its histograms,
+its surface. Threading an entity argument through every one of those call sites would have
+been a hundred edits and a hundred chances to pass the wrong one.
+
+So the module variables stay, and they are the **active** entity's state, swapped in and out
+around a switch. `captureActive` and `restoreActive` are eleven lines each and the only place
+that has to know what an entity remembers; `viewer.cells` became an accessor for the active
+entity's renderer, and every single-cloud call site kept working unchanged. The one rule this
+buys is worth stating: a switch is refused while a scan is loading, because a decode in flight
+writes into whatever is active.
+
+What genuinely had to change: the draw loop (one pass per visible entity into the same target,
+the frame budget shared out by point count, a per-entity colour tint uniform), `bounds()` (the
+active entity for tools, the union of the visible ones for fitting and the height range), the
+history (each step records its entity, and undo switches back to it first), and "dirty", which
+now aggregates across layers and names the layer — *"a scalar field (Planarity) on Second
+pass"*.
+
+Two clouds also raised a question a single cloud never had to answer: **where is the second
+one?** Each file is shifted into its own local frame on load, so two scans both start near the
+origin and land on top of each other regardless of where they actually are. A layer added
+after the first is now placed by the difference between its own global shift and the first
+layer's, which is the only thing two separate files say about their relative position. Without
+it the first `drive-entities` run had two clouds 20 m apart in the world sitting in the same
+4.45 m box.
+
+**Merging cannot keep the leaf cubes.** A leaf is an axis-aligned cube with 16-bit offsets
+inside it, and a rotated cube is not a cube. Each source leaf is therefore read through its own
+model matrix and back through the active layer's, its transformed points get a fresh cube, and
+they are requantised into it — under a tenth of a millimetre for a leaf a few metres across,
+and the alternative is refusing to merge anything that has been rotated. Scalar fields are
+dropped, because a field covering part of a cloud is worse than no field.
+
+### Point-to-plane ICP, and the 47 mm that would not go away
+
+Point-to-plane rather than point-to-point because scan data is surfaces: a point is free to
+slide along the surface it belongs to, and forbidding that is what makes plain ICP crawl along
+a flat wall. Each pair contributes one equation, `(R p + t - q) · n = 0`, linearised in a small
+rotation, so an iteration is a 6×6 solve however many pairs there are. Two details earned
+their comments: the rotation is taken about the moving cloud's own centroid (solving for a
+rotation about the origin when the cloud is tens of metres away mixes a tiny angle and a large
+translation into one normal matrix, and the conditioning shows), and it is applied as the exact
+exponential of the rotation vector rather than `I + [ω]×`, so a large first step stays a
+rotation instead of a slight shear. A little Tikhonov on the diagonal keeps a plane-only
+overlap from producing a singular solve.
+
+`anatest` moves a 61,206-point room by a known 2° and 0.15 m with 2 mm of noise on top:
+**0.0493 mm and 0.0000°** recovered, from an initial RMS of 110 mm, in 3 iterations. At **60%
+overlap**, 0.1258 mm.
+
+Then the browser gave 47 mm and would not budge, over four iterations that each improved by
+less than a tenth of a per cent. The cause was two lines earlier: **Match scales had scaled the
+cloud by 0.977**. Two copies of the same room reported different bounding boxes, because one
+had been measured by the loader (a 0.2% percentile over a 1024-bin histogram) and the other
+resampled after a rotation — two different measurements of the same thing, and coarse
+alignment turned the difference into a scale. A rigid ICP cannot undo a scale error, so it
+stalled at exactly the residual the scale left behind, and every downstream number was wrong
+without anything reporting a failure. Both coarse tools now measure both layers the same way,
+from a uniform sample of their own points, and `Match scales` says so out loud when the
+per-axis ratios disagree, because that means a rotation rather than a scale. After the fix:
+**0.000 mm, 0.0000°, distance field 0.00 mm.**
+
+### A preview that was drawn forever
+
+Chasing why two 8,100-point layers drew 21,200 points a frame: leaf uploads are deferred to the
+next frame, and `dropPreview` only dropped the leaves that had already been uploaded. On a
+small file every worker message arrives before a frame runs, so the low-resolution preview was
+still in the queue when the first real leaf landed, was uploaded afterwards, and was drawn on
+top of the real points for the rest of the session. It has presumably been doing that since the
+preview was written; nobody noticed because the preview is the same points, so it only cost
+fill rate. `dropPreview` now drops the queued ones too.
+
+### Scope
+
+Per-entity surfaces are stored per entity and re-uploaded on a switch, but only the **active**
+layer's surface is drawn — one `MeshView`, not one per layer. Stations are likewise the active
+layer's only. Both are honest limits rather than oversights: drawing every layer's surface
+needs a program and a VAO set per layer, and the panorama bubble assumes one scan's pose.

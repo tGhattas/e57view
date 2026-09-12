@@ -32,6 +32,7 @@ uniform float uScreenH, uSlope, uMinPx, uMaxPx, uClipZMin, uClipZMax;
 // everywhere, which is the whole point of a measurable plan or elevation.
 uniform float uOrthoMpp;
 uniform float uSFMin, uSFMax, uSFLo, uSFHi, uSFHide;
+uniform vec3 uTint;                      // per-entity colour multiplier, 1,1,1 when off
 // Regions: up to 16, each a box (1), sphere (2), slab (3) or prism (4) with its own frame.
 // role 0 = keep (a point must be inside at least one keep region),
 // role 1 = delete-pending (inside is tinted), role 2 = delete (inside is dimmed / hidden)
@@ -106,6 +107,7 @@ void main(){
   else if (uColorMode < 5.5) vCol = aSF < -1.0e17 ? vec3(0.32, 0.34, 0.36)
                                   : ramp((aSF - uSFMin) / max(uSFMax - uSFMin, 1e-9));
   else                       vCol = vec3(0.72, 0.75, 0.76);
+  vCol *= uTint;
   // value filter: points outside the kept range dim, or vanish when hiding
   if (uSFHi > uSFLo) {
     bool inRange = aSF > -1.0e17 && aSF >= uSFLo && aSF <= uSFHi;
@@ -295,6 +297,8 @@ export interface DrawParams {
   regions?: Region[]; regionHide?: boolean;
   /** Metres per pixel, when the camera's projection has been swapped for an orthographic one. */
   orthoMpp?: number;
+  /** Colour multiplier for this entity. */
+  tint?: [number, number, number];
 }
 
 export type RegionKind = 'box' | 'sphere' | 'slab' | 'prism';
@@ -462,7 +466,7 @@ export class CellRenderer {
     for (const n of ['uSFMin','uSFMax','uSFLo','uSFHi','uSFHide',
       'uVP','uView','uOrigin','uSize','uSpacing','uPtSize','uSizeMode','uColorMode','uZMin','uZMax',
                      'uIMin','uIMax','uScreenH','uSlope','uMinPx','uMaxPx','uClipZMin','uClipZMax',
-                     'uRound','uNormalShade','uBright','uGamma','uRegN','uRegHide','uModel','uOrthoMpp']) {
+                     'uRound','uNormalShade','uBright','uGamma','uRegN','uRegHide','uModel','uOrthoMpp','uTint']) {
       this.u[n] = gl.getUniformLocation(this.prog, n);
     }
     for (let i = 0; i < 16; i++) for (const n of ['uRegMode', 'uRegRole', 'uRegC', 'uRegS', 'uRegRot']) {
@@ -512,6 +516,11 @@ export class CellRenderer {
   }
 
   dropPreview() {
+    // Uploads are deferred to the next frame, so a preview can still be queued when the first
+    // real leaf arrives — and on a small file every message lands before a frame runs, which
+    // left the preview in the queue, uploaded after this call and drawn on top of the real
+    // points for the rest of the session. Drop the queued ones too.
+    this.pending = this.pending.filter(p => !p.preview);
     const keep: Leaf[] = [];
     for (const l of this.leaves) { if (l.preview) l.dispose(this.gl); else keep.push(l); }
     this.leaves = keep;
@@ -1108,6 +1117,8 @@ export class CellRenderer {
     gl.uniform1f(this.u.uIMin, p.iMin); gl.uniform1f(this.u.uIMax, p.iMax);
     gl.uniform1f(this.u.uScreenH, p.screenH); gl.uniform1f(this.u.uSlope, slope);
     gl.uniform1f(this.u.uOrthoMpp, mpp);
+    const tint = p.tint ?? [1, 1, 1];
+    gl.uniform3f(this.u.uTint, tint[0], tint[1], tint[2]);
     gl.uniform1f(this.u.uMinPx, p.minPx); gl.uniform1f(this.u.uMaxPx, p.maxPx);
     gl.uniform1f(this.u.uClipZMin, p.clipZMin); gl.uniform1f(this.u.uClipZMax, p.clipZMax);
     gl.uniform1f(this.u.uRound, p.round ? 1 : 0); gl.uniform1f(this.u.uNormalShade, p.normalShade ? 1 : 0);

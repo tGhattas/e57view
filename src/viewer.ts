@@ -4,6 +4,7 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { EDL_FS, QUAD_VS } from './shaders';
 import { CellRenderer, pointInRegion, polyHalf, simplifyRing, PRISM_MAX_V, REC, type DrawStats, type LeafMeta, type Region, type UndoRecord } from './cells';
 import { MeshView, type MeshData } from './meshview';
+import { Entity } from './entities';
 
 const BG = new THREE.Color(0x05090b);
 const TEAL = 0x46c6d2;
@@ -146,7 +147,9 @@ export class Viewer {
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
   fly: Fly;
-  cells: CellRenderer;
+  /** Every cloud in memory. Exactly one is active; the draw loop shows all the visible ones. */
+  entities: Entity[] = [];
+  activeId = '';
   mesh!: MeshView;
   meshTris = 0;
   /** Display range and value filter for the active scalar field. hi <= lo disables the filter. */
@@ -164,12 +167,12 @@ export class Viewer {
   overlay = new THREE.Scene();
   private panoScene = new THREE.Scene();
   knobs!: Knobs;
+  onEntitiesChange: (() => void) | null = null;
   /** Set while an orthographic projection is swapped in: its half extents in metres. */
   private ortho: { halfW: number; halfH: number } | null = null;
   /** World box the surface is clipped to while a section is rendered. */
   meshClip: { min: THREE.Vector3; max: THREE.Vector3 } | null = null;
   zRange: [number, number] = [0, 1];
-  robust: THREE.Box3 | null = null;
   private cw = innerWidth; private ch = innerHeight;
 
   // regions + gizmo
@@ -271,7 +274,8 @@ export class Viewer {
     this.tc.addEventListener('objectChange', () => { if (this.modelGizmo) this.dragModel(); else this.syncActiveFromGroup(); });
 
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
-    this.cells = new CellRenderer(gl);
+    this.entities.push(new Entity(gl, 'e1', 'Scan 1'));
+    this.activeId = 'e1';
     this.mesh = new MeshView(gl);
 
     this.edlMat = new THREE.ShaderMaterial({
@@ -299,6 +303,50 @@ export class Viewer {
     });
   }
 
+  // --------------------------------------------------------- entities
+  get active(): Entity { return this.entities.find(e => e.id === this.activeId) ?? this.entities[0]; }
+  /** The active entity's renderer. Every tool works through this, which is what keeps the
+   *  single-cloud code in main.ts unchanged. */
+  get cells(): CellRenderer { return this.active.cells; }
+  get robust(): THREE.Box3 | null { return this.active.robust; }
+  set robust(b: THREE.Box3 | null) { this.active.robust = b; }
+  get gl(): WebGL2RenderingContext { return this.renderer.getContext() as WebGL2RenderingContext; }
+  get visibleEntities(): Entity[] { return this.entities.filter(e => e.visible && e.cells.total > 0); }
+  addEntity(name: string, id?: string): Entity {
+    const e = new Entity(this.gl, id ?? 'e' + (++this.entitySeq + this.entities.length), name);
+    this.entities.push(e);
+    this.dirty = true; this.onEntitiesChange?.();
+    return e;
+  }
+  private entitySeq = 1;
+  removeEntity(id: string): boolean {
+    if (this.entities.length <= 1) return false;
+    const i = this.entities.findIndex(e => e.id === id);
+    if (i < 0) return false;
+    const [gone] = this.entities.splice(i, 1);
+    gone.dispose(this.gl);
+    if (this.activeId === id) this.activeId = this.entities[Math.max(0, i - 1)].id;
+    this.recomputeVisible();
+    this.dirty = true; this.onEntitiesChange?.();
+    return true;
+  }
+  setActiveEntity(id: string) {
+    if (!this.entities.some(e => e.id === id) || id === this.activeId) return;
+    this.activeId = id;
+    this.setActiveRegion(null); this.setModelGizmo(false);
+    this.syncMeshModel();
+    this.applyZRange();
+    this.dirty = true; this.onEntitiesChange?.();
+  }
+  private recomputeVisible() { this.applyZRange(); }
+  /** Union of every visible entity's box: what fitting and the height range should describe. */
+  visibleBounds(): THREE.Box3 {
+    const b = new THREE.Box3();
+    for (const e of this.visibleEntities) b.union(e.bounds());
+    return b.isEmpty() ? this.bounds() : b;
+  }
+  get loadedAll() { return this.entities.reduce((n, e) => n + e.cells.total, 0); }
+
   touch() {
     this.dirty = true; this.moving = true;
     clearTimeout(this.movingTimer);
@@ -320,9 +368,14 @@ export class Viewer {
 
   // ------------------------------------------------------------ data
   addLeaf(blocks: ArrayBuffer[], count: number, meta: LeafMeta, preview = false, capacity?: number, tag?: number) { this.cells.enqueue(blocks, count, meta, preview, capacity, tag); this.dirty = true; }
+  /** Uploads pending across every entity, so a caller can wait for a load to settle. */
+  get pendingUploads() { return this.entities.reduce((n, e) => n + e.cells.pendingCount, 0); }
   appendLeaf(tag: number, recs: Uint8Array, n: number) { this.cells.appendLeaf(tag, recs, n); this.dirty = true; }
   dropPreview() { this.cells.dropPreview(); this.dirty = true; }
+  /** Empty the active entity. Other entities are untouched: "Open file…" clearing everything
+   *  is main.ts's business, not the renderer's. */
   clear() { this.cells.clear(); this.robust = null; this.setRegions([]); this.clearMeasures(); this.setStations([]); this.exitBubble(); this.dirty = true; }
+  /** Points in the active entity — what every readout and every tool means by "loaded". */
   get loaded() { return this.cells.total; }
   /** Percentile bounds from the loader, in the cloud's own frame; stored transformed, since
    *  everything that reads `bounds()` works in world space. */
@@ -330,8 +383,9 @@ export class Viewer {
     this.robust = new THREE.Box3(new THREE.Vector3(...lo), new THREE.Vector3(...hi)).applyMatrix4(this.cells.model);
     this.applyZRange(); this.dirty = true;
   }
-  bounds() { return this.robust && !this.robust.isEmpty() ? this.robust : this.cells.bounds; }
-  applyZRange() { const b = this.bounds(); if (!b.isEmpty()) this.zRange = [b.min.z, b.max.z]; }
+  /** The box a tool should work in: the active entity's. */
+  bounds() { return this.active.bounds(); }
+  applyZRange() { const b = this.visibleBounds(); if (!b.isEmpty()) this.zRange = [b.min.z, b.max.z]; }
   setKnobs(k: Knobs) {
     this.knobs = k; this.fly.speed = k.flySpeed;
     this.edlMat.uniforms.uEnabled.value = k.edl && this.rtType !== THREE.UnsignedByteType ? 1 : 0;
@@ -364,15 +418,26 @@ export class Viewer {
   /** World box of a uniform sample of the points. The leaves are shuffled, so a prefix of
    *  each is a uniform subsample — the same trick the level-of-detail draw uses. */
   private sampledBox(): THREE.Box3 | null {
+    return this.sampleBoxOf(this.active);
+  }
+  private sampleBoxOf(e: Entity): THREE.Box3 | null {
     const b = new THREE.Box3(), v = new THREE.Vector3();
     let n = 0;
-    for (const { leaf, recs, n: cnt } of this.cells.sample(800)) {
-      const xyz = this.cells.transformRecordsInto(recs, cnt, leaf, new Float64Array(cnt * 3));
+    for (const { leaf, recs, n: cnt } of e.cells.sample(800)) {
+      const xyz = e.cells.transformRecordsInto(recs, cnt, leaf, new Float64Array(cnt * 3));
       for (let i = 0; i < cnt; i++) b.expandByPoint(v.set(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]));
       n += cnt;
     }
     return n ? b : null;
   }
+  /** A box measured the same way whichever entity it belongs to.
+   *
+   *  `bounds()` returns whatever that entity happens to hold: the loader's percentile box for
+   *  one that has just been read, a resampled box for one that has been rotated. Comparing
+   *  those two across entities is comparing two different measurements — which is how coarse
+   *  alignment invented a 2% scale error between two copies of the same room, and a rigid ICP
+   *  cannot undo a scale error, so it then stalled at 47 mm. */
+  measuredBox(e: Entity): THREE.Box3 { return this.sampleBoxOf(e) ?? e.bounds(); }
   /** Measure the framing box again — after a gizmo drag, where it was only inflated. */
   retightenBounds() { const s = this.sampledBox(); if (s) { this.robust = s; this.applyZRange(); this.dirty = true; } }
   get model() { return this.cells.model; }
@@ -450,7 +515,7 @@ export class Viewer {
     g.userData = { kind: r.kind, role: r.role };
     return g;
   }
-  private slabSpan(): number { const b = this.bounds(); if (b.isEmpty()) return 200; const s = b.getSize(new THREE.Vector3()); return Math.max(s.x, s.y, s.z) * 3; }
+  private slabSpan(): number { const b = this.visibleBounds(); if (b.isEmpty()) return 200; const s = b.getSize(new THREE.Vector3()); return Math.max(s.x, s.y, s.z) * 3; }
   private applyRegionToGroup(r: Region, g: THREE.Group) {
     g.position.set(r.center[0], r.center[1], r.center[2]);
     g.quaternion.set(r.quat[0], r.quat[1], r.quat[2], r.quat[3]);
@@ -542,12 +607,11 @@ export class Viewer {
    *  build time would be applied twice. */
   setMesh(m: MeshData | null, builtWith?: THREE.Matrix4) {
     if (!m) { this.mesh.clear(); if (this.display !== 'points') this.setDisplay('points'); }
-    else { this.mesh.upload(m); this.meshBase.copy(builtWith ?? this.cells.model); }
+    else { this.mesh.upload(m); this.active.state.meshBase.copy(builtWith ?? this.cells.model); }
     this.syncMeshModel();
     this.dirty = true;
   }
-  private meshBase = new THREE.Matrix4();
-  private syncMeshModel() { this.mesh.model.copy(this.cells.model).multiply(this.meshBase.clone().invert()); }
+  private syncMeshModel() { this.mesh.model.copy(this.cells.model).multiply(this.active.state.meshBase.clone().invert()); }
   setDisplay(d: Display) {
     this.display = this.mesh.hasMesh || d === 'points' ? d : 'points';
     this.mesh.visible = this.display !== 'points';
@@ -795,7 +859,7 @@ export class Viewer {
     return new THREE.Vector3(rt.y, -rt.x, portrait ? 0.62 : 0.52).normalize();
   }
   fit(quiet = false) {
-    const bb = this.bounds(); if (bb.isEmpty()) return;
+    const bb = this.visibleBounds(); if (bb.isEmpty()) return;
     if (!quiet) { this.exitBubble(); this.setFly(false); }
     this.camera.up.set(0, 0, 1);
     const c = bb.getCenter(new THREE.Vector3()); const dir = this.viewDir(bb);
@@ -813,7 +877,7 @@ export class Viewer {
     this.controls.update(); this.touch();
   }
   topDown() {
-    const bb = this.bounds(); if (bb.isEmpty()) return;
+    const bb = this.visibleBounds(); if (bb.isEmpty()) return;
     this.exitBubble(); this.setFly(false);
     const c = bb.getCenter(new THREE.Vector3()), s = bb.getSize(new THREE.Vector3());
     const { right: occR, bottom: occB } = occlusion();
@@ -1091,7 +1155,7 @@ export class Viewer {
     const dt = Math.min((now - this.lastT) / 1000, 0.1); this.lastT = now;
     if (this.fly.update(dt)) this.touch();
     if (this.controls.enabled) this.controls.update();
-    if (this.cells.pendingCount && this.cells.flushUploads()) this.dirty = true;
+    for (const e of this.entities) if (e.cells.pendingCount && e.cells.flushUploads()) this.dirty = true;
     if (this.bubble) {
       const d = this.camera.position.distanceTo(this.bubble.pos);
       const op = 1 - Math.min(1, Math.max(0, (d - 0.3) / 2.0));
@@ -1119,15 +1183,29 @@ export class Viewer {
     });
     if (this.display === 'mesh') {
       this.stats = { leavesVisible: 0, leavesDrawn: 0, pointsDrawn: 0, pointsTotal: this.cells.total };
-    } else
-    this.stats = this.cells.draw(this.camera, {
-      budget, density: k.density, ptSize: k.size, sizeMode: k.sizeMode, minPx: 1, maxPx: k.maxPx,
-      colorMode: k.colorMode, zMin: this.zRange[0], zMax: this.zRange[1], iMin: k.iMin, iMax: k.iMax,
-      clipZMin: k.clipZMin, clipZMax: k.clipZMax, round: k.round, normalShade: k.normalShade, bright: k.bright, gamma: k.gamma,
-      screenH: this.rt.height, fovDeg: this.camera.fov, regions: this.regions.filter(r => this.regionOverlayVisible(r)), regionHide: this.regionHide,
-      sfMin: this.sf.min, sfMax: this.sf.max, sfLo: this.sf.lo, sfHi: this.sf.hi, sfHide: this.sf.hide,
-      orthoMpp: this.ortho ? (2 * this.ortho.halfH) / Math.max(1, this.rt.height) : 0,
-    });
+    } else {
+      // Every visible entity into the same target. They write the same (colour, log depth)
+      // pair, so depth composites them correctly and the eye-dome pass shades whatever ended
+      // up in front — no per-entity pass, no sorting. The frame budget is shared out by point
+      // count, so adding a second cloud thins both rather than starving one.
+      const vis = this.visibleEntities;
+      const all = Math.max(1, vis.reduce((n, e) => n + e.cells.total, 0));
+      const params = {
+        budget, density: k.density, ptSize: k.size, sizeMode: k.sizeMode, minPx: 1, maxPx: k.maxPx,
+        colorMode: k.colorMode, zMin: this.zRange[0], zMax: this.zRange[1], iMin: k.iMin, iMax: k.iMax,
+        clipZMin: k.clipZMin, clipZMax: k.clipZMax, round: k.round, normalShade: k.normalShade, bright: k.bright, gamma: k.gamma,
+        screenH: this.rt.height, fovDeg: this.camera.fov, regions: this.regions.filter(r => this.regionOverlayVisible(r)), regionHide: this.regionHide,
+        sfMin: this.sf.min, sfMax: this.sf.max, sfLo: this.sf.lo, sfHi: this.sf.hi, sfHide: this.sf.hide,
+        orthoMpp: this.ortho ? (2 * this.ortho.halfH) / Math.max(1, this.rt.height) : 0,
+      };
+      this.stats = { leavesVisible: 0, leavesDrawn: 0, pointsDrawn: 0, pointsTotal: 0 };
+      for (const e of vis) {
+        const s = e.cells.draw(this.camera, { ...params, budget: Math.max(50_000, Math.round(budget * e.cells.total / all)), tint: e.tintRgb() });
+        this.stats.leavesVisible += s.leavesVisible; this.stats.leavesDrawn += s.leavesDrawn;
+        this.stats.pointsDrawn += s.pointsDrawn; this.stats.pointsTotal += s.pointsTotal;
+      }
+      if (!vis.length) this.stats.pointsTotal = this.cells.total;
+    }
     this.renderer.resetState();
 
     this.renderer.setRenderTarget(null);

@@ -37,6 +37,7 @@
 
   <div id="topbar" class="hidden">
     <span class="name" id="tb-name">—</span>
+    <span class="pill hidden" id="tb-layer"></span>
     <span class="dot"></span>
     <span class="mono" id="tb-points">—</span>
     <span class="dot"></span>
@@ -82,6 +83,35 @@
 
   <aside id="panel" class="hidden">
     <div id="grabber" aria-hidden="true"><i></i></div>
+    <div class="grp" data-grp="layers">
+      <h3>Layers</h3>
+      <ul id="layer-list" class="mlist"></ul>
+      <div class="seg">
+        <button id="k-layeradd" class="ghost">Add file…</button>
+        <button id="k-layerclone" class="ghost">Clone</button>
+      </div>
+      <button id="k-layermerge" class="ghost wide">Merge into active…</button>
+      <label class="row"><span>Tint this layer</span><input type="checkbox" id="k-layertint"></label>
+      <label class="row"><span>Colour</span><input type="color" id="k-layercolor" value="#66ccff"></label>
+      <p class="hint mono" id="v-layers">—</p>
+      <p class="hint">Every visible layer is drawn; the <b>active</b> one (click its name) is what every tool works on. Double-click a name to rename it. <b>Add file…</b> opens another scan alongside this one — so does dropping a file with <b>Shift</b> held — while <b>Open file…</b> replaces everything. A tint multiplies a layer's colour so two overlapping scans can be told apart.</p>
+    </div>
+
+    <div class="grp" data-grp="register">
+      <h3>Register</h3>
+      <label class="row"><span>Reference</span><select id="k-regref"></select></label>
+      <div class="seg">
+        <button id="k-regcentres" class="ghost">Match centres</button>
+        <button id="k-regscales" class="ghost">Match scales</button>
+      </div>
+      <label class="row"><span title="Pairs further apart than this many point spacings are ignored, and the limit tightens as it converges.">Max distance</span><input type="range" id="k-regdist" min="1" max="30" step="0.5" value="6"><b class="mono" id="v-regdist">6</b></label>
+      <label class="row"><span>Max iterations</span><input type="range" id="k-regiter" min="5" max="80" step="1" value="30"><b class="mono" id="v-regiter">30</b></label>
+      <button id="k-regicp" class="primary wide">Fine registration (ICP)…</button>
+      <button id="k-regdistance" class="ghost wide">Distance to reference</button>
+      <p class="hint mono" id="v-register">—</p>
+      <p class="hint">Moves the <b>active</b> layer onto the reference and never touches the reference. <b>Match centres</b> and <b>Match scales</b> are the coarse step; <b>ICP</b> is point-to-plane and lands on the reference's own surfaces. <b>Distance to reference</b> writes a scalar field on the active layer, so the colour ramp and the histogram show where the two disagree.</p>
+    </div>
+
     <div class="grp">
       <h3>Appearance</h3>
       <label class="row"><span>Colour</span>

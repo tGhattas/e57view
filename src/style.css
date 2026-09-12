@@ -214,6 +214,14 @@ input.txt{background:#0a1216;color:var(--ink);border:1px solid var(--line);borde
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
 .chips label{font-size:11.5px;color:var(--ink);display:flex;align-items:center;gap:4px;border:1px solid #3d555e;border-radius:12px;padding:3px 9px;background:#1c2c32}
 .chips input{width:12px;height:12px;margin:0}
+input[type=color]{width:44px;height:22px;padding:0;border:1px solid var(--line);border-radius:4px;
+  background:#0a1216;cursor:pointer}
+.mlist li .eye{float:left;margin-right:6px;cursor:pointer;color:var(--dim);width:12px;display:inline-block}
+.mlist li .eye.on{color:var(--teal)}
+.mlist li.act{background:#46c6d21a;border-radius:4px}
+.mlist li.act .nm{color:var(--teal);font-weight:500}
+.mlist li .nm{cursor:pointer;color:var(--ink)}
+#tb-layer{background:#1c2c32;border:1px solid #3d555e;color:var(--ink)}
 .prism-only{display:none}
 body.has-prism .prism-only{display:flex}
 .mlist li .rr{float:right;margin-right:8px;font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;

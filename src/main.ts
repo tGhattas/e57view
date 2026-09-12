@@ -4,6 +4,7 @@ import { Viewer, isTouch, isIOS, type Knobs, type Station, type GizmoMode } from
 import { REC, pointInRegion, simplifyRing, PRISM_MAX_V, type Region } from './cells';
 import { AgentLink } from './agent';
 import { History, cloneRegions } from './history';
+import { blankState, type Entity } from './entities';
 import type { MeshData } from './meshview';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -23,6 +24,14 @@ let axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)];
 let axisCube: { origin: number[]; size: number } | null = null;
 let revealed = false, gotRealLeaf = false, fromCache = false, cropped = false;
 let cacheKey = '';
+/** Set when layers have been merged, because that is an unsaved change with no undo step. */
+let mergedNote = '';
+/** The global shift of the first layer loaded. Everything is drawn in that layer's local
+ *  frame, so a layer added afterwards is placed by the difference between its own shift and
+ *  this one — which is the only information two separate files carry about where they sit
+ *  relative to each other. */
+let frameOrigin: number[] | null = null;
+let pendingAdd = false;
 let t0 = 0;
 let sessionMod: typeof import('./session') | null = null;
 
@@ -35,6 +44,27 @@ const knobs: Knobs = {
   bright: 1, gamma: 1, iMin: 0, iMax: 1, clipZMin: -1e9, clipZMax: 1e9,
   budget: 8_000_000, density: 2.0, movingQuality: 0.35, flySpeed: 2,
 };
+
+// ------------------------------------------------------------- the active entity
+// These module variables *are* the active entity's state while it is active. Swapping them in
+// and out around a switch keeps a hundred single-cloud call sites unchanged, and makes the two
+// functions below the only place that has to know what an entity remembers.
+function captureActive() {
+  const st = viewer.active.state;
+  st.meta = meta; st.file = currentFile; st.handle = currentHandle; st.cacheKey = cacheKey;
+  st.fromCache = fromCache; st.cropped = cropped;
+  st.histogram = histogram; st.axisHist = axisHist; st.axisCube = axisCube;
+  st.sfName = sfName; st.meshData = meshData; st.meshInfo = meshInfo;
+  st.dirtyField = dirtyMark.field; st.dirtySurface = dirtyMark.surface;
+}
+function restoreActive() {
+  const st = viewer.active.state;
+  meta = st.meta; currentFile = st.file; currentHandle = st.handle; cacheKey = st.cacheKey;
+  fromCache = st.fromCache; cropped = st.cropped;
+  histogram = st.histogram; axisHist = st.axisHist; axisCube = st.axisCube;
+  sfName = st.sfName; meshData = st.meshData; meshInfo = st.meshInfo;
+  dirtyMark.field = st.dirtyField; dirtyMark.surface = st.dirtySurface;
+}
 
 // ------------------------------------------------------------------ helpers
 function hashKey(s: string) { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0') + s.length.toString(16); }
@@ -127,12 +157,20 @@ const tick = () => new Promise(r => setTimeout(r, 0));
 function fail(msg: string) { const e = $('err'); e.textContent = msg; e.classList.remove('hidden'); $('loading').classList.add('hidden'); if (!revealed) $('drop').classList.remove('hidden'); }
 
 // ------------------------------------------------------------------ opening files
-function resetForLoad(name: string) {
-  revealed = false; gotRealLeaf = false; fromCache = false; cropped = false; cacheNote = ''; clearDirty();
+function resetForLoad(name: string, keepOthers = false) {
+  if (!keepOthers) {
+    // Open file… replaces everything: other layers go, and so does the shared history
+    for (const e of viewer.entities.slice()) if (e.id !== viewer.activeId) viewer.removeEntity(e.id);
+    viewer.active.name = 'Scan 1';
+    void hist.clear();
+    mergedNote = ''; frameOrigin = null;
+  }
+  revealed = viewer.loadedAll > 0 && keepOthers; gotRealLeaf = false; fromCache = false; cropped = false; cacheNote = ''; clearDirty(!keepOthers);
   (document.activeElement as HTMLElement | null)?.blur?.();
   $('drop').classList.add('hidden'); $('loading').classList.remove('hidden', 'over');
   $('ld-name').textContent = name; $('ld-stat').textContent = 'opening…'; $('ld-bar').style.width = '0%'; $('err').classList.add('hidden');
   viewer.clear();
+  viewer.active.state = blankState();
   histogram = new Uint32Array(256); axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)]; axisCube = null;
   sections.length = 0; deletes.length = 0; cropUI.on = false; cropState.role = 'keep'; syncCropRoleUI();
   prismFull.clear(); countCache.clear();
@@ -140,15 +178,22 @@ function resetForLoad(name: string) {
   viewer.setModel(new THREE.Matrix4()); viewer.setModelGizmo(false);
   sfName = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
   ($('k-color-sf') as HTMLOptionElement).disabled = true; $<HTMLInputElement>('k-cropon').checked = false;
-  void hist.clear();
-  syncRegions(); updateMeasureList(); setTool('none'); renderSectionList(); updateHistUI();
+  syncRegions(); updateMeasureList(); setTool('none'); renderSectionList(); updateHistUI(); renderLayers();
   worker?.terminate(); worker = null;
   t0 = performance.now();
 }
-async function openFile(f: File, handle: any = null) {
+async function openFile(f: File, handle: any = null, add = false) {
   if (f.size < 48) { fail('That file is too small to be a scan.'); return; }
+  if (add) {
+    // a new layer, activated so the load lands in it, with the others left alone
+    captureActive();
+    const e = viewer.addEntity(f.name.replace(/\.[^.]+$/, ''));
+    viewer.activeId = e.id;
+    restoreActive();
+  }
   currentFile = f; currentHandle = handle;
-  resetForLoad(f.name);
+  pendingAdd = add;
+  resetForLoad(f.name, add);
   const stride = Number(($('k-load') as HTMLSelectElement).value) || 1;
   cacheKey = keyFor(f, stride);
   io.postMessage({ type: 'cache-has', key: cacheKey });
@@ -205,11 +250,21 @@ function onMeta(m: any) {
   if (s.name) $('ld-name').textContent = s.name;
   $('ld-stat').textContent = m.fromCache ? 'reading cached cells…' : `opened in ${m.openMs.toFixed(0)} ms · ${(m.bytesPulled/1e6).toFixed(1)} MB read · ${meta.stations.length} stations`;
   ($('k-nrm') as HTMLInputElement).disabled = !s.hasNormals;
-  $('tb-name').textContent = currentFile?.name ?? meta.scans[0].name ?? 'cloud';
+  updateNames();
   if (m.histogram) histogram = Uint32Array.from(m.histogram);
   if (m.robust) viewer.setRobustBounds(m.robust.lo, m.robust.hi);
   // a cached scan reopens with the transform it was cached with (row-major in the meta)
+  const shift = (s.translation ?? [0, 0, 0]) as number[];
   if (m.model && m.model.length === 16) viewer.setModel(fromRowMajor(m.model as number[]));
+  else if (!frameOrigin) frameOrigin = [...shift];
+  else if (pendingAdd) {
+    // two files only agree about the world through their own global shifts; place this one
+    // relative to the first layer's frame so both are comparable
+    const d = shift.map((v, i) => v - (frameOrigin![i] ?? 0));
+    if (d.some(v => Math.abs(v) > 1e-9)) viewer.setModel(new THREE.Matrix4().makeTranslation(d[0], d[1], d[2]));
+    $('v-layers').textContent = `placed by its global shift · ${d.map(v => v.toFixed(3)).join(', ')} m from ${layerName(viewer.entities[0])}`;
+  }
+  pendingAdd = false;
   updateTransformUI();
   viewer.setStations(meta.stations as Station[], s.translation);
   $('v-stations').textContent = meta.stations.length ? `${meta.stations.length} panoramas in this file` : 'No panoramas in this file';
@@ -400,6 +455,356 @@ addEventListener('keydown', (e: KeyboardEvent) => {
   else if (e.key === 'Home') viewer.fit();
 });
 
+// ------------------------------------------------------------------ layers
+const layerName = (e: Entity) => e.name || e.id;
+function activateEntity(id: string) {
+  if (id === viewer.activeId) return;
+  if (worker) { $('v-layers').textContent = 'a scan is still loading — wait for it to finish'; return; }
+  captureActive();
+  viewer.setActiveEntity(id);
+  restoreActive();
+  afterEntitySwitch();
+}
+/** Everything that describes "the" cloud has to be repointed at the newly active one. */
+function afterEntitySwitch() {
+  viewer.setMesh(meshData, viewer.active.state.meshBase.clone());
+  document.body.classList.toggle('has-mesh', !!meshData?.idx.length);
+  setDisplay(meshData?.idx.length ? viewer.display : 'points');
+  viewer.setStations((meta?.stations ?? []) as Station[], meta?.scans?.[0]?.translation ?? [0, 0, 0]);
+  $('k-stations').parentElement!.classList.toggle('hidden', !(meta?.stations?.length));
+  const hasSf = viewer.cells.hasScalarField;
+  document.body.classList.toggle('has-sf', hasSf);
+  ($('k-color-sf') as HTMLOptionElement).disabled = !hasSf;
+  if (!hasSf && knobs.colorMode === 5) setColorMode(0);
+  sfStats = hasSf ? viewer.cells.scalarStats() : null;
+  if (hasSf) refreshScalarUI(); else { $('v-sfname').textContent = 'no field'; viewer.sf.hi = -1; }
+  ($('k-nrm') as HTMLInputElement).disabled = !(meta?.scans?.[0]?.hasNormals);
+  drawHistogram();
+  renderLayers(); updateNames(); updateCropUI(); updateTransformUI(); updateCacheUI(); updateHistUI();
+  syncZLabels(); cropReadouts(); renderSectionList(); viewer.touch();
+}
+function updateNames() {
+  $('tb-name').textContent = currentFile?.name ?? meta?.scans?.[0]?.name ?? 'cloud';
+  const many = viewer.entities.length > 1;
+  $('tb-layer').textContent = many ? layerName(viewer.active) : '';
+  $('tb-layer').classList.toggle('hidden', !many);
+}
+function renderLayers() {
+  const ul = $('layer-list'); ul.innerHTML = '';
+  for (const e of viewer.entities) {
+    const li = document.createElement('li');
+    li.classList.toggle('act', e.id === viewer.activeId);
+    li.innerHTML = `<span class="eye${e.visible ? ' on' : ''}" title="Show or hide">${e.visible ? '◉' : '○'}</span>`
+      + `<span class="nm" title="Click to make active, double-click to rename">${layerName(e)}</span> `
+      + `<span class="mono">${fmt(e.points)} pts</span>`
+      + (viewer.entities.length > 1 ? `<span class="x" title="Remove this layer">✕</span>` : '');
+    li.querySelector('.eye')!.addEventListener('click', ev => {
+      ev.stopPropagation();
+      e.visible = !e.visible;
+      viewer.applyZRange(); renderLayers(); syncZLabels(); viewer.touch();
+    });
+    const nm = li.querySelector('.nm') as HTMLElement;
+    nm.addEventListener('click', () => activateEntity(e.id));
+    nm.addEventListener('dblclick', async () => {
+      const ans = await modal('Rename layer',
+        `<p>What should this layer be called?</p><input id="ln-name" type="text" value="${layerName(e)}">`,
+        [{ label: 'Cancel', value: 'no' }, { label: 'Rename', value: 'yes', cls: 'primary' }]);
+      const v = ($('ln-name') as HTMLInputElement | null)?.value?.trim();
+      if (ans === 'yes' && v) { e.name = v; renderLayers(); updateNames(); refreshRegisterUI(); }
+    });
+    li.querySelector('.x')?.addEventListener('click', async ev => {
+      ev.stopPropagation();
+      await removeLayer(e);
+    });
+    ul.appendChild(li);
+  }
+  const vis = viewer.visibleEntities.length;
+  $('v-layers').textContent = viewer.entities.length === 1
+    ? `one layer · ${fmt(viewer.loaded)} points`
+    : `${viewer.entities.length} layers · ${vis} visible · ${fmt(viewer.loadedAll)} points in all · active: ${layerName(viewer.active)}`;
+  $<HTMLInputElement>('k-layertint').checked = viewer.active.tint.on;
+  $<HTMLInputElement>('k-layercolor').value = viewer.active.tint.color;
+  ($('k-layermerge') as HTMLButtonElement).disabled = viewer.visibleEntities.length < 2;
+  refreshRegisterUI();
+}
+async function removeLayer(e: Entity, ask = true) {
+  if (viewer.entities.length <= 1) return;
+  const own = hist.undo.some(h => h.entity === e.id) || !!e.state.dirtyField || !!e.state.dirtySurface;
+  if (own && ask) {
+    const ans = await modal('Remove this layer?',
+      `<p><b>${layerName(e)}</b> has unsaved work. Removing it drops its points and everything done to them; the file on disk is untouched.</p>`,
+      [{ label: 'Cancel', value: 'no' }, { label: 'Remove anyway', value: 'yes', cls: 'danger' }]);
+    if (ans !== 'yes') return;
+  }
+  if (e.id === viewer.activeId) captureActive();
+  const wasActive = e.id === viewer.activeId;
+  // its history steps can never be applied again once its leaves are gone
+  hist.undo = hist.undo.filter(h => h.entity !== e.id);
+  hist.redo = hist.redo.filter(h => h.entity !== e.id);
+  viewer.removeEntity(e.id);
+  if (wasActive) { restoreActive(); afterEntitySwitch(); }
+  else { renderLayers(); updateHistUI(); }
+  viewer.touch();
+}
+$('k-layeradd').addEventListener('click', () => addFile());
+/** Add a scan alongside the ones already open. Never warns: nothing is replaced. */
+async function addFile() {
+  const anyWin = window as any;
+  if (anyWin.showOpenFilePicker) {
+    try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las'] } }] }); openFile(await h.getFile(), h, true); } catch {}
+    return;
+  }
+  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = '.e57,.ply,.las';
+  inp.onchange = () => inp.files?.[0] && openFile(inp.files[0], null, true); inp.click();
+}
+$('k-layertint').addEventListener('change', e => {
+  viewer.active.tint.on = (e.target as HTMLInputElement).checked;
+  renderLayers(); viewer.touch();
+});
+$('k-layercolor').addEventListener('input', e => {
+  viewer.active.tint.color = (e.target as HTMLInputElement).value;
+  if (viewer.active.tint.on) viewer.touch();
+});
+$('k-layerclone').addEventListener('click', () => cloneActive());
+/** A copy of the active layer, sharing nothing: its own leaves, its own model matrix. */
+function cloneActive(): Entity | null {
+  if (!viewer.loaded) return null;
+  captureActive();
+  const src = viewer.active;
+  const e = viewer.addEntity(`${layerName(src)} copy`);
+  for (const { leaf, recs } of src.cells.records()) {
+    const buf = recs.slice();
+    e.cells.enqueue([buf.buffer as ArrayBuffer], leaf.count, {
+      origin: leaf.origin.toArray() as [number, number, number], size: leaf.size,
+      bmin: leaf.bmin.toArray() as [number, number, number], bmax: leaf.bmax.toArray() as [number, number, number],
+    });
+  }
+  e.cells.flushUploads(Infinity);
+  e.cells.setModel(src.cells.model);
+  e.robust = src.robust ? src.robust.clone() : null;
+  e.state = { ...blankState(), meta: src.state.meta, file: src.state.file, handle: src.state.handle, cropped: true };
+  e.tint = { on: true, color: '#f2b544' };
+  viewer.activeId = e.id;
+  restoreActive();
+  afterEntitySwitch();
+  $('v-layers').textContent = `cloned ${layerName(src)} · ${fmt(e.points)} points`;
+  return e;
+}
+$('k-layermerge').addEventListener('click', () => mergeIntoActive());
+/** Append every other visible layer's points into the active one.
+ *
+ *  Each source leaf is read through its own model matrix and back through the active layer's,
+ *  so the geometry that was on screen is the geometry that lands. The leaf cube is rebuilt
+ *  around the transformed points, because a rotated cube is not a cube — which costs one
+ *  requantisation at 16 bits over the new cube, well under a tenth of a millimetre for a leaf
+ *  of a few metres. Scalar fields are dropped: the merged points have no values, and a field
+ *  that covers some of a cloud is worse than none. */
+async function mergeIntoActive(confirm = true) {
+  captureActive();
+  const active = viewer.active;
+  const others = viewer.visibleEntities.filter(e => e !== active);
+  if (!others.length) return null;
+  const adding = others.reduce((n, e) => n + e.points, 0);
+  if (confirm) {
+    const ans = await modal('Merge layers?',
+      `<p><b>${fmt(adding)}</b> points from ${others.length === 1 ? `<b>${layerName(others[0])}</b>` : `${others.length} layers`} will be appended to <b>${layerName(active)}</b>, through each layer's own transform so the geometry is preserved.</p>`
+      + `<p>Those layers are then removed. Any scalar field is dropped, because the added points have no values. <b>This one cannot be undone</b> — save a copy first if you want the parts back.</p>`,
+      [{ label: 'Cancel', value: 'no' }, { label: `Merge ${fmt(adding)} points`, value: 'yes', cls: 'danger' }]);
+    if (ans !== 'yes') return null;
+  }
+  busy('Merging layers…'); await tick();
+  const inv = active.cells.model.clone().invert();
+  const p = new THREE.Vector3(), nv = new THREE.Vector3();
+  let added = 0;
+  for (const src of others) {
+    const m = inv.clone().multiply(src.cells.model);        // source local -> active local
+    const rot = new THREE.Matrix3().setFromMatrix4(m);
+    for (const { leaf, recs } of src.cells.records()) {
+      const n = leaf.count;
+      if (!n) continue;
+      const xyz = new Float64Array(n * 3);
+      const u16 = new Uint16Array(recs.buffer, recs.byteOffset, (n * REC) >> 1);
+      const k = leaf.size / 65536;
+      const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < n; i++) {
+        const b = i * 7;
+        p.set(leaf.origin.x + u16[b] * k, leaf.origin.y + u16[b + 1] * k, leaf.origin.z + u16[b + 2] * k).applyMatrix4(m);
+        xyz[i * 3] = p.x; xyz[i * 3 + 1] = p.y; xyz[i * 3 + 2] = p.z;
+        for (let a = 0; a < 3; a++) { const q = xyz[i * 3 + a]; if (q < mn[a]) mn[a] = q; if (q > mx[a]) mx[a] = q; }
+      }
+      const side = Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2], 1e-3) * 1.0001;
+      const out = new Uint8Array(n * REC);
+      const o16 = new Uint16Array(out.buffer);
+      const inv65536 = 65535 / side;
+      for (let i = 0; i < n; i++) {
+        const b = i * 7, so = i * REC;
+        for (let a = 0; a < 3; a++) o16[b + a] = Math.max(0, Math.min(65535, Math.round((xyz[i * 3 + a] - mn[a]) * inv65536)));
+        out[so + 6] = recs[so + 6]; out[so + 7] = recs[so + 7]; out[so + 8] = recs[so + 8]; out[so + 9] = recs[so + 9];
+        const a0 = recs[so + 10] << 24 >> 24, a1 = recs[so + 11] << 24 >> 24, a2 = recs[so + 12] << 24 >> 24;
+        if (a0 === 0 && a1 === 0 && a2 === 127) { out[so + 12] = 127; }
+        else {
+          nv.set(a0, a1, a2).applyMatrix3(rot);
+          if (nv.lengthSq() > 1e-12) nv.normalize().multiplyScalar(127);
+          out[so + 10] = Math.max(-127, Math.min(127, Math.round(nv.x))) & 0xff;
+          out[so + 11] = Math.max(-127, Math.min(127, Math.round(nv.y))) & 0xff;
+          out[so + 12] = Math.max(-127, Math.min(127, Math.round(nv.z))) & 0xff;
+        }
+      }
+      active.cells.enqueue([out.buffer as ArrayBuffer], n, {
+        origin: mn as [number, number, number], size: side,
+        bmin: mn as [number, number, number], bmax: mx as [number, number, number],
+      });
+      added += n;
+    }
+  }
+  active.cells.flushUploads(Infinity);
+  active.cells.clearScalarField();
+  sfName = ''; dirtyMark.field = ''; sfStats = null;
+  document.body.classList.remove('has-sf', 'sf-filtering');
+  ($('k-color-sf') as HTMLOptionElement).disabled = true;
+  if (knobs.colorMode === 5) setColorMode(0);
+  const names = others.map(layerName);
+  for (const e of others) {
+    hist.undo = hist.undo.filter(h => h.entity !== e.id);
+    hist.redo = hist.redo.filter(h => h.entity !== e.id);
+    viewer.removeEntity(e.id);
+  }
+  cropped = true;
+  mergedNote = `a merge of ${names.length + 1} layers`;
+  active.robust = null;                    // the union is a different shape; measure it again
+  viewer.retightenBounds();
+  captureActive();
+  hideBusy();
+  afterEntitySwitch();
+  viewer.fit();
+  $('v-layers').textContent = `merged ${names.join(', ')} into ${layerName(active)} · ${fmt(added)} points added, ${fmt(active.points)} in all · fields dropped`;
+  $('tb-points').textContent = `${fmt(active.points)} pts · merged`;
+  return { added, total: active.points };
+}
+viewer.onEntitiesChange = () => { renderLayers(); updateNames(); };
+
+// ------------------------------------------------------------------ registration
+// Coarse first, fine second, and neither of them touches the reference. Match centres and
+// match scales are two lines of arithmetic on the model matrix; ICP is the one that needs the
+// reference's own surfaces, so it runs in the analyser worker where the spatial grid lives.
+const regUi = { maxDist: 6, maxIter: 30 };
+function refEntity(): Entity | null {
+  const id = $<HTMLSelectElement>('k-regref').value;
+  return viewer.entities.find(e => e.id === id && e.id !== viewer.activeId) ?? null;
+}
+function refreshRegisterUI() {
+  const sel = $<HTMLSelectElement>('k-regref');
+  const others = viewer.entities.filter(e => e.id !== viewer.activeId);
+  const want = others.map(e => e.id).join('|');
+  if (sel.dataset.ids !== want) {
+    sel.innerHTML = '';
+    for (const e of others) { const o = document.createElement('option'); o.value = e.id; o.textContent = layerName(e); sel.appendChild(o); }
+    sel.dataset.ids = want;
+  }
+  const ready = others.length > 0 && viewer.loaded > 0;
+  for (const id of ['k-regcentres', 'k-regscales', 'k-regicp', 'k-regdistance']) ($(id) as HTMLButtonElement).disabled = !ready;
+  if (!ready) $('v-register').textContent = others.length ? 'load some points first' : 'add a second layer to register against';
+}
+for (const [id, key, lab, dig] of [['k-regdist', 'maxDist', 'v-regdist', 1], ['k-regiter', 'maxIter', 'v-regiter', 0]] as [string, 'maxDist' | 'maxIter', string, number][]) {
+  $(id).addEventListener('input', e => { regUi[key] = Number((e.target as HTMLInputElement).value); $(lab).textContent = regUi[key].toFixed(dig); });
+  $(lab).textContent = regUi[key].toFixed(dig);
+}
+function matchCentres() {
+  const ref = refEntity(); if (!ref || !viewer.loaded) return null;
+  const a = viewer.measuredBox(viewer.active).getCenter(new THREE.Vector3());
+  const b = viewer.measuredBox(ref).getCenter(new THREE.Vector3());
+  const d = b.clone().sub(a);
+  $('v-register').textContent = `centres matched · moved ${d.length().toFixed(3)} m`;
+  return commitTransform(thenModel(new THREE.Matrix4().makeTranslation(d.x, d.y, d.z)), `Match centres · ${d.length().toFixed(2)} m`);
+}
+function matchScales() {
+  const ref = refEntity(); if (!ref || !viewer.loaded) return null;
+  const sa = viewer.measuredBox(viewer.active).getSize(new THREE.Vector3()), sb = viewer.measuredBox(ref).getSize(new THREE.Vector3());
+  const parts = [sa.x > 1e-6 ? sb.x / sa.x : 1, sa.y > 1e-6 ? sb.y / sa.y : 1, sa.z > 1e-6 ? sb.z / sa.z : 1];
+  const f = parts.reduce((n, v) => n + v, 0) / 3;
+  if (!(f > 0) || Math.abs(f - 1) < 1e-9) { $('v-register').textContent = 'scales already match'; return null; }
+  const spread = Math.max(...parts) / Math.min(...parts);
+  $('v-register').textContent = `scales matched · x${f.toFixed(5)} (per axis ${parts.map(v => v.toFixed(4)).join(', ')})`
+    + (spread > 1.02 ? ' — the per-axis ratios disagree, so this is a rotation rather than a scale difference; undo it and use ICP' : '');
+  return commitTransform(thenModel(about(boundsCentre(), new THREE.Matrix4().makeScale(f, f, f))), `Match scales · x${f.toFixed(4)}`);
+}
+$('k-regcentres').addEventListener('click', () => matchCentres());
+$('k-regscales').addEventListener('click', () => matchScales());
+
+/** Feed the analyser the active layer, then the reference, then run one registration op. */
+async function runRegister(op: 'icp' | 'distance_to', args: Record<string, any> = {}) {
+  const ref = refEntity();
+  if (!ref) throw new Error('no reference layer');
+  if (!viewer.loaded) throw new Error('nothing loaded');
+  busy('Starting the analyser…'); await tick();
+  anaAlive = true; anaError = null;
+  const cell = Math.max(viewer.cells.medianSpacing * 2.5, 0.01);
+  const cap = isTouch ? 8e6 : 30e6;
+  anaWorker.postMessage({ type: 'start', cell, maxPoints: cap, model: rowMajor(viewer.cells.model) });
+  await anaOnce('ready');
+  const counts: number[] = [];
+  let n = 0;
+  const total = viewer.cells.leafCount;
+  for (const { leaf, recs } of viewer.cells.records()) {
+    if (!anaAlive) break;
+    counts.push(leaf.count);
+    const buf = recs.buffer as ArrayBuffer;
+    anaWorker.postMessage({ type: 'leaf', origin: leaf.origin.toArray(), size: leaf.size, recs: buf }, [buf]);
+    if (++n % 8 === 0) { busy(`Reading the moving layer… ${n} of ${total}`, n / Math.max(total, 1)); await tick(); }
+  }
+  // the reference is subsampled when it is bigger than the analyser will hold
+  const refStride = Math.max(1, Math.ceil(ref.points / cap));
+  const refModel = rowMajor(ref.cells.model);
+  let m = 0;
+  const refTotal = ref.cells.leafCount;
+  for (const { leaf, recs } of ref.cells.records()) {
+    if (!anaAlive) break;
+    const buf = recs.buffer as ArrayBuffer;
+    anaWorker.postMessage({ type: 'ref', origin: leaf.origin.toArray(), size: leaf.size, recs: buf, model: refModel, stride: refStride }, [buf]);
+    if (++m % 8 === 0) { busy(`Reading ${layerName(ref)}… ${m} of ${refTotal}`, m / Math.max(refTotal, 1)); await tick(); }
+  }
+  anaWorker.postMessage({ type: 'run', op, ...args });
+  const res = await anaOnce('result');
+  return { ...res, counts, refStride, refName: layerName(ref) };
+}
+
+async function runIcp() {
+  const ref = refEntity(); if (!ref) return null;
+  try {
+    const t0 = performance.now();
+    const r = await runRegister('icp', { maxIter: regUi.maxIter, maxDist: regUi.maxDist, sample: isTouch ? 60000 : 200000 });
+    hideBusy();
+    const rms = r.rms as number, overlap = r.overlap as number;
+    if (!(r.matrix?.length === 16)) throw new Error('ICP did not converge on any pairs — try Match centres first, or a larger max distance');
+    const next = fromRowMajor(r.matrix as number[]).multiply(viewer.cells.model);
+    await commitTransform(next, `ICP: RMS ${(rms * 1000).toFixed(1)} mm, ${(overlap * 100).toFixed(0)}% overlap`);
+    const note = r.refStride > 1 ? ` · reference subsampled 1 in ${r.refStride}` : '';
+    $('v-register').textContent = `ICP onto ${r.refName} · ${r.iterations} iterations · RMS ${(rms * 1000).toFixed(2)} mm (from ${((r.rmsHistory?.[0] ?? rms) * 1000).toFixed(2)} mm) · ${(overlap * 100).toFixed(0)}% overlap · ${((performance.now() - t0) / 1000).toFixed(1)}s${note}`;
+    return r;
+  } catch (e: any) {
+    $('v-register').textContent = 'ICP failed: ' + (e?.message ?? e);
+    throw e;
+  } finally { hideBusy(); }
+}
+$('k-regicp').addEventListener('click', () => { runIcp().catch(() => {}); });
+
+async function distanceToReference(signed = false) {
+  const ref = refEntity(); if (!ref) return null;
+  try {
+    const r = await runRegister('distance_to', { signed });
+    hideBusy();
+    setScalarField(`Distance to ${layerName(ref)}`, r.data as Float32Array, r.counts);
+    const s = viewer.cells.scalarStats();
+    const note = r.refStride > 1 ? ` · reference subsampled 1 in ${r.refStride}` : '';
+    $('v-register').textContent = `distance to ${r.refName}${signed ? ' (signed)' : ''} · ${s ? `${(s.min * 1000).toFixed(1)} to ${(s.max * 1000).toFixed(1)} mm` : 'no values'} · ${fmt(r.points)} points${note}`;
+    return r;
+  } catch (e: any) {
+    $('v-register').textContent = 'distance failed: ' + (e?.message ?? e);
+    throw e;
+  } finally { hideBusy(); }
+}
+$('k-regdistance').addEventListener('click', () => { distanceToReference(false).catch(() => {}); });
+
 // ------------------------------------------------------------------ regions: crop and sections
 const cropState: Region = { id: 'crop', kind: 'box', role: 'keep', center: [0, 0, 0], half: [10, 10, 10], radius: 10, quat: [0, 0, 0, 1] };
 const cropUI = { on: false, frac: [0.35, 0.35, 0.35] };
@@ -560,7 +965,7 @@ async function commitApply(regions: Region[], kind: 'crop' | 'clean', label: str
   syncRegions();
   const afterSnap = snapUi();
   const lab = typeof label === 'function' ? label(res) : label;
-  if (res.undo) await hist.push({ kind, label: lab, dropped: res.dropped, kept: res.kept, undo: res.undo, robust, before, after: afterSnap });
+  if (res.undo) await hist.push({ kind, entity: viewer.activeId, label: lab, dropped: res.dropped, kept: res.kept, undo: res.undo, robust, before, after: afterSnap });
   hideBusy();
   $('v-loaded').textContent = `${fmt(res.kept)} points in memory · ${fmt(res.dropped)} dropped`;
   $('tb-points').textContent = `${fmt(res.kept)} pts · ${kind === 'crop' ? 'cropped' : 'cleaned'}`;
@@ -579,7 +984,10 @@ function updateHistUI() {
   $('v-hist').textContent = bits.join(' · ') || '—';
 }
 async function undoEdit() {
-  const e = hist.peekUndo(); if (!e || !viewer.loaded) return null;
+  const e = hist.peekUndo(); if (!e) return null;
+  // a step belongs to one layer; putting it back means going there first
+  if (e.entity && e.entity !== viewer.activeId) activateEntity(e.entity);
+  if (!viewer.loaded && e.kind !== 'transform') return null;
   busy('Undoing…'); await tick();
   try {
     if (e.kind === 'transform') {
@@ -603,7 +1011,10 @@ async function undoEdit() {
   } finally { hideBusy(); }
 }
 async function redoEdit() {
-  const e = hist.peekRedo(); if (!e || !viewer.loaded) return null;
+  const e = hist.peekRedo(); if (!e) return null;
+  // a step belongs to one layer; putting it back means going there first
+  if (e.entity && e.entity !== viewer.activeId) activateEntity(e.entity);
+  if (!viewer.loaded && e.kind !== 'transform') return null;
   busy('Redoing…'); await tick();
   try {
     if (e.kind === 'transform') {
@@ -680,7 +1091,7 @@ async function saveCurrent() {
     cacheNote = '';
     await hist.clear();
     clearDirty();
-    updateHistUI(); updateCacheUI();
+    updateHistUI(); updateCacheUI(); renderLayers();
     $('v-export').textContent = `saved ${r.name} · ${fmt(r.count)} points · ${mb(r.bytes)}`;
     $('tb-points').textContent = `${fmt(r.count)} pts · saved`;
     if (currentFile) $('v-cache').textContent = cacheUpdated ? `saved ${r.name} · cache updated · undo cleared` : `saved ${r.name} · undo cleared`;
@@ -694,18 +1105,29 @@ async function saveCurrent() {
 // not (a scalar field, a reconstructed surface) are marked here. Cleared by Save as…, a
 // reload and an open, because each of those makes what is in memory match what is on disk.
 const dirtyMark = { field: '', surface: 0 };
-function clearDirty() { dirtyMark.field = ''; dirtyMark.surface = 0; }
+function clearDirty(all = true) {
+  dirtyMark.field = ''; dirtyMark.surface = 0;
+  if (!all) return;
+  mergedNote = '';
+  for (const e of viewer.entities) { e.state.dirtyField = ''; e.state.dirtySurface = 0; }
+}
 const triangles = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : fmt(n);
 /** What would be lost if the loaded scan were replaced now, in plain words. */
 function dirtyList(): string[] {
+  captureActive();                   // so the active layer's own marks are up to date
   const out: string[] = [];
   const kinds = hist.undo.map(e => e.kind);
   const edits = kinds.filter(k => k === 'crop' || k === 'clean').length;
   if (edits) out.push(`${edits} edit${edits > 1 ? 's' : ''}`);
   if (kinds.includes('normals')) out.push('computed normals');
-  if (dirtyMark.field) out.push(`a scalar field (${dirtyMark.field})`);
-  if (dirtyMark.surface) out.push(`a ${triangles(dirtyMark.surface)}-triangle surface`);
+  const many = viewer.entities.length > 1;
+  for (const e of viewer.entities) {
+    const on = many ? ` on ${layerName(e)}` : '';
+    if (e.state.dirtyField) out.push(`a scalar field (${e.state.dirtyField})${on}`);
+    if (e.state.dirtySurface) out.push(`a ${triangles(e.state.dirtySurface)}-triangle surface${on}`);
+  }
   if (kinds.includes('transform')) out.push('a transform');
+  if (mergedNote) out.push(mergedNote);
   return out;
 }
 const isDirty = () => dirtyList().length > 0;
@@ -848,7 +1270,7 @@ async function pushTransformStep(prev: THREE.Matrix4, next: THREE.Matrix4, label
   if (prev.equals(next)) return null;
   const before = snapUi();
   const e = await hist.push({
-    kind: 'transform', label, dropped: 0, kept: viewer.loaded, undo: null,
+    kind: 'transform', entity: viewer.activeId, label, dropped: 0, kept: viewer.loaded, undo: null,
     transform: { prev: prev.elements.slice(), next: next.elements.slice() },
     robust: viewer.robust ? viewer.robust.clone() : viewer.cells.bounds.clone(),
     before, after: snapUi(),
@@ -1290,7 +1712,7 @@ async function commitMask(label: string, masks: Uint8Array[], promptText: string
   const res = viewer.cells.applyMask((_l, i) => masks[i] ?? null, true);
   viewer.restoreBounds(robust);
   cropped = true;
-  if (res.undo) await hist.push({ kind: 'clean', label, dropped: res.dropped, kept: res.kept, undo: res.undo, robust, before, after: snapUi() });
+  if (res.undo) await hist.push({ kind: 'clean', entity: viewer.activeId, label, dropped: res.dropped, kept: res.kept, undo: res.undo, robust, before, after: snapUi() });
   hideBusy();
   sfStats = null;
   if (viewer.cells.hasScalarField) refreshScalarUI();
@@ -1321,7 +1743,7 @@ async function analysis(op: string, args: Record<string, any> = {}, note = '') {
       const before = snapUi();
       const prev = viewer.cells.writeNormals(r.data as Int8Array);
       await hist.push({
-        kind: 'normals', label: note || 'Normals', dropped: 0, kept: viewer.loaded, undo: null,
+        kind: 'normals', entity: viewer.activeId, label: note || 'Normals', dropped: 0, kept: viewer.loaded, undo: null,
         normals: prev, robust: viewer.robust ? viewer.robust.clone() : viewer.cells.bounds.clone(),
         before, after: snapUi(),
       });
@@ -1783,6 +2205,30 @@ function recommendedSource(): { source: 'points' | 'mesh'; reason: string } {
   return { source: 'mesh', reason: `The surface was built from oriented normals at a ${s.voxelCm} cm voxel and is nearly closed (hole ratio ${s.holeRatio.toFixed(2)}), so it averages out scanner noise and is the better thing to measure.` };
 }
 
+function entityList() {
+  return viewer.entities.map(e => {
+    const b = e.bounds();
+    return {
+      id: e.id, name: e.name, visible: e.visible, active: e.id === viewer.activeId,
+      points: e.points, cells: e.cells.leafCount,
+      file: e.state.file?.name ?? null,
+      medianSpacing: e.cells.total ? r6(e.cells.medianSpacing) : null,
+      transform: rowMajor(e.cells.model).map(r6),
+      tint: e.tint.on ? e.tint.color : null,
+      bounds: b.isEmpty() ? null : { min: arr6(b.min.toArray()), max: arr6(b.max.toArray()) },
+      surface: e.state.meshInfo ? { triangles: e.state.meshInfo.triangles } : null,
+      scalarField: e.state.sfName || null,
+    };
+  });
+}
+/** Point the Register group's reference selector at a layer, by id or by name. */
+function setReference(idOrName: any) {
+  refreshRegisterUI();
+  const e = viewer.entities.find(x => x.id === String(idOrName) || x.name === String(idOrName));
+  if (!e) throw new Error(`no such layer: ${idOrName}`);
+  if (e.id === viewer.activeId) throw new Error('the reference cannot be the active layer — activate the other one first');
+  $<HTMLSelectElement>('k-regref').value = e.id;
+}
 function stateRecord() {
   const sf = viewer.cells.hasScalarField ? viewer.cells.scalarStats() : null;
   return {
@@ -1796,6 +2242,7 @@ function stateRecord() {
     scalarField: sf ? { name: sfName, min: r6(sf.min), max: r6(sf.max), values: sf.n } : null,
     surface: surfaceRecord(),
     stations: viewer.stations.length,
+    entities: entityList(), active: viewer.activeId,
     transform: transformState(),
     recommendedSource: recommendedSource(),
     view: viewer.getView(), camera: viewer.cameraRecord(), knobs,
@@ -2318,6 +2765,63 @@ const agent = new AgentLink({
     if (a.op === 'save') { await saveCurrent(); return { points: viewer.loaded, cached: fromCache, history: hist.steps }; }
     throw new Error('bad op');
   },
+  entities: async (a) => {
+    const op = String(a.op ?? 'list');
+    const pick = (id: any) => {
+      const e = viewer.entities.find(x => x.id === String(id) || x.name === String(id));
+      if (!e) throw new Error(`no such layer: ${id}. Have: ${viewer.entities.map(x => `${x.id} (${x.name})`).join(', ')}`);
+      return e;
+    };
+    if (op === 'list') return { entities: entityList(), active: viewer.activeId };
+    if (op === 'add') throw new Error('a file has to be chosen in the viewer (Layers -> Add file…), or opened from the on-device cache with the open command');
+    if (op === 'activate') { activateEntity(pick(a.id).id); viewer.render(); return { active: viewer.activeId, entities: entityList() }; }
+    if (op === 'show' || op === 'hide') {
+      pick(a.id).visible = op === 'show';
+      viewer.applyZRange(); syncZLabels(); renderLayers(); viewer.render();
+      return { entities: entityList() };
+    }
+    if (op === 'rename') {
+      if (!a.name) throw new Error('name is required');
+      pick(a.id).name = String(a.name); renderLayers(); updateNames(); refreshRegisterUI();
+      return { entities: entityList() };
+    }
+    if (op === 'remove') { await removeLayer(pick(a.id), false); viewer.render(); return { entities: entityList(), active: viewer.activeId }; }
+    if (op === 'clone') { const e = cloneActive(); viewer.render(); return { cloned: e?.id ?? null, entities: entityList(), active: viewer.activeId }; }
+    if (op === 'merge') { const r = await mergeIntoActive(false); viewer.render(); return { ...(r ?? {}), entities: entityList(), active: viewer.activeId }; }
+    throw new Error('bad op');
+  },
+  register: async (a) => {
+    const op = String(a.op ?? '');
+    if (a.reference !== undefined) setReference(a.reference);
+    if (!refEntity()) throw new Error('reference: the id or name of another layer is required');
+    if (op === 'centres' || op === 'centers') { await matchCentres(); viewer.render(); return { transform: transformState(), note: $('v-register').textContent }; }
+    if (op === 'scales') { await matchScales(); viewer.render(); return { transform: transformState(), note: $('v-register').textContent }; }
+    if (op === 'icp') {
+      if (a.maxDistance !== undefined) regUi.maxDist = Math.max(1, Number(a.maxDistance));
+      if (a.maxIterations !== undefined) regUi.maxIter = Math.max(1, Math.round(Number(a.maxIterations)));
+      const r = await runIcp();
+      viewer.render();
+      return {
+        rms: r?.rms ?? null, rmsMm: r ? +(r.rms * 1000).toFixed(3) : null, overlap: r?.overlap ?? null,
+        iterations: r?.iterations ?? null, rmsHistory: r?.rmsHistory ?? null, matrix: r?.matrix ?? null,
+        transform: transformState(), note: $('v-register').textContent,
+      };
+    }
+    throw new Error("op: 'centres' | 'scales' | 'icp'");
+  },
+  distance_to: async (a) => {
+    if (a.reference !== undefined) setReference(a.reference);
+    const ref = refEntity();
+    if (!ref) throw new Error('reference: the id or name of another layer is required');
+    const r = await distanceToReference(!!a.signed);
+    const s = viewer.cells.scalarStats();
+    viewer.render();
+    return {
+      reference: layerName(ref), signed: !!a.signed, points: r?.points ?? 0,
+      field: s ? { name: sfName, min: r6(s.min), max: r6(s.max), values: s.n } : null,
+      note: $('v-register').textContent,
+    };
+  },
   transform: async (a) => {
     const op = a.op ?? 'get';
     if (op === 'get') return transformState();
@@ -2372,6 +2876,8 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   if (cmd === 'surface') return a.op === 'build';
   if (cmd === 'history') return a.op !== 'status';
   if (cmd === 'transform') return (a.op ?? 'get') !== 'get';
+  if (cmd === 'entities') return ['add', 'remove', 'clone', 'merge'].includes(String(a.op ?? 'list'));
+  if (cmd === 'register' || cmd === 'distance_to') return true;
   return false;
 }
 /** An agent reply is written into a Firestore document, so it must be small and plain.
@@ -2519,6 +3025,11 @@ testInput.onchange = async () => {
   openFile(testInput.files[0]);
 };
 document.body.appendChild(testInput);
+// the same seam for the other door: adding a scan alongside instead of replacing everything
+const addTestInput = document.createElement('input');
+addTestInput.type = 'file'; addTestInput.id = 'file-add'; addTestInput.style.cssText = 'position:fixed;opacity:0;pointer-events:none;left:-9999px';
+addTestInput.onchange = () => { if (addTestInput.files?.[0]) openFile(addTestInput.files[0], null, true); };
+document.body.appendChild(addTestInput);
 const drop = $('drop');
 for (const t of ['dragenter', 'dragover']) addEventListener(t, e => { e.preventDefault(); drop.classList.add('drag'); });
 addEventListener('dragleave', e => { e.preventDefault(); drop.classList.remove('drag'); });
@@ -2526,8 +3037,11 @@ addEventListener('drop', async e => {
   e.preventDefault(); drop.classList.remove('drag');
   const f = (e as DragEvent).dataTransfer?.files?.[0];
   if (!f) return;
-  if (!(await confirmReplace())) return;
-  openFile(f);
+  // Shift adds the scan as another layer; without it the drop replaces everything, so it
+  // asks about unsaved work first
+  const add = (e as DragEvent).shiftKey && viewer.loadedAll > 0;
+  if (!add && !(await confirmReplace())) return;
+  openFile(f, null, add);
 });
 addEventListener('beforeunload', e => {
   if (hist.undo.length + hist.redo.length === 0) return;
@@ -2560,7 +3074,7 @@ addEventListener('orientationchange', () => setTimeout(() => { viewer.resize(); 
 document.querySelectorAll<HTMLElement>('#panel .grp').forEach((g, i) => {
   const h = g.querySelector('h3'); if (!h) return;
   const name = g.dataset.grp ?? h.textContent ?? String(i); const key = 'grp:' + name;
-  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface', 'analysis', 'field', 'transform'].includes(name);
+  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface', 'analysis', 'field', 'transform', 'register'].includes(name);
   const stored = localStorage.getItem(key); g.classList.toggle('closed', stored ? stored === '1' : defaultClosed);
   h.addEventListener('click', () => { g.classList.toggle('closed'); localStorage.setItem(key, g.classList.contains('closed') ? '1' : '0'); });
 });
@@ -2572,6 +3086,7 @@ viewer.onStats = () => {
 
 push();
 updateTransformUI();
+renderLayers(); updateNames();
 refreshCachedList();
 (function loop() { viewer.render(); requestAnimationFrame(loop); })();
 (window as any).__viewer = viewer;
@@ -2580,4 +3095,7 @@ refreshCachedList();
   dirtyList, isDirty, openAnother, confirmReplace,
   stateRecord, recommendedSource, surfaceRecord, heightmapCmd, contourCmd, fitPlaneCmd, dispatchAgent,
   createPrismRegion, get sections() { return sections; }, renderSectionList, regionCount, syncRegions,
+  activateEntity, cloneActive, mergeIntoActive, renderLayers, entityList, setReference,
+  matchCentres, matchScales, runIcp, distanceToReference, removeLayer, addFile,
+  get entities() { return viewer.entities; }, get activeId() { return viewer.activeId; },
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; } };

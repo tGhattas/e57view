@@ -14,7 +14,8 @@ const AGENT_HELP = {
   name: 'e57view agent',
   how: 'In the viewer: Agent → Copy agent URL. That copies a page link plus a bearer token. Keep the tab open and POST commands here with the token in an Authorization header. No MCP config required.',
   auth: "Authorization: Bearer <token from Copy agent URL>  (or JSON { token }). The session id names the mailbox; the token is the credential. Sessions expire after 8 hours and are read-only unless the viewer ticks Allow edits.",
-  post: { session: 'session id', cmd: 'state | screenshot | view | section | probe | heightmap | contour | fitplane | distance | inside | measure | pick | set_view | set | regions | transform | surface | history | stations | open', args: {} },
+  post: { session: 'session id', cmd: 'state | screenshot | view | section | probe | heightmap | contour | fitplane | distance | inside | measure | pick | set_view | set | regions | entities | register | distance_to | transform | surface | history | stations | open', args: {} },
+  layers: 'Several clouds can be open at once. Every visible one is drawn; exactly one is active, and every other command works on the active one. entities lists, activates, shows, hides, renames, clones, merges and removes them; register (centres | scales | icp) moves the active layer onto a reference; distance_to writes the distance between them as a scalar field on the active layer.',
   units: 'metres, everywhere. Coordinates are local unless a field says global; global = local + state.translation.',
   modelling: {
     why: 'Everything below is calibrated: an image comes with the mapping that turns any of its pixels into a world point, and every measurement is taken from the points or the surface rather than off a picture.',
@@ -45,6 +46,11 @@ const AGENT_HELP = {
     { cmd: 'surface', args: { op: 'export', format: 'ply', part: 0 } },
     { cmd: 'regions', args: { op: 'mode', role: 'delete' } },
     { cmd: 'regions', args: { op: 'lasso', pixels: [[420, 300], [600, 300], [600, 470], [420, 470]], width: 1024, height: 683 } },
+    { cmd: 'entities', args: { op: 'list' } },
+    { cmd: 'entities', args: { op: 'activate', id: 'Scan 2' } },
+    { cmd: 'register', args: { op: 'centres', reference: 'Scan 1' } },
+    { cmd: 'register', args: { op: 'icp', reference: 'Scan 1', maxDistance: 6, maxIterations: 30 } },
+    { cmd: 'distance_to', args: { reference: 'Scan 1', signed: true } },
     { cmd: 'transform', args: { op: 'level' } },
     { cmd: 'history', args: { op: 'undo' } },
     { cmd: 'revoke' },
@@ -78,6 +84,8 @@ function needsEdit(cmd, args = {}) {
   if (cmd === 'history') return args.op !== 'status';
   if (cmd === 'surface') return args.op === 'build';
   if (cmd === 'transform') return (args.op ?? 'get') !== 'get';
+  if (cmd === 'entities') return ['add', 'remove', 'clone', 'merge'].includes(args.op ?? 'list');
+  if (cmd === 'register' || cmd === 'distance_to') return true;
   return false;
 }
 

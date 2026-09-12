@@ -13,11 +13,29 @@ export class CloudAnalysis {
      * `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
      */
     add_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array, model: Float32Array): void;
+    /**
+     * One leaf of the reference. `stride` keeps 1 in N, for a cloud bigger than the
+     * analyser will hold; `model` is its own row-major 4x4, so both clouds arrive in the
+     * same frame however each of them is transformed on screen.
+     */
+    add_reference_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array, model: Float32Array, stride: number): void;
     build(): void;
+    build_reference(): void;
     components(radius: number, min_pts: number, progress?: Function | null): Float32Array;
     compute_normals(k: number, progress?: Function | null): void;
+    /**
+     * Point-to-plane registration needs planes, so a reference without usable normals
+     * gets them computed here rather than failing or silently falling back.
+     */
+    compute_reference_normals(k: number, progress?: Function | null): void;
+    distance_to_reference(signed: boolean, max_r: number, progress?: Function | null): Float32Array;
     duplicates(tol: number): Uint8Array;
     feature(name: string, k: number, radius: number, progress?: Function | null): Float32Array;
+    /**
+     * Run ICP and report what it did, as JSON. `max_dist` is the starting rejection gate
+     * in metres; it tightens to 15% of that as the fit settles.
+     */
+    icp(max_iter: number, max_dist: number, sample: number, progress?: Function | null): string;
     invert_normals(): void;
     len(): number;
     constructor(cell: number);
@@ -37,6 +55,7 @@ export class CloudAnalysis {
      * Returns the keep mask; the mean and cut-off used are reported separately.
      */
     sor(k: number, n_sigma: number, progress?: Function | null): Uint8Array;
+    start_reference(cell: number): void;
     subsample(spacing: number): Uint8Array;
     /**
      * Rewrite the normal bytes of the next leaf, in the order the leaves were added.
@@ -45,6 +64,8 @@ export class CloudAnalysis {
     readonly component_count: number;
     readonly cut_distance: number;
     readonly mean_distance: number;
+    readonly reference_len: number;
+    readonly reference_normals: number;
 }
 
 /**
@@ -138,13 +159,18 @@ export interface InitOutput {
     readonly __wbg_meshbuilder_free: (a: number, b: number) => void;
     readonly __wbg_pointsink_free: (a: number, b: number) => void;
     readonly cloudanalysis_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+    readonly cloudanalysis_add_reference_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
     readonly cloudanalysis_build: (a: number) => void;
+    readonly cloudanalysis_build_reference: (a: number) => void;
     readonly cloudanalysis_component_count: (a: number) => number;
     readonly cloudanalysis_components: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_compute_normals: (a: number, b: number, c: number) => void;
+    readonly cloudanalysis_compute_reference_normals: (a: number, b: number, c: number) => void;
     readonly cloudanalysis_cut_distance: (a: number) => number;
+    readonly cloudanalysis_distance_to_reference: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_duplicates: (a: number, b: number) => [number, number];
     readonly cloudanalysis_feature: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly cloudanalysis_icp: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly cloudanalysis_invert_normals: (a: number) => void;
     readonly cloudanalysis_len: (a: number) => number;
     readonly cloudanalysis_mean_distance: (a: number) => number;
@@ -153,8 +179,11 @@ export interface InitOutput {
     readonly cloudanalysis_normals_bytes: (a: number) => [number, number];
     readonly cloudanalysis_orient_normals: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly cloudanalysis_orient_to_viewpoints: (a: number, b: number, c: number) => void;
+    readonly cloudanalysis_reference_len: (a: number) => number;
+    readonly cloudanalysis_reference_normals: (a: number) => number;
     readonly cloudanalysis_rewind: (a: number) => void;
     readonly cloudanalysis_sor: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly cloudanalysis_start_reference: (a: number, b: number) => void;
     readonly cloudanalysis_subsample: (a: number, b: number) => [number, number];
     readonly cloudanalysis_write_normals: (a: number, b: number, c: number, d: any) => void;
     readonly e57export_add_points: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];

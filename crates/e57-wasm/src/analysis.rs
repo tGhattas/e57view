@@ -170,6 +170,84 @@ fn flip(nx: &mut i8, ny: &mut i8, nz: &mut i8) {
     }
 }
 
+pub struct IcpResult {
+    /// Row-major 4x4 to apply to the moving cloud.
+    pub matrix: [f32; 16],
+    pub rms: f32,
+    pub rms_history: Vec<f32>,
+    pub overlap: f32,
+    pub iterations: usize,
+    pub pairs: usize,
+}
+
+pub fn identity4() -> [f32; 16] {
+    let mut m = [0.0f32; 16];
+    m[0] = 1.0; m[5] = 1.0; m[10] = 1.0; m[15] = 1.0;
+    m
+}
+#[inline]
+fn apply4(m: &[f32; 16], x: f32, y: f32, z: f32) -> [f32; 3] {
+    [m[0] * x + m[1] * y + m[2] * z + m[3],
+     m[4] * x + m[5] * y + m[6] * z + m[7],
+     m[8] * x + m[9] * y + m[10] * z + m[11]]
+}
+fn mul4(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    let mut o = [0.0f32; 16];
+    for r in 0..4 { for c in 0..4 {
+        let mut s = 0.0;
+        for k in 0..4 { s += a[r * 4 + k] * b[k * 4 + c]; }
+        o[r * 4 + c] = s;
+    }}
+    o
+}
+/// A rigid transform from a rotation vector and a translation, taken about `c`:
+/// `p' = R (p - c) + c + t`. The rotation is the exact exponential of the vector rather than
+/// `I + [w]x`, so a large step stays a rotation instead of a slight shear.
+fn rigid_about(w: [f32; 3], t: [f32; 3], c: [f32; 3]) -> [f32; 16] {
+    let th = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
+    let r = if th < 1e-12 {
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    } else {
+        let (s, k) = (th.sin(), th.cos());
+        let a = [w[0] / th, w[1] / th, w[2] / th];
+        let v = 1.0 - k;
+        [[k + a[0] * a[0] * v, a[0] * a[1] * v - a[2] * s, a[0] * a[2] * v + a[1] * s],
+         [a[1] * a[0] * v + a[2] * s, k + a[1] * a[1] * v, a[1] * a[2] * v - a[0] * s],
+         [a[2] * a[0] * v - a[1] * s, a[2] * a[1] * v + a[0] * s, k + a[2] * a[2] * v]]
+    };
+    let mut m = [0.0f32; 16];
+    for i in 0..3 {
+        for j in 0..3 { m[i * 4 + j] = r[i][j]; }
+        m[i * 4 + 3] = c[i] + t[i] - (r[i][0] * c[0] + r[i][1] * c[1] + r[i][2] * c[2]);
+    }
+    m[15] = 1.0;
+    m
+}
+/// Gaussian elimination with partial pivoting on the 6x6 normal equations.
+fn solve6(mut a: [[f64; 6]; 6], mut b: [f64; 6]) -> Option<[f64; 6]> {
+    for col in 0..6 {
+        let mut piv = col;
+        for r in (col + 1)..6 { if a[r][col].abs() > a[piv][col].abs() { piv = r; } }
+        if a[piv][col].abs() < 1e-18 { return None; }
+        if piv != col { a.swap(piv, col); b.swap(piv, col); }
+        let d = a[col][col];
+        for r in (col + 1)..6 {
+            let f = a[r][col] / d;
+            if f == 0.0 { continue; }
+            for c in col..6 { a[r][c] -= f * a[col][c]; }
+            b[r] -= f * b[col];
+        }
+    }
+    let mut x = [0.0f64; 6];
+    for i in (0..6).rev() {
+        let mut s = b[i];
+        for j in (i + 1)..6 { s -= a[i][j] * x[j]; }
+        x[i] = s / a[i][i];
+        if !x[i].is_finite() { return None; }
+    }
+    Some(x)
+}
+
 impl Analyzer {
     pub fn new(cell: f32) -> Analyzer {
         let cell = cell.max(1e-4);
@@ -182,6 +260,7 @@ impl Analyzer {
     }
 
     pub fn len(&self) -> usize { self.x.len() }
+    pub fn cell_size(&self) -> f32 { self.cell }
 
     /// Decode one octree leaf's 14-byte records into the flat arrays.
     ///
@@ -191,11 +270,18 @@ impl Analyzer {
     /// one on screen — verticality on a levelled scan being the obvious case. Normals are
     /// rotated by the upper-left 3x3 and requantised.
     pub fn add_records(&mut self, origin: [f32; 3], size: f32, recs: &[u8], model: Option<&[f32; 16]>) {
+        self.add_records_stride(origin, size, recs, model, 1)
+    }
+    /// Same, keeping 1 in `stride`. A reference cloud bigger than the analyser will hold is
+    /// subsampled rather than refused: a nearest-neighbour query against a subsample is a
+    /// slightly worse answer, where no answer is no registration at all.
+    pub fn add_records_stride(&mut self, origin: [f32; 3], size: f32, recs: &[u8], model: Option<&[f32; 16]>, stride: usize) {
         const REC: usize = 14;
         let n = recs.len() / REC;
         let k = size / 65536.0;
-        self.x.reserve(n); self.y.reserve(n); self.z.reserve(n);
-        for i in 0..n {
+        let step = stride.max(1);
+        self.x.reserve(n / step + 1); self.y.reserve(n / step + 1); self.z.reserve(n / step + 1);
+        for i in (0..n).step_by(step) {
             let o = i * REC;
             let qx = u16::from_le_bytes([recs[o], recs[o + 1]]) as f32;
             let qy = u16::from_le_bytes([recs[o + 2], recs[o + 3]]) as f32;
@@ -267,12 +353,17 @@ impl Analyzer {
         self.built = true;
     }
 
-    /// Indices within `radius` of point i, searching the 27 cells around it.
+    /// Indices within `radius` of point i, searching the cells around it.
     /// `out` is reused by the caller to avoid an allocation per point.
     #[inline]
     fn radius_search(&self, i: usize, radius: f32, out: &mut Vec<(f32, u32)>) {
+        self.radius_search_at(self.x[i], self.y[i], self.z[i], radius, out)
+    }
+    /// The same search from a position that need not be one of the points — what a second
+    /// cloud's points are, when they are being matched against this one.
+    #[inline]
+    fn radius_search_at(&self, px: f32, py: f32, pz: f32, radius: f32, out: &mut Vec<(f32, u32)>) {
         out.clear();
-        let (px, py, pz) = (self.x[i], self.y[i], self.z[i]);
         let r2 = radius * radius;
         let reach = (radius * self.inv_cell).ceil() as i32;
         let (cx, cy, cz) = (
@@ -488,6 +579,153 @@ impl Analyzer {
                 self.nx[i] = a; self.ny[i] = b; self.nz[i] = c;
             }
         }
+    }
+
+    /// The nearest point to an arbitrary position, as (index, squared distance). The search
+    /// grows the radius until something is found or `max_r` is passed, then does one more ring
+    /// at the radius that found it, because the first hit in a cell sweep need not be nearest.
+    pub fn nearest(&self, px: f32, py: f32, pz: f32, max_r: f32, scratch: &mut Vec<(f32, u32)>) -> Option<(u32, f32)> {
+        let mut r = self.cell;
+        loop {
+            self.radius_search_at(px, py, pz, r, scratch);
+            if !scratch.is_empty() {
+                let mut best = (f32::INFINITY, 0u32);
+                for &(d, j) in scratch.iter() {
+                    if d < best.0 { best = (d, j); }
+                }
+                // a cell sweep of radius r covers every point within r, so this is exact
+                if best.0.sqrt() <= r { return Some((best.1, best.0)); }
+                return Some((best.1, best.0));
+            }
+            if r >= max_r { return None; }
+            r = (r * 2.0).min(max_r);
+        }
+    }
+
+    /// What fraction of the points carry a usable normal. Below about half, orientation is
+    /// worth computing before anything leans on them.
+    pub fn normal_fraction(&self) -> f32 {
+        let n = self.len();
+        if n == 0 { return 0.0; }
+        let mut have = 0usize;
+        for i in 0..n {
+            if !(self.nx[i] == 0 && self.ny[i] == 0 && self.nz[i] == 127) { have += 1; }
+        }
+        have as f32 / n as f32
+    }
+
+    /// Distance from every point of `self` to the nearest point of `reference`.
+    ///
+    /// `signed` projects onto the reference point's own normal instead, which is what an
+    /// M3C2-style comparison wants: it tells you which side of the reference surface the
+    /// point is on, so settlement and heave do not cancel out into the same positive number.
+    pub fn distance_to(&self, reference: &Analyzer, signed: bool, max_r: f32, mut progress: impl FnMut(usize)) -> Vec<f32> {
+        let n = self.len();
+        let mut out = vec![f32::NAN; n];
+        let mut scratch: Vec<(f32, u32)> = Vec::with_capacity(256);
+        for i in 0..n {
+            if let Some((j, d2)) = reference.nearest(self.x[i], self.y[i], self.z[i], max_r, &mut scratch) {
+                let ju = j as usize;
+                let d = d2.sqrt();
+                out[i] = if signed {
+                    let nn = [reference.nx[ju] as f32, reference.ny[ju] as f32, reference.nz[ju] as f32];
+                    let l = (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]).sqrt();
+                    let placeholder = reference.nx[ju] == 0 && reference.ny[ju] == 0 && reference.nz[ju] == 127;
+                    if l > 1e-6 && !placeholder {
+                        (self.x[i] - reference.x[ju]) * nn[0] / l
+                            + (self.y[i] - reference.y[ju]) * nn[1] / l
+                            + (self.z[i] - reference.z[ju]) * nn[2] / l
+                    } else { d }
+                } else { d };
+            }
+            if i % 65536 == 0 { progress(i); }
+        }
+        out
+    }
+
+    /// Point-to-plane ICP of `self` onto `reference`, returning the rigid transform to apply
+    /// to `self` (row-major 4x4) and how well it did.
+    ///
+    /// Point-to-plane rather than point-to-point because scan data is surfaces: a point is
+    /// free to slide along the surface it belongs to, and forbidding that — which
+    /// point-to-point does — is what makes plain ICP crawl across a flat wall. Each pair
+    /// contributes one equation, `(R p + t - q) . n = 0`, linearised in a small rotation, so
+    /// an iteration is a 6x6 solve however many pairs there are.
+    ///
+    /// The rotation is taken about the moving cloud's own centroid. Solving for a rotation
+    /// about the origin when the cloud sits tens of metres away mixes a tiny angle with a
+    /// large translation in one normal matrix, and the conditioning shows.
+    pub fn icp(&mut self, reference: &Analyzer, max_iter: usize, max_dist: f32, sample: usize,
+               mut progress: impl FnMut(usize, f32)) -> IcpResult {
+        let n = self.len();
+        let mut res = IcpResult { matrix: identity4(), rms: f32::NAN, rms_history: Vec::new(), overlap: 0.0, iterations: 0, pairs: 0 };
+        if n == 0 || reference.len() == 0 { return res; }
+        let step = ((n + sample.max(1) - 1) / sample.max(1)).max(1);
+        let idx: Vec<usize> = (0..n).step_by(step).collect();
+        let mut m = identity4();
+        let mut scratch: Vec<(f32, u32)> = Vec::with_capacity(256);
+        let mut gate = max_dist;
+        let floor = max_dist * 0.15;
+        for it in 0..=max_iter {
+            // one pass over the sample: correspondences, residuals, and the normal equations
+            let mut ata = [[0.0f64; 6]; 6];
+            let mut atb = [0.0f64; 6];
+            let mut ss = 0.0f64;
+            let mut cnt = 0usize;
+            let mut cx = 0.0f64; let mut cy = 0.0f64; let mut cz = 0.0f64;
+            let mut pts: Vec<([f32; 3], [f32; 3], f32)> = Vec::with_capacity(idx.len());
+            for &i in idx.iter() {
+                let p = apply4(&m, self.x[i], self.y[i], self.z[i]);
+                let Some((j, d2)) = reference.nearest(p[0], p[1], p[2], gate, &mut scratch) else { continue };
+                if d2.sqrt() > gate { continue; }
+                let ju = j as usize;
+                let nn = [reference.nx[ju] as f32, reference.ny[ju] as f32, reference.nz[ju] as f32];
+                let l = (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]).sqrt();
+                if l < 1e-6 { continue; }
+                let nn = [nn[0] / l, nn[1] / l, nn[2] / l];
+                let r = (p[0] - reference.x[ju]) * nn[0] + (p[1] - reference.y[ju]) * nn[1] + (p[2] - reference.z[ju]) * nn[2];
+                cx += p[0] as f64; cy += p[1] as f64; cz += p[2] as f64;
+                pts.push((p, nn, r));
+                ss += (r * r) as f64;
+                cnt += 1;
+            }
+            if cnt < 20 { break; }
+            let rms = (ss / cnt as f64).sqrt() as f32;
+            res.rms = rms;
+            res.rms_history.push(rms);
+            res.overlap = cnt as f32 / idx.len() as f32;
+            res.pairs = cnt;
+            res.iterations = it;
+            res.matrix = m;
+            progress(it, rms);
+            if it >= 2 {
+                let prev = res.rms_history[res.rms_history.len() - 2];
+                if prev > 0.0 && (prev - rms) / prev < 0.001 { break; }
+            }
+            if it == max_iter { break; }
+            let c = [(cx / cnt as f64) as f32, (cy / cnt as f64) as f32, (cz / cnt as f64) as f32];
+            for (p, nn, r) in pts.iter() {
+                let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                let cr = [d[1] * nn[2] - d[2] * nn[1], d[2] * nn[0] - d[0] * nn[2], d[0] * nn[1] - d[1] * nn[0]];
+                let j6 = [cr[0], cr[1], cr[2], nn[0], nn[1], nn[2]];
+                for a in 0..6 {
+                    atb[a] -= (j6[a] * r) as f64;
+                    for b in 0..6 { ata[a][b] += (j6[a] * j6[b]) as f64; }
+                }
+            }
+            // a little Tikhonov on the diagonal: a plane-only overlap leaves the in-plane
+            // degrees of freedom unconstrained, and a singular solve is worse than a slow one
+            let trace: f64 = (0..6).map(|a| ata[a][a]).sum();
+            let lambda = (trace / 6.0) * 1e-9 + 1e-12;
+            for a in 0..6 { ata[a][a] += lambda; }
+            let Some(x) = solve6(ata, atb) else { break };
+            let delta = rigid_about(
+                [x[0] as f32, x[1] as f32, x[2] as f32],
+                [x[3] as f32, x[4] as f32, x[5] as f32], c);
+            m = mul4(&delta, &m);
+            gate = (gate * 0.85).max(floor);
+        }
+        res
     }
 
     pub fn invert_normals(&mut self) {

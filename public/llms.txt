@@ -25,7 +25,8 @@ curl -s https://opensketch.web.app/agent \
   -d '{"session":"SESSION","cmd":"state"}'
 
 Commands: state, screenshot, view, section, probe, heightmap, contour, fitplane, distance,
-inside, measure, pick, set_view, set, regions, transform, surface, history, stations, open.
+inside, measure, pick, set_view, set, regions, entities, register, distance_to, transform,
+surface, history, stations, open.
 
 {"session":"S","cmd":"screenshot","args":{"width":1024}}
 {"session":"S","cmd":"set_view","args":{"preset":"top"}}
@@ -71,7 +72,8 @@ Then open the viewer with ?agent=1 and allow local network access when Chrome as
 The server listens on ws://127.0.0.1:7337 and the tab connects out to it; nothing is exposed
 off the machine, which makes this the safer option when the agent runs beside the browser.
 
-Tools: viewer_state, viewer_screenshot, viewer_view, viewer_section, viewer_probe,
+Tools: viewer_entities, viewer_register, viewer_distance_to,
+viewer_state, viewer_screenshot, viewer_view, viewer_section, viewer_probe,
 viewer_heightmap, viewer_contour, viewer_fitplane, viewer_distance, viewer_inside,
 viewer_set_view, viewer_set, viewer_regions, viewer_pick, viewer_measure, viewer_transform,
 viewer_export, viewer_open, viewer_surface, viewer_history, viewer_stations.
@@ -133,6 +135,44 @@ the surface rather than off a picture.
 A reply travels in one Firestore document capped at 1 MiB, so a large payload comes back as
 {part, parts, data}. Ask for the rest with the same command plus part: 1, 2, … and
 concatenate before decoding. Over MCP the server does that for you.
+
+## More than one cloud: layers
+
+Several clouds can be open at once. Every visible one is drawn into the same frame; exactly
+one is **active**, and every other command — crop, analysis, surface, transform, export, save,
+the calibrated views — works on the active one. `state.entities` lists them all with point
+counts, bounds and transforms, and `state.active` says which is which.
+
+{"session":"S","cmd":"entities","args":{"op":"list"}}
+{"session":"S","cmd":"entities","args":{"op":"activate","id":"Scan 2"}}
+{"session":"S","cmd":"entities","args":{"op":"hide","id":"e1"}}
+{"session":"S","cmd":"entities","args":{"op":"merge"}}
+
+A layer added after the first is placed by the difference between its own global shift and the
+first layer's, because that is the only thing two separate files say about where they sit
+relative to each other. Adding a file has to happen in the viewer (Layers -> Add file…) or
+through `open` for a scan already cached on that device.
+
+## Registration and comparison
+
+`register` moves the **active** layer onto a reference and never touches the reference:
+
+{"session":"S","cmd":"register","args":{"op":"centres","reference":"Reference"}}
+{"session":"S","cmd":"register","args":{"op":"icp","reference":"Reference","maxDistance":6,"maxIterations":30}}
+
+`op:"centres"` matches bounding-box centres and `op:"scales"` matches their sizes — the coarse
+step, and `scales` is for two clouds in different units, not for a rotated copy whose boxes
+legitimately differ. `op:"icp"` is point-to-plane fine registration: it reports per-iteration
+RMS, the final RMS, the overlap fraction and the matrix, and applies as one undoable step
+labelled like "ICP: RMS 0.4 mm, 98% overlap". Do the coarse step first; ICP needs to start
+within its rejection gate.
+
+{"session":"S","cmd":"distance_to","args":{"reference":"Reference","signed":true}}
+
+`distance_to` writes the distance from every point of the active layer to the nearest point of
+the reference as a scalar field, so the ramp, the histogram and the value filter work on it.
+`signed:true` projects onto the reference point's own normal, which says which side of the
+reference surface each point is on.
 
 ## Regions are shapes, not cuts
 

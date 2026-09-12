@@ -514,6 +514,9 @@ mod wasm_analysis {
     #[wasm_bindgen]
     pub struct CloudAnalysis {
         inner: Analyzer,
+        /// A second cloud to compare or register against. Held here rather than in a separate
+        /// object so both share one wasm instance and one heap.
+        reference: Option<Analyzer>,
         cursor: usize,
         last_count: u32,
         last_mean: f32,
@@ -531,7 +534,7 @@ mod wasm_analysis {
     impl CloudAnalysis {
         #[wasm_bindgen(constructor)]
         pub fn new(cell: f32) -> CloudAnalysis {
-            CloudAnalysis { inner: Analyzer::new(cell), cursor: 0, last_count: 0, last_mean: 0.0, last_cut: 0.0 }
+            CloudAnalysis { inner: Analyzer::new(cell), reference: None, cursor: 0, last_count: 0, last_mean: 0.0, last_cut: 0.0 }
         }
         /// `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
         pub fn add_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8], model: &[f32]) {
@@ -540,6 +543,58 @@ mod wasm_analysis {
         }
         pub fn len(&self) -> u32 { self.inner.len() as u32 }
         pub fn build(&mut self) { self.inner.build(); }
+
+        // ---------------------------------------------------- the reference cloud
+        pub fn start_reference(&mut self, cell: f32) { self.reference = Some(Analyzer::new(cell)); }
+        /// One leaf of the reference. `stride` keeps 1 in N, for a cloud bigger than the
+        /// analyser will hold; `model` is its own row-major 4x4, so both clouds arrive in the
+        /// same frame however each of them is transformed on screen.
+        pub fn add_reference_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8], model: &[f32], stride: u32) {
+            let m: Option<[f32; 16]> = if model.len() == 16 { Some(model.try_into().unwrap()) } else { None };
+            if let Some(r) = self.reference.as_mut() {
+                r.add_records_stride([ox, oy, oz], size, recs, m.as_ref(), stride.max(1) as usize);
+            }
+        }
+        pub fn build_reference(&mut self) { if let Some(r) = self.reference.as_mut() { r.build(); } }
+        #[wasm_bindgen(getter)]
+        pub fn reference_len(&self) -> u32 { self.reference.as_ref().map(|r| r.len() as u32).unwrap_or(0) }
+        #[wasm_bindgen(getter)]
+        pub fn reference_normals(&self) -> f32 { self.reference.as_ref().map(|r| r.normal_fraction()).unwrap_or(0.0) }
+        /// Point-to-plane registration needs planes, so a reference without usable normals
+        /// gets them computed here rather than failing or silently falling back.
+        pub fn compute_reference_normals(&mut self, k: u32, progress: Option<js_sys::Function>) {
+            if let Some(r) = self.reference.as_mut() { r.compute_normals(k as usize, |i| tick(&progress, i)); }
+        }
+        pub fn distance_to_reference(&mut self, signed: bool, max_r: f32, progress: Option<js_sys::Function>) -> Vec<f32> {
+            let refa = self.reference.take();
+            let out = match refa.as_ref() {
+                Some(r) => self.inner.distance_to(r, signed, max_r, |i| tick(&progress, i)),
+                None => Vec::new(),
+            };
+            self.reference = refa;
+            out
+        }
+        /// Run ICP and report what it did, as JSON. `max_dist` is the starting rejection gate
+        /// in metres; it tightens to 15% of that as the fit settles.
+        pub fn icp(&mut self, max_iter: u32, max_dist: f32, sample: u32, progress: Option<js_sys::Function>) -> String {
+            let refa = self.reference.take();
+            let out = match refa.as_ref() {
+                Some(r) => {
+                    let res = self.inner.icp(r, max_iter as usize, max_dist, sample as usize, |i, rms| {
+                        if let Some(f) = &progress {
+                            let _ = f.call2(&JsValue::NULL, &JsValue::from_f64(i as f64), &JsValue::from_f64(rms as f64));
+                        }
+                    });
+                    let m = res.matrix.iter().map(|v| format!("{v}")).collect::<Vec<_>>().join(",");
+                    let h = res.rms_history.iter().map(|v| format!("{v}")).collect::<Vec<_>>().join(",");
+                    format!("{{\"matrix\":[{}],\"rms\":{},\"rmsHistory\":[{}],\"overlap\":{},\"iterations\":{},\"pairs\":{}}}",
+                        m, if res.rms.is_finite() { res.rms } else { -1.0 }, h, res.overlap, res.iterations, res.pairs)
+                }
+                None => "{\"matrix\":[],\"rms\":-1,\"rmsHistory\":[],\"overlap\":0,\"iterations\":0,\"pairs\":0}".to_string(),
+            };
+            self.reference = refa;
+            out
+        }
 
         pub fn compute_normals(&mut self, k: u32, progress: Option<js_sys::Function>) {
             self.inner.compute_normals(k as usize, |i| tick(&progress, i));

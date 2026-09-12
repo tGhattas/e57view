@@ -77,7 +77,7 @@ const withShot = async (v, shot) => {
 
 const server = new McpServer({ name: 'e57view', version: '0.1.0' });
 
-server.tool('viewer_state', 'Everything about the loaded scan: point count, local and global bounds, the global shift, median point spacing, what fraction of points carry a real normal, the scalar field, the reconstructed surface (triangles, vertices, holeRatio = boundary edges / triangles, the voxel it was built at), station count, the cloud transform, unsaved work, the camera record — and recommendedSource, which says whether to measure the points or the surface, and why. Units are metres throughout. Start here.', {},
+server.tool('viewer_state', 'Everything about the active layer (and the list of layers): point count, local and global bounds, the global shift, median point spacing, what fraction of points carry a real normal, the scalar field, the reconstructed surface (triangles, vertices, holeRatio = boundary edges / triangles, the voxel it was built at), station count, the cloud transform, unsaved work, the camera record — and recommendedSource, which says whether to measure the points or the surface, and why. Units are metres throughout. Start here.', {},
   async () => text(await call('state')));
 
 server.tool('viewer_view', 'A calibrated image. With a preset it is rendered with a true orthographic projection, so one metre is the same number of pixels everywhere and the mapping that comes back turns any pixel into a world point exactly: topLeft plus perPixelRight/perPixelDown, or originX/originY/extentX/extentY for the axis-aligned presets. Use this, not viewer_screenshot, for anything you intend to measure. Set ortho:false for an ordinary perspective look from that direction. The current colour mode is respected, so a scalar field photographs as itself.', {
@@ -186,6 +186,22 @@ server.tool('viewer_surface', 'Reconstruct a triangle surface from the points an
   }
   return withShot(await call('surface', a, 600000), true);
 });
+
+server.tool('viewer_entities', 'The clouds in memory. Every visible one is drawn; exactly one is active, and every other tool — crop, analysis, surface, transform, export — works on the active one. list reports them with their point counts and transforms; activate switches; show/hide toggles drawing without unloading; rename; clone copies the active one; merge appends every other visible layer into the active one through each of their transforms (scalar fields are dropped, and it cannot be undone); remove unloads one. A file is added in the viewer itself (Layers -> Add file…) or with viewer_open for a cached scan.', {
+  op: z.enum(['list', 'activate', 'show', 'hide', 'rename', 'clone', 'merge', 'remove']),
+  id: z.string().optional().describe('the layer id or its name'), name: z.string().optional().describe('op=rename'),
+}, async (a) => withShot(await call('entities', a, 300000), a.op !== 'list'));
+
+server.tool('viewer_register', 'Move the ACTIVE layer onto a reference layer; the reference is never touched. centres matches bounding-box centres, scales matches their sizes (for two clouds in different units — not for a rotated copy, whose boxes legitimately differ), and icp is point-to-plane fine registration, reporting per-iteration RMS, final RMS, overlap fraction and the matrix. Each is one undoable transform step.', {
+  op: z.enum(['centres', 'scales', 'icp']),
+  reference: z.string().describe('the id or name of another layer'),
+  maxDistance: z.number().optional().describe('op=icp: rejection gate as a multiple of three point spacings, default 6'),
+  maxIterations: z.number().int().optional().describe('op=icp: default 30'),
+}, async (a) => withShot(await call('register', a, 900000), true));
+
+server.tool('viewer_distance_to', 'Distance from every point of the ACTIVE layer to the nearest point of a reference layer, written as a scalar field named "Distance to <reference>" — so the colour ramp, the histogram and the value filter all work on it. signed projects onto the reference point\'s own normal instead, which says which side of the reference surface each point is on: settlement and heave stop cancelling into the same positive number. A reference bigger than the analyser holds is subsampled, and the reply says so.', {
+  reference: z.string(), signed: z.boolean().optional(),
+}, async (a) => withShot(await call('distance_to', a, 900000), true));
 
 server.tool('viewer_transform', 'Move, rotate, scale or level the whole cloud. The points are never rewritten: the cloud carries a 4x4 matrix applied at render, test, analysis and export time, so this is instant, lossless and undoable, and only a written file bakes it. get reports the matrix; set replaces it (16 numbers, row-major); translate/rotate/scale compose on top of it; level fits a plane to a sample and turns it horizontal; reset clears it.', {
   op: z.enum(['get', 'set', 'translate', 'rotate', 'scale', 'level', 'reset']),

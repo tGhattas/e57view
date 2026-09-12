@@ -17,6 +17,8 @@ let maxPoints = 30e6;
  *  quantised in their original leaf cubes and carries the transform separately, so every
  *  leaf has to be read through it here. */
 let model = new Float32Array(0);
+let cell = 0.05;
+let refStarted = false, refFed = 0;
 
 const post = (m: any, t: Transferable[] = []) => (self as any).postMessage(m, t);
 const prog = (phase: string, total: number) => {
@@ -37,8 +39,21 @@ self.onmessage = async (ev: MessageEvent) => {
       a = new CloudAnalysis(m.cell);
       maxPoints = m.maxPoints || 30e6;
       model = m.model && m.model.length === 16 ? new Float32Array(m.model) : new Float32Array(0);
+      cell = m.cell;
+      refStarted = false; refFed = 0;
       fed = 0;
       post({ type: 'ready' });
+      return;
+    }
+
+    if (m.type === 'ref') {
+      // a leaf of the reference cloud, read through its own model matrix
+      if (!refStarted) { a!.start_reference(cell); refStarted = true; }
+      const recs = new Uint8Array(m.recs);
+      a!.add_reference_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs,
+        m.model && m.model.length === 16 ? new Float32Array(m.model) : new Float32Array(0), Math.max(1, m.stride | 0));
+      refFed++;
+      if ((refFed & 15) === 0) post({ type: 'progress', phase: 'Reading the reference', done: a!.reference_len, total: 0 });
       return;
     }
 
@@ -101,6 +116,33 @@ self.onmessage = async (ev: MessageEvent) => {
         out.kind = 'field';
         out.data = a!.components(m.radius, m.minPts, prog('Growing clusters', n));
         out.components = a!.component_count;
+      } else if (op === 'distance_to' || op === 'icp') {
+        if (!refStarted || !a!.reference_len) throw new Error('no reference cloud was fed');
+        post({ type: 'progress', phase: 'Indexing the reference', done: 0, total: a!.reference_len });
+        a!.build_reference();
+        if (op === 'distance_to') {
+          // A nearest-point query is only worth answering out to a sane range; beyond that the
+          // honest answer is "nothing near", which comes back as NaN and draws as "no value".
+          const reach = Math.max(cell * 200, 2);
+          out.kind = 'field';
+          out.data = a!.distance_to_reference(!!m.signed, reach, prog('Measuring the distance', n));
+        } else {
+          // point-to-plane needs planes: a reference with no usable normals gets them here
+          if (a!.reference_normals < 0.5) {
+            post({ type: 'progress', phase: 'The reference has no normals, computing them', done: 0, total: a!.reference_len });
+            a!.compute_reference_normals(16, prog('Reference normals', a!.reference_len));
+          }
+          // the gate starts at three point spacings times the caller's multiplier
+          const gate = Math.max(cell * 0.4 * 3 * (m.maxDist ?? 6), cell * 0.5);
+          let last = -1;
+          const r = JSON.parse(a!.icp(Math.max(1, m.maxIter ?? 30), gate, Math.max(1000, m.sample ?? 200000), (it: number, rms: number) => {
+            if (it === last) return; last = it;
+            post({ type: 'progress', phase: `ICP iteration ${it + 1} · RMS ${(rms * 1000).toFixed(2)} mm`, done: it, total: m.maxIter ?? 30 });
+          }));
+          Object.assign(out, r);
+          out.kind = 'icp';
+          out.referenceNormals = a!.reference_normals;
+        }
       } else {
         throw new Error('unknown analysis: ' + op);
       }

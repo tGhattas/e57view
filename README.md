@@ -48,6 +48,54 @@ Measured against the live deployment, Chrome on Apple Silicon, all 73.8M points 
 
 iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M.
 
+## Layers
+
+More than one cloud can be open at once, which is what registration, cloud-to-cloud distance
+and merging all need. Every visible layer is drawn into the same frame — they share the
+deferred format, so they depth-composite correctly and the eye-dome pass shades whatever ends
+up in front — and exactly one layer is **active**: every tool, every readout and every agent
+command works on that one, deliberately, because a tool that silently spanned several clouds
+would be impossible to reason about.
+
+- **Add file…** opens a scan alongside the ones already open, and so does dropping a file with
+  **Shift** held. *Open file…* still replaces everything, with the unsaved-work warning.
+- A layer added after the first is placed by the difference between its own global shift and
+  the first layer's — the only thing two separate files say about where they sit relative to
+  each other.
+- An eye toggles drawing without unloading; a click activates; a double-click renames; a tint
+  multiplies one layer's colour so two overlapping scans can be told apart.
+- **Clone** copies the active layer, **Merge into active** appends every other visible layer's
+  points through each of their transforms so the geometry is preserved. Scalar fields are
+  dropped on a merge, and it cannot be undone.
+- Undo knows which layer each step belongs to and switches back to it before undoing.
+
+## Register
+
+Moves the **active** layer onto a reference and never touches the reference.
+
+- **Match centres** and **Match scales** are the coarse step. Both measure the two layers the
+  same way, from a uniform sample of their own points — comparing a loader percentile box
+  against a resampled one invents a scale error out of nothing, and a rigid fit cannot undo a
+  scale error. *Match scales* is for two clouds in different units; two copies of the same
+  cloud differ in bounding box as soon as one is rotated.
+- **Fine registration (ICP)** is point-to-plane, in Rust, in the analyser worker. Scan data is
+  surfaces, and a point is free to slide along the surface it belongs to; forbidding that —
+  which point-to-point ICP does — is what makes plain ICP crawl across a flat wall. Up to
+  200,000 points of the moving cloud per iteration, nearest reference point through the same
+  voxel grid the analyses use, pairs beyond a gate that tightens as the fit settles rejected,
+  and a 6×6 solve per iteration however many pairs there are. It reports per-iteration RMS,
+  final RMS and overlap, and applies as one undoable step labelled *"ICP: RMS 0.4 mm, 98%
+  overlap"*.
+- **Distance to reference** writes the distance from every point of the active layer to the
+  nearest reference point as a scalar field, so the colour ramp, the histogram and the value
+  filter all work on it. Signed against the reference's own normals is the M3C2-style version:
+  it says which side of the surface each point is on, so settlement and heave stop cancelling
+  into the same positive number.
+
+Validated natively: a room moved by a known 2° and 0.15 m, with 2 mm of noise, comes back to
+**0.05 mm and 0.0000°**, and to **0.13 mm** with only 60% overlap. In the browser, two copies
+of the same room register to **0.000 mm** and their distance field reads **0.00 mm**.
+
 ## Tools
 
 - **Crop** — a box, sphere or slab you drag around with a gizmo (arrows move it, handles

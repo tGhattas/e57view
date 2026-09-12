@@ -32,6 +32,8 @@ export interface UiSnap {
 export interface HistEntry {
   id: string;
   kind: HistKind;
+  /** Which entity this step belongs to. Undo switches to it before putting anything back. */
+  entity: string;
   label: string;
   dropped: number;
   kept: number;

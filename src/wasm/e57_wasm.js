@@ -32,8 +32,30 @@ export class CloudAnalysis {
         const len1 = WASM_VECTOR_LEN;
         wasm.cloudanalysis_add_leaf(this.__wbg_ptr, ox, oy, oz, size, ptr0, len0, ptr1, len1);
     }
+    /**
+     * One leaf of the reference. `stride` keeps 1 in N, for a cloud bigger than the
+     * analyser will hold; `model` is its own row-major 4x4, so both clouds arrive in the
+     * same frame however each of them is transformed on screen.
+     * @param {number} ox
+     * @param {number} oy
+     * @param {number} oz
+     * @param {number} size
+     * @param {Uint8Array} recs
+     * @param {Float32Array} model
+     * @param {number} stride
+     */
+    add_reference_leaf(ox, oy, oz, size, recs, model, stride) {
+        const ptr0 = passArray8ToWasm0(recs, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF32ToWasm0(model, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.cloudanalysis_add_reference_leaf(this.__wbg_ptr, ox, oy, oz, size, ptr0, len0, ptr1, len1, stride);
+    }
     build() {
         wasm.cloudanalysis_build(this.__wbg_ptr);
+    }
+    build_reference() {
+        wasm.cloudanalysis_build_reference(this.__wbg_ptr);
     }
     /**
      * @returns {number}
@@ -62,11 +84,32 @@ export class CloudAnalysis {
         wasm.cloudanalysis_compute_normals(this.__wbg_ptr, k, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
     }
     /**
+     * Point-to-plane registration needs planes, so a reference without usable normals
+     * gets them computed here rather than failing or silently falling back.
+     * @param {number} k
+     * @param {Function | null} [progress]
+     */
+    compute_reference_normals(k, progress) {
+        wasm.cloudanalysis_compute_reference_normals(this.__wbg_ptr, k, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+    }
+    /**
      * @returns {number}
      */
     get cut_distance() {
         const ret = wasm.cloudanalysis_cut_distance(this.__wbg_ptr);
         return ret;
+    }
+    /**
+     * @param {boolean} signed
+     * @param {number} max_r
+     * @param {Function | null} [progress]
+     * @returns {Float32Array}
+     */
+    distance_to_reference(signed, max_r, progress) {
+        const ret = wasm.cloudanalysis_distance_to_reference(this.__wbg_ptr, signed, max_r, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
     }
     /**
      * @param {number} tol
@@ -92,6 +135,27 @@ export class CloudAnalysis {
         var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v2;
+    }
+    /**
+     * Run ICP and report what it did, as JSON. `max_dist` is the starting rejection gate
+     * in metres; it tightens to 15% of that as the fit settles.
+     * @param {number} max_iter
+     * @param {number} max_dist
+     * @param {number} sample
+     * @param {Function | null} [progress]
+     * @returns {string}
+     */
+    icp(max_iter, max_dist, sample, progress) {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.cloudanalysis_icp(this.__wbg_ptr, max_iter, max_dist, sample, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
     }
     invert_normals() {
         wasm.cloudanalysis_invert_normals(this.__wbg_ptr);
@@ -162,6 +226,20 @@ export class CloudAnalysis {
         const len0 = WASM_VECTOR_LEN;
         wasm.cloudanalysis_orient_to_viewpoints(this.__wbg_ptr, ptr0, len0);
     }
+    /**
+     * @returns {number}
+     */
+    get reference_len() {
+        const ret = wasm.cloudanalysis_reference_len(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    get reference_normals() {
+        const ret = wasm.cloudanalysis_reference_normals(this.__wbg_ptr);
+        return ret;
+    }
     rewind() {
         wasm.cloudanalysis_rewind(this.__wbg_ptr);
     }
@@ -177,6 +255,12 @@ export class CloudAnalysis {
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
+    }
+    /**
+     * @param {number} cell
+     */
+    start_reference(cell) {
+        wasm.cloudanalysis_start_reference(this.__wbg_ptr, cell);
     }
     /**
      * @param {number} spacing
