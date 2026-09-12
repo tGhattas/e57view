@@ -18,7 +18,7 @@
 
 import * as THREE from 'three';
 import { CellRenderer } from './cells';
-import type { MeshData } from './meshview';
+import { MeshView, type MeshData } from './meshview';
 
 /** The part of an entity that main.ts holds in module variables while it is active. */
 export interface EntityState {
@@ -32,6 +32,8 @@ export interface EntityState {
   axisHist: Uint32Array<ArrayBuffer>[];
   axisCube: { origin: number[]; size: number } | null;
   sfName: string;
+  /** Set for a layer that came from a mesh file rather than a scan. */
+  meshFile: string;
   meshData: MeshData | null;
   meshBase: THREE.Matrix4;
   meshInfo: { triangles: number; vertices: number; boundaryEdges: number; voxelCm: number; fromNormals: boolean } | null;
@@ -45,7 +47,7 @@ export function blankState(): EntityState {
     histogram: new Uint32Array(256),
     axisHist: [new Uint32Array(1024), new Uint32Array(1024), new Uint32Array(1024)],
     axisCube: null,
-    sfName: '', meshData: null, meshBase: new THREE.Matrix4(), meshInfo: null,
+    sfName: '', meshFile: '', meshData: null, meshBase: new THREE.Matrix4(), meshInfo: null,
     dirtyField: '', dirtySurface: 0,
   };
 }
@@ -55,6 +57,10 @@ export class Entity {
   name: string;
   visible = true;
   cells: CellRenderer;
+  /** Each entity draws its own surface. It used to be one renderer for "the" mesh, which
+   *  meant only the active layer's surface was ever on screen — wrong the moment a mesh
+   *  became a layer in its own right rather than a by-product of the active cloud. */
+  mesh: MeshView;
   /** Percentile framing box, in world space. Null until the loader reports one. */
   robust: THREE.Box3 | null = null;
   /** An optional colour multiplier, so two overlapping scans can be told apart. */
@@ -64,7 +70,12 @@ export class Entity {
   constructor(gl: WebGL2RenderingContext, id: string, name: string) {
     this.id = id; this.name = name;
     this.cells = new CellRenderer(gl);
+    this.mesh = new MeshView(gl);
   }
+  /** True for a layer that is a mesh rather than a cloud: no points, triangles instead. */
+  get isMesh() { return this.cells.total === 0 && this.mesh.hasMesh; }
+  /** Anything to draw at all. */
+  get hasContent() { return this.cells.total > 0 || this.mesh.hasMesh; }
   get points() { return this.cells.total; }
   /** The box a tool should work in: the percentile box when there is one, else the cells'. */
   bounds(): THREE.Box3 {
@@ -76,5 +87,5 @@ export class Entity {
     const c = new THREE.Color(this.tint.color);
     return [c.r, c.g, c.b];
   }
-  dispose(gl: WebGL2RenderingContext) { this.cells.clear(); void gl; }
+  dispose(gl: WebGL2RenderingContext) { this.cells.clear(); this.mesh.clear(); void gl; }
 }

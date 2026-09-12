@@ -135,6 +135,13 @@ self.onmessage = async (ev: MessageEvent) => {
         out.kind = 'field';
         out.data = a!.components(m.radius, m.minPts, prog('Growing clusters', n));
         out.components = a!.component_count;
+      } else if (op === 'distance_to_mesh') {
+        // The mesh arrives already in world coordinates, and the analyser's points are read
+        // through the cloud's model as they are fed, so both are in the same frame here.
+        const reach = Math.max(cell * 200, 2);
+        out.kind = 'field';
+        out.data = a!.distance_to_mesh(new Float32Array(m.meshPos), new Uint32Array(m.meshIdx),
+          !!m.signed, reach, prog('Measuring to the mesh', n));
       } else if (op === 'distance_to' || op === 'icp') {
         if (!refStarted || !a!.reference_len) throw new Error('no reference cloud was fed');
         post({ type: 'progress', phase: 'Indexing the reference', done: 0, total: a!.reference_len });

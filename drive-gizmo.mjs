@@ -16,13 +16,14 @@ await p.evaluate(() => { document.querySelector('[data-grp="crop"]').classList.r
 await p.evaluate(() => { const v = window.__viewer; const w = v.pickWorld(640, 520) || v.bounds().getCenter(v.camera.position.clone()); v.controls.target.copy(w); v.controls.update(); });
 await p.click('#k-cropcentre');
 await p.waitForTimeout(500);
-const region = () => p.evaluate(() => { const c = window.__viewer.crop; return c ? { c: c.center.map(v => +v.toFixed(2)), h: c.half.map(v => +v.toFixed(2)) } : null; });
+// the crop is a region in main.ts now, not a field on the viewer
+const region = () => p.evaluate(() => { const c = window.__app.cropState; return c ? { c: c.center.map(v => +v.toFixed(2)), h: c.half.map(v => +v.toFixed(2)) } : null; });
 console.log('region before:', JSON.stringify(await region()));
 await p.screenshot({ path: 'shots/g-gizmo.png' });
 
 // find the gizmo's X-axis arrow on screen: project centre + offset along +X and drag from there
 const arrow = await p.evaluate(() => {
-  const v = window.__viewer; const c = v.crop.center;
+  const v = window.__viewer; const c = window.__app.cropState.center;
   const THREE_V = v.camera.position.constructor;   // Vector3
   const pr = new THREE_V(c[0], c[1], c[2]).project(v.camera);
   // gizmo arrows are drawn in screen-relative size; probe a few pixels right of centre
@@ -57,7 +58,7 @@ if (hit) {
   // resize mode
   await p.click('#k-cropresize'); await p.waitForTimeout(300);
   let h2 = null;
-  const c2 = await p.evaluate(() => { const v = window.__viewer; const c = v.crop.center; const pr = new (v.camera.position.constructor)(c[0], c[1], c[2]).project(v.camera); return { x: (pr.x + 1) / 2 * innerWidth, y: (1 - pr.y) / 2 * innerHeight }; });
+  const c2 = await p.evaluate(() => { const v = window.__viewer; const c = window.__app.cropState.center; const pr = new (v.camera.position.constructor)(c[0], c[1], c[2]).project(v.camera); return { x: (pr.x + 1) / 2 * innerWidth, y: (1 - pr.y) / 2 * innerHeight }; });
   for (const [ddx, ddy] of [[1, 0], [-1, 0], [0, -1], [0, 1]]) {
     for (let d = 16; d <= 140 && !h2; d += 5) {
       await p.mouse.move(c2.x + ddx * d, c2.y + ddy * d); await p.waitForTimeout(30);

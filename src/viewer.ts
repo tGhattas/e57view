@@ -150,7 +150,6 @@ export class Viewer {
   /** Every cloud in memory. Exactly one is active; the draw loop shows all the visible ones. */
   entities: Entity[] = [];
   activeId = '';
-  mesh!: MeshView;
   meshTris = 0;
   /** Display range and value filter for the active scalar field. hi <= lo disables the filter. */
   sf = { min: 0, max: 1, lo: 0, hi: -1, hide: false };
@@ -276,7 +275,6 @@ export class Viewer {
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     this.entities.push(new Entity(gl, 'e1', 'Scan 1'));
     this.activeId = 'e1';
-    this.mesh = new MeshView(gl);
 
     this.edlMat = new THREE.ShaderMaterial({
       vertexShader: QUAD_VS, fragmentShader: EDL_FS,
@@ -308,10 +306,17 @@ export class Viewer {
   /** The active entity's renderer. Every tool works through this, which is what keeps the
    *  single-cloud code in main.ts unchanged. */
   get cells(): CellRenderer { return this.active.cells; }
+  /** The active entity's surface renderer. Every visible entity's is drawn; this is the one
+   *  the tools build, clear and save. */
+  get mesh(): MeshView { return this.active.mesh; }
+  /** True when any layer has a surface — what the display buttons should be gated on. */
+  get anyMesh(): boolean { return this.entities.some(e => e.mesh.hasMesh); }
   get robust(): THREE.Box3 | null { return this.active.robust; }
   set robust(b: THREE.Box3 | null) { this.active.robust = b; }
   get gl(): WebGL2RenderingContext { return this.renderer.getContext() as WebGL2RenderingContext; }
   get visibleEntities(): Entity[] { return this.entities.filter(e => e.visible && e.cells.total > 0); }
+  /** Visible layers that have anything at all, a mesh-only layer included. */
+  get shownEntities(): Entity[] { return this.entities.filter(e => e.visible && e.hasContent); }
   addEntity(name: string, id?: string): Entity {
     const e = new Entity(this.gl, id ?? 'e' + (++this.entitySeq + this.entities.length), name);
     this.entities.push(e);
@@ -342,7 +347,11 @@ export class Viewer {
   /** Union of every visible entity's box: what fitting and the height range should describe. */
   visibleBounds(): THREE.Box3 {
     const b = new THREE.Box3();
-    for (const e of this.visibleEntities) b.union(e.bounds());
+    for (const e of this.shownEntities) {
+      if (e.cells.total > 0) b.union(e.bounds());
+      // a mesh layer's box is its triangles', through the transform they are drawn with
+      if (e.mesh.hasMesh) b.union(e.mesh.bounds.clone().applyMatrix4(e.mesh.model));
+    }
     return b.isEmpty() ? this.bounds() : b;
   }
   get loadedAll() { return this.entities.reduce((n, e) => n + e.cells.total, 0); }
@@ -410,6 +419,10 @@ export class Viewer {
     if (s) this.robust = s;
     else if (this.robust && !this.robust.isEmpty()) this.robust.applyMatrix4(delta);
     this.syncMeshModel();
+    // A mesh layer has no points to sample, but it has exact vertices: re-box from those
+    // rather than letting a rotated box inflate on every nudge.
+    const a = this.active;
+    if (a.isMesh) a.robust = a.mesh.bounds.clone().applyMatrix4(a.mesh.model);
     this.refreshStations();
     this.applyZRange();
     if (this.proxy && !this.gizmoBusy) this.recentreProxy();
@@ -728,15 +741,22 @@ export class Viewer {
    *  points exactly when the cloud is moved afterwards. Without it a transform applied at
    *  build time would be applied twice. */
   setMesh(m: MeshData | null, builtWith?: THREE.Matrix4) {
-    if (!m) { this.mesh.clear(); if (this.display !== 'points') this.setDisplay('points'); }
-    else { this.mesh.upload(m); this.active.state.meshBase.copy(builtWith ?? this.cells.model); }
+    const e = this.active;
+    if (!m) { e.mesh.clear(); if (this.display !== 'points' && !this.anyMesh) this.setDisplay('points'); }
+    else { e.mesh.upload(m); e.state.meshBase.copy(builtWith ?? e.cells.model); }
     this.syncMeshModel();
     this.dirty = true;
   }
-  private syncMeshModel() { this.mesh.model.copy(this.cells.model).multiply(this.active.state.meshBase.clone().invert()); }
+  /** A layer's surface is drawn through `current x built-with^-1`, which is the identity
+   *  right after a build and follows the points when the layer is moved afterwards. */
+  syncMeshModel(which?: Entity) {
+    for (const e of (which ? [which] : this.entities)) {
+      e.mesh.model.copy(e.cells.model).multiply(e.state.meshBase.clone().invert());
+    }
+  }
   setDisplay(d: Display) {
-    this.display = this.mesh.hasMesh || d === 'points' ? d : 'points';
-    this.mesh.visible = this.display !== 'points';
+    this.display = this.anyMesh || d === 'points' ? d : 'points';
+    for (const e of this.entities) e.mesh.visible = this.display !== 'points';
     this.dirty = true;
   }
 
@@ -1298,12 +1318,17 @@ export class Viewer {
     // Surface first, points on top: both write depth into the same target, so the closer
     // one wins per pixel and the eye-dome pass shades whatever ends up visible.
     const k2 = this.knobs;
-    this.meshTris = this.display === 'points' ? 0 : this.mesh.draw(this.camera, {
-      colorMode: k2.colorMode, zMin: this.zRange[0], zMax: this.zRange[1],
-      clipZMin: k2.clipZMin, clipZMax: k2.clipZMax, bright: k2.bright, gamma: k2.gamma,
-      flat: this.meshFlat, shade: this.meshShade,
-      clipMin: this.meshClip?.min, clipMax: this.meshClip?.max,
-    });
+    this.meshTris = 0;
+    if (this.display !== 'points') {
+      const mp = {
+        colorMode: k2.colorMode, zMin: this.zRange[0], zMax: this.zRange[1],
+        clipZMin: k2.clipZMin, clipZMax: k2.clipZMax, bright: k2.bright, gamma: k2.gamma,
+        flat: this.meshFlat, shade: this.meshShade,
+        clipMin: this.meshClip?.min, clipMax: this.meshClip?.max,
+      };
+      // every visible layer's surface, not only the active one's
+      for (const e of this.entities) if (e.visible) this.meshTris += e.mesh.draw(this.camera, mp);
+    }
     if (this.display === 'mesh') {
       this.stats = { leavesVisible: 0, leavesDrawn: 0, pointsDrawn: 0, pointsTotal: this.cells.total };
     } else {

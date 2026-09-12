@@ -28,6 +28,15 @@ export class CloudAnalysis {
      * gets them computed here rather than failing or silently falling back.
      */
     compute_reference_normals(k: number, progress?: Function | null): void;
+    /**
+     * Distance from every point of this cloud to the nearest triangle of a mesh.
+     *
+     * The mesh arrives in the same frame as the points — the caller has already put it
+     * through both the mesh's and the cloud's transforms — so this is pure geometry.
+     * `signed` reports which side of the surface each point is on, using the triangle's
+     * own facing, which is only meaningful on a consistently wound mesh.
+     */
+    distance_to_mesh(pos: Float32Array, idx: Uint32Array, signed: boolean, max_r: number, progress?: Function | null): Float32Array;
     distance_to_reference(signed: boolean, max_r: number, progress?: Function | null): Float32Array;
     duplicates(tol: number): Uint8Array;
     feature(name: string, k: number, radius: number, progress?: Function | null): Float32Array;
@@ -179,6 +188,19 @@ export class MeshBuilder {
 }
 
 /**
+ * A mesh prepared for distance queries. Built once, queried a cloud at a time.
+ */
+export class MeshDistance {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Distance from every point to the nearest triangle. `signed` gives the side.
+     */
+    distances(pts: Float32Array, signed: boolean, max_r: number, progress?: Function | null): Float32Array;
+    constructor(pos: Float32Array, idx: Uint32Array);
+}
+
+/**
  * Octree sink for points that don't come from an E57: PLY, LAS, a device scan.
  * Same cells, same preview, same leaf hand-over as `E57Handle::stream`.
  */
@@ -224,6 +246,7 @@ export interface InitOutput {
     readonly __wbg_lazreader_free: (a: number, b: number) => void;
     readonly __wbg_lazwriter_free: (a: number, b: number) => void;
     readonly __wbg_meshbuilder_free: (a: number, b: number) => void;
+    readonly __wbg_meshdistance_free: (a: number, b: number) => void;
     readonly __wbg_pointsink_free: (a: number, b: number) => void;
     readonly cloudanalysis_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly cloudanalysis_add_reference_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
@@ -234,6 +257,7 @@ export interface InitOutput {
     readonly cloudanalysis_compute_normals: (a: number, b: number, c: number) => void;
     readonly cloudanalysis_compute_reference_normals: (a: number, b: number, c: number) => void;
     readonly cloudanalysis_cut_distance: (a: number) => number;
+    readonly cloudanalysis_distance_to_mesh: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly cloudanalysis_distance_to_reference: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_duplicates: (a: number, b: number) => [number, number];
     readonly cloudanalysis_feature: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
@@ -281,6 +305,8 @@ export interface InitOutput {
     readonly meshbuilder_new: (a: number, b: number, c: number) => number;
     readonly meshbuilder_normals: (a: number) => [number, number];
     readonly meshbuilder_positions: (a: number) => [number, number];
+    readonly meshdistance_distances: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly meshdistance_new: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly pointsink_finish: (a: number, b: any, c: any, d: any) => [number, number, number];
     readonly pointsink_new: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly pointsink_push: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: any) => [number, number];

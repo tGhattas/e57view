@@ -100,6 +100,30 @@ export class CloudAnalysis {
         return ret;
     }
     /**
+     * Distance from every point of this cloud to the nearest triangle of a mesh.
+     *
+     * The mesh arrives in the same frame as the points — the caller has already put it
+     * through both the mesh's and the cloud's transforms — so this is pure geometry.
+     * `signed` reports which side of the surface each point is on, using the triangle's
+     * own facing, which is only meaningful on a consistently wound mesh.
+     * @param {Float32Array} pos
+     * @param {Uint32Array} idx
+     * @param {boolean} signed
+     * @param {number} max_r
+     * @param {Function | null} [progress]
+     * @returns {Float32Array}
+     */
+    distance_to_mesh(pos, idx, signed, max_r, progress) {
+        const ptr0 = passArrayF32ToWasm0(pos, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(idx, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.cloudanalysis_distance_to_mesh(this.__wbg_ptr, ptr0, len0, ptr1, len1, signed, max_r, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+        var v3 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v3;
+    }
+    /**
      * @param {boolean} signed
      * @param {number} max_r
      * @param {Function | null} [progress]
@@ -727,6 +751,56 @@ export class MeshBuilder {
 if (Symbol.dispose) MeshBuilder.prototype[Symbol.dispose] = MeshBuilder.prototype.free;
 
 /**
+ * A mesh prepared for distance queries. Built once, queried a cloud at a time.
+ */
+export class MeshDistance {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        MeshDistanceFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_meshdistance_free(ptr, 0);
+    }
+    /**
+     * Distance from every point to the nearest triangle. `signed` gives the side.
+     * @param {Float32Array} pts
+     * @param {boolean} signed
+     * @param {number} max_r
+     * @param {Function | null} [progress]
+     * @returns {Float32Array}
+     */
+    distances(pts, signed, max_r, progress) {
+        const ptr0 = passArrayF32ToWasm0(pts, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.meshdistance_distances(this.__wbg_ptr, ptr0, len0, signed, max_r, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+        var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v2;
+    }
+    /**
+     * @param {Float32Array} pos
+     * @param {Uint32Array} idx
+     */
+    constructor(pos, idx) {
+        const ptr0 = passArrayF32ToWasm0(pos, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(idx, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.meshdistance_new(ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        MeshDistanceFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) MeshDistance.prototype[Symbol.dispose] = MeshDistance.prototype.free;
+
+/**
  * Octree sink for points that don't come from an E57: PLY, LAS, a device scan.
  * Same cells, same preview, same leaf hand-over as `E57Handle::stream`.
  */
@@ -1015,6 +1089,9 @@ const LazWriterFinalization = (typeof FinalizationRegistry === 'undefined')
 const MeshBuilderFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_meshbuilder_free(ptr, 1));
+const MeshDistanceFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_meshdistance_free(ptr, 1));
 const PointSinkFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_pointsink_free(ptr, 1));
@@ -1126,6 +1203,13 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArray8ToWasm0(arg, malloc) {

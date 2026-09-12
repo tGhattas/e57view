@@ -449,6 +449,37 @@ fn main() {
     ck("the noise is left unclaimed", claimed >= planted * 9 / 10 && claimed <= planted + planted / 20,
        format!("{claimed} of {planted} real points labelled, {} noise points present", (scene.len() / 3) - planted));
 
+    // ------------------------------------------------------------- point to triangle
+    // A unit cube at the origin, two triangles a face. Nearest-vertex would answer 0.866 for
+    // a point above the centre of the top face; point-to-triangle has to answer 1.0.
+    let cube_v: Vec<f32> = vec![
+        0.0, 0.0, 0.0,  1.0, 0.0, 0.0,  1.0, 1.0, 0.0,  0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,  1.0, 0.0, 1.0,  1.0, 1.0, 1.0,  0.0, 1.0, 1.0];
+    let cube_i: Vec<u32> = vec![
+        0,2,1, 0,3,2,   4,5,6, 4,6,7,          // bottom (down), top (up)
+        0,1,5, 0,5,4,   1,2,6, 1,6,5,
+        2,3,7, 2,7,6,   3,0,4, 3,4,7];
+    let grid = e57_wasm::meshdist::MeshGrid::new(cube_v.clone(), cube_i.clone());
+    let d = |p: [f32; 3]| grid.distance(p, 100.0).map(|(d, _)| d).unwrap_or(f32::NAN);
+    ck("a point above a face measures to the face", (d([0.5, 0.5, 3.0]) - 2.0).abs() < 1e-4,
+       format!("{:.5} m against 2.0 (nearest vertex would say {:.3})", d([0.5, 0.5, 3.0]), (0.5f32.powi(2) * 2.0 + 4.0).sqrt()));
+    ck("a point off a corner measures to the corner", (d([-1.0, -1.0, -1.0]) - 3f32.sqrt()).abs() < 1e-4,
+       format!("{:.5} m against {:.5}", d([-1.0, -1.0, -1.0]), 3f32.sqrt()));
+    ck("a point off an edge measures to the edge", (d([-3.0, 0.5, -4.0]) - 5.0).abs() < 1e-4,
+       format!("{:.5} m against 5.0", d([-3.0, 0.5, -4.0])));
+    ck("a point on the surface measures zero", d([0.25, 0.75, 1.0]) < 1e-5, format!("{:.7} m", d([0.25, 0.75, 1.0])));
+    ck("a point inside measures to the nearest wall", (d([0.5, 0.5, 0.5]) - 0.5).abs() < 1e-4,
+       format!("{:.5} m against 0.5", d([0.5, 0.5, 0.5])));
+    // a shell of points at a known offset: what the driver checks in the browser
+    let mut off = Vec::new();
+    for i in 0..40 { for j in 0..40 {
+        off.push([i as f32 / 39.0, j as f32 / 39.0, 1.25]);
+    }}
+    let flat: Vec<f32> = off.iter().flat_map(|p| p.iter().copied()).collect();
+    let ds = grid.distances(&flat, false, 100.0, |_| {});
+    let worst = ds.iter().fold(0.0f32, |m, &v| m.max((v - 0.25).abs()));
+    ck("a plane of points 25 cm above reads 25 cm", worst < 1e-4, format!("worst {:.4} mm off", worst * 1000.0));
+
     println!("\n{}", if fails == 0 { "ALL CHECKS PASSED".into() } else { format!("{fails} CHECK(S) FAILED") });
     std::process::exit(if fails == 0 { 0 } else { 1 });
 }

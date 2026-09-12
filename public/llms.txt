@@ -209,6 +209,45 @@ against 64.274 m³, -0.11%.**
 The viewer's own Raster group does the same things with a draped grid you can see, plus PNG
 and world-file export, contours at an interval, and DXF or GeoJSON out in the global frame.
 
+## Meshes are layers
+
+{"session":"S","cmd":"mesh","args":{"op":"list"}}
+{"session":"S","cmd":"mesh","args":{"op":"measure"}}
+{"session":"S","cmd":"mesh","args":{"op":"sample","density":400}}
+{"session":"S","cmd":"mesh","args":{"op":"distance","mesh":"design"}}
+
+A PLY, OBJ or STL opened in the viewer (Mesh -> Import mesh…, or dropped on the window) becomes
+a layer of triangles rather than points. It appears in `entities` with `kind:"mesh"`, carries
+its own 4x4 model matrix, and `transform` moves it exactly as it moves a cloud. Every visible
+layer's triangles are drawn, not only the active one's, so a design model and a scan of the
+thing built from it can be looked at together.
+
+`measure` reports surface **area** and **volume** through the layer's transform, with
+`boundaryEdges` and `closed` beside them. Volume is the divergence sum over the triangles,
+which is the enclosed volume only when the mesh is closed — so when `closed` is false the
+reply says the number is not an enclosed volume rather than leaving you to find out. A unit
+cube reads **area 6.000 m2, volume 1.000 m3, 0 boundary edges**.
+
+`sample` scatters points over the triangles into a **new point layer**, area-weighted so the
+density is uniform in metres rather than per triangle, with interpolated normals and colours.
+Give `count` for a total or `density` for points per square metre. That is the bridge from a
+mesh back to every cloud tool: fit primitives to it, section it, contour it, raster it.
+
+`distance` measures every point of the **active cloud** to the nearest **triangle** of a mesh
+layer and writes it as a scalar field. Point-to-triangle, not point-to-nearest-vertex: on a
+coarse mesh those differ by most of a triangle, and it is the triangle that is the surface.
+`signed:true` reports which side each point is on, which is only meaningful on a consistently
+wound mesh. A shell of points 250 mm outside a sphere mesh reads **249.96 to 250.64 mm**.
+
+`flip` reverses the winding. `smooth` is Taubin by default — a shrinking pass followed by a
+slightly larger expanding one, so noise goes and volume stays (**+0.12%** over ten passes on a
+sphere, against **-1.98%** for plain Laplacian with `taubin:false`). `decimate` is **vertex
+clustering**, not quadric edge collapse: one linear pass with no priority queue, so it is fast
+on millions of triangles, but you give it a cell size in centimetres and get whatever triangle
+count that grid produces rather than an exact target. Each cluster's representative is the
+point that minimises the squared distance to its triangles' planes, so corners survive.
+`save` writes PLY, OBJ or STL with the layer transform and the global shift baked in.
+
 ## Regions are shapes, not cuts
 
 A region is a bounding shape — box, sphere, slab, or prism — added to a list and only applied

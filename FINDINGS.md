@@ -1013,3 +1013,110 @@ out **3.050 m across against an exact 3.000**, at a 0.1 m cell.
 A world file is six numbers and the only one that needs thought is the last: the *centre* of
 the top-left pixel, in the global frame, with a negative y scale because image rows run down
 and northings run up.
+
+## A mesh is a layer, and the renderer had quietly assumed otherwise
+
+The surface renderer had existed since the reconstruction work, but there was exactly one of
+it. `Viewer.mesh` was a field, `state.meshBase` remembered the transform each layer's surface
+had been built in, and switching layers re-uploaded the new active layer's triangles into that
+one renderer. It worked because a surface was always a by-product of the active cloud, and you
+only ever wanted to see the active cloud's.
+
+An imported mesh breaks that in the first minute of use: the whole point of opening a design
+model next to a scan is seeing both. So `MeshView` moved into `Entity`, `viewer.mesh` became an
+accessor for the active one, and the draw loop walks every visible layer's. Switching layers
+now re-points the UI instead of re-uploading anything, which also made it instant. The
+`current × built-with⁻¹` trick that keeps a surface glued to its points survived unchanged —
+it just runs per entity now.
+
+A mesh layer is a layer with zero points, which needed two small honesties elsewhere:
+`visibleEntities` (the point draw loop, merging, registration) still filters on `total > 0`,
+and a new `shownEntities` is what framing and the height range use. And `setModel` re-boxes a
+mesh layer from its vertices rather than sampling points it does not have — a rotated box
+inflates, and a mesh has exact vertices to measure instead.
+
+### Point-to-triangle, because point-to-nearest-vertex is a different measurement
+
+Cloud-to-mesh distance is the one part that had to be in Rust. The naive version — index the
+mesh vertices in the existing spatial grid and reuse the nearest-point search — is wrong by up
+to most of a triangle on a coarse mesh, and coarse meshes are exactly what people compare
+against. A point 2 m above the centre of a unit cube's top face is 2 m from the surface and
+2.121 m from the nearest vertex; on a 20 cm-decimated model that gap is centimetres.
+
+So triangles go into a uniform grid by their bounding boxes and each query expands a shell at a
+time until no unsearched cell can be closer than the best already found. The per-triangle test
+is the standard region classification: project into the plane, and clamp to the nearest edge or
+vertex when the projection falls outside. A triangle spanning an absurd number of cells is
+registered by its three corners only — the expanding search still reaches it, and the
+alternative is one triangle in ten thousand cells.
+
+Validated natively against a unit cube (face, edge, corner, on-surface, inside), then in the
+browser against a shell of 30,000 points 250 mm outside a 16,384-triangle sphere mesh:
+**249.96 to 250.64 mm**. The spread is the sphere's own faceting, not the measurement.
+
+### Decimation: vertex clustering, and saying so
+
+The brief allowed either quadric edge collapse or vertex clustering "if quadric is too much —
+say which". It is vertex clustering, and the trade is worth stating rather than burying:
+clustering is one linear pass with no priority queue, so it finishes on millions of triangles
+in well under a second, but you give it a **cell size** and get whatever triangle count that
+grid produces. Edge collapse hits an exact target and follows thin features better, at the cost
+of a heap of every edge re-ranked on each collapse.
+
+What it does keep is corners, because each cluster's representative is the point minimising the
+squared distance to the planes of its triangles — the quadric — not the mean of its vertices.
+Where that system is near-singular (a flat patch, where any point on the plane is as good) or
+throws the point outside the cell, it falls back to the area-weighted mean. A 16,384-triangle
+sphere decimates to 770 triangles at a 20 cm cell with the area holding at **12.529 m² against
+12.566**.
+
+**The bug that made this look broken first**: the cluster key packed three cell indices into
+one double as `(x+2²⁰)·2⁴⁰ + (y+2²⁰)·2²⁰ + z`, which exceeds 2⁵³ and collides. Collisions weld
+unrelated parts of a model into one vertex, and the sphere came out at 180 triangles and
+**4.12 m²** — a third of its area — which looks like a bad algorithm rather than a bad hash. It
+is now two levels of `Map`, outer keyed on the x index and inner on `y·dz + z`, neither of which
+can overflow for any grid a machine could hold. The same mistake was in the duplicate-triangle
+test and is fixed the same way.
+
+### Taubin, and why the default matters
+
+Laplacian smoothing shrinks: every pass pulls a sphere toward its centre and a wall toward the
+room. Taubin follows each λ pass with a μ pass at a slightly larger negative weight, which
+makes it a low-pass filter on the surface rather than a blur. Over ten passes on a sphere mesh
+the volume moves **+0.12%** with Taubin and **−1.98%** with plain Laplacian, so Taubin is the
+default and the checkbox is called *Keep volume* rather than anything about λ and μ. Boundary
+vertices are pinned: a vertex with neighbours on one side only gets dragged inward by any
+averaging, Taubin included.
+
+### Volume is only a volume when the mesh is closed
+
+The divergence sum over triangles gives the enclosed volume for a closed, consistently wound
+surface and an arbitrary number for anything else. Rather than hide that, `measure` reports
+`closed` and `boundaryEdges` next to the number and the agent reply says in words that an open
+mesh's volume is not an enclosed volume. A unit cube reads 6.000 m² and 1.000 m³ with zero
+boundary edges; a single quad reads 4.000 m² and four boundary edges.
+
+### Sampling is the bridge back to the point tools
+
+Points scattered over a mesh, area-weighted (so one big triangle gets as many as the hundred
+small ones covering the same area), land as a **new point layer** — which means every cloud
+tool works on a mesh through one step: fit primitives to it, section it, contour it, raster it,
+register a scan onto it. The generator is a small deterministic xorshift, so the same mesh
+gives the same points twice and a driver can assert on them. 120,000 points over a 12.560 m²
+sphere come back at **9554.1 per m² against an expected 9549.3**, with every sampled radius
+within 0.6 mm of the sphere.
+
+The one piece of plumbing that mattered: sampled points arrive in world coordinates in random
+order, and handing the renderer one leaf holding all of them would draw correctly but give
+every leaf a box covering the whole model, so the level-of-detail pass could never reject one.
+They are binned onto a coarse grid first, about 40,000 points a leaf.
+
+### PLY is two formats
+
+A PLY is a point cloud or a mesh depending on whether it has a `face` element with a non-zero
+count, and nothing in the name says which. The open path reads 64 KB of header and decides
+there; a PLY with faces becomes a mesh layer, one without stays on the cloud importer it always
+used. OBJ and STL have no such ambiguity. STL has no vertices at all — only loose triangles —
+so its corners are welded back together on import at a ten-millionth of the model's extent,
+because without shared vertices smoothing, decimation and the boundary-edge count are all
+meaningless.

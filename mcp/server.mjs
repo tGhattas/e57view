@@ -177,7 +177,7 @@ server.tool('viewer_open', 'Open a scan: a cached scan by key (as listed by view
 server.tool('viewer_surface', 'Reconstruct a triangle surface from the points and their normals, show or hide it, discard it, or write it to a file on this machine. build takes voxelCm (detail, smaller is finer), smooth (0-6) and fillGaps (1-4), and reports holeRatio so you can tell whether the result is worth measuring. export writes PLY or OBJ to `path` with the cloud transform and the global shift already baked in. The points are never modified.', {
   op: z.enum(['build', 'show', 'clear', 'export']), voxelCm: z.number().optional(), smooth: z.number().int().optional(),
   fillGaps: z.number().optional(), mode: z.enum(['points', 'mesh', 'both']).optional(),
-  format: z.enum(['ply', 'obj']).optional().describe('op=export'), path: z.string().optional().describe('op=export: where to write it'),
+  format: z.enum(['ply', 'obj', 'stl']).optional().describe('op=export'), path: z.string().optional().describe('op=export: where to write it'),
 }, async (a) => {
   if (a.op === 'export') {
     if (!a.path) throw new Error('op=export needs path');
@@ -190,6 +190,30 @@ server.tool('viewer_surface', 'Reconstruct a triangle surface from the points an
     return text({ saved: a.path, bytes: buf.length, parts: first.parts, triangles: first.triangles, vertices: first.vertices, holeRatio: first.holeRatio });
   }
   return withShot(await call('surface', a, 600000), true);
+});
+
+server.tool('viewer_mesh', 'Triangle meshes as layers. A mesh opened in the viewer (Mesh -> Import mesh…, PLY/OBJ/STL) becomes a layer of its own, drawn alongside the clouds and moved by viewer_transform like one; every visible layer\'s triangles are drawn, not only the active one\'s. list reports the mesh layers. measure gives surface area and volume through the layer\'s transform, with the boundary edge count next to them — volume only means anything when closed is true, and an open mesh says so rather than quietly returning a number. sample scatters points over the triangles, area-weighted, into a NEW point layer with normals and colours (give count or density in points per m2). distance measures every point of the ACTIVE CLOUD to the nearest TRIANGLE of a mesh layer — point-to-triangle, not point-to-nearest-vertex — and writes it as a scalar field. flip reverses the winding. smooth is Taubin by default, which keeps the volume, or plain Laplacian with taubin:false, which shrinks it. decimate is vertex clustering at cellCm, which is fast but cannot hit an exact triangle count. save writes PLY, OBJ or STL to a path on this machine, with the layer transform and the global shift baked in.', {
+  op: z.enum(['list', 'measure', 'sample', 'distance', 'flip', 'smooth', 'decimate', 'show', 'save']),
+  count: z.number().int().optional().describe('op=sample: how many points in all'),
+  density: z.number().optional().describe('op=sample: points per square metre, instead of count'),
+  mesh: z.string().optional().describe('op=distance: the mesh layer id or name'),
+  signed: z.boolean().optional().describe('op=distance: report which side of the surface each point is on'),
+  iterations: z.number().int().optional().describe('op=smooth: passes, default 5'),
+  taubin: z.boolean().optional().describe('op=smooth: keep the volume, default true'),
+  cellCm: z.number().optional().describe('op=decimate: clustering cell in centimetres, default 10'),
+  mode: z.enum(['points', 'mesh', 'both']).optional().describe('op=show'),
+  format: z.enum(['ply', 'obj', 'stl']).optional().describe('op=save'),
+  path: z.string().optional().describe('op=save: where to write it'),
+}, async (a) => {
+  if (a.op === 'save') {
+    if (!a.path) throw new Error('op=save needs path');
+    const r = await call('mesh', { op: 'save', format: a.format ?? 'ply' }, 600000);
+    const parts = chunks.get(r.transferId) ?? []; chunks.delete(r.transferId);
+    const buf = Buffer.concat(parts);
+    writeFileSync(a.path, buf);
+    return text({ saved: a.path, bytes: buf.length, triangles: r.triangles });
+  }
+  return withShot(await call('mesh', a, 900000), a.op !== 'list' && a.op !== 'measure');
 });
 
 server.tool('viewer_entities', 'The clouds in memory. Every visible one is drawn; exactly one is active, and every other tool — crop, analysis, surface, transform, export — works on the active one. list reports them with their point counts and transforms; activate switches; show/hide toggles drawing without unloading; rename; clone copies the active one; merge appends every other visible layer into the active one through each of their transforms (scalar fields are dropped, and it cannot be undone); remove unloads one. A file is added in the viewer itself (Layers -> Add file…) or with viewer_open for a cached scan.', {

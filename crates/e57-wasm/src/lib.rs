@@ -4,6 +4,7 @@ pub mod core;
 pub mod mesh;
 pub mod analysis;
 pub mod shapes;
+pub mod meshdist;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
@@ -604,6 +605,35 @@ mod wasm_mesh {
 }
 
 #[cfg(target_arch = "wasm32")]
+mod wasm_meshdist {
+    use crate::meshdist::MeshGrid;
+    use wasm_bindgen::prelude::*;
+
+    /// A mesh prepared for distance queries. Built once, queried a cloud at a time.
+    #[wasm_bindgen]
+    pub struct MeshDistance { grid: MeshGrid }
+
+    #[wasm_bindgen]
+    impl MeshDistance {
+        #[wasm_bindgen(constructor)]
+        pub fn new(pos: Vec<f32>, idx: Vec<u32>) -> Result<MeshDistance, JsValue> {
+            console_error_panic_hook::set_once();
+            if idx.len() < 3 { return Err(JsValue::from_str("that mesh has no triangles")); }
+            Ok(MeshDistance { grid: MeshGrid::new(pos, idx) })
+        }
+        /// Distance from every point to the nearest triangle. `signed` gives the side.
+        pub fn distances(&self, pts: &[f32], signed: bool, max_r: f32, progress: Option<js_sys::Function>) -> Vec<f32> {
+            self.grid.distances(pts, signed, max_r, |i| {
+                if let Some(f) = &progress { let _ = f.call1(&JsValue::NULL, &JsValue::from_f64(i as f64)); }
+            })
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm_meshdist::*;
+
+#[cfg(target_arch = "wasm32")]
 mod wasm_shapes {
     use crate::shapes;
     use wasm_bindgen::prelude::*;
@@ -737,6 +767,21 @@ mod wasm_analysis {
             };
             self.reference = refa;
             out
+        }
+
+        /// Distance from every point of this cloud to the nearest triangle of a mesh.
+        ///
+        /// The mesh arrives in the same frame as the points — the caller has already put it
+        /// through both the mesh's and the cloud's transforms — so this is pure geometry.
+        /// `signed` reports which side of the surface each point is on, using the triangle's
+        /// own facing, which is only meaningful on a consistently wound mesh.
+        pub fn distance_to_mesh(&mut self, pos: Vec<f32>, idx: Vec<u32>, signed: bool, max_r: f32, progress: Option<js_sys::Function>) -> Vec<f32> {
+            if idx.len() < 3 { return vec![f32::NAN; self.inner.len()]; }
+            let grid = crate::meshdist::MeshGrid::new(pos, idx);
+            let n = self.inner.len();
+            let mut pts = vec![0f32; n * 3];
+            for i in 0..n { pts[i * 3] = self.inner.x[i]; pts[i * 3 + 1] = self.inner.y[i]; pts[i * 3 + 2] = self.inner.z[i]; }
+            grid.distances(&pts, signed, max_r, |i| tick(&progress, i))
         }
         /// Run ICP and report what it did, as JSON. `max_dist` is the starting rejection gate
         /// in metres; it tightens to 15% of that as the fit settles.

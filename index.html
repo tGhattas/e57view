@@ -454,11 +454,39 @@
       <button id="k-mbuild" class="primary wide">Build surface…</button>
       <p class="hint mono" id="v-mesh">—</p>
       <label class="row mesh-have"><span>Save as</span>
-        <select id="k-mfmt"><option value="ply">PLY (binary)</option><option value="obj">OBJ</option></select>
+        <select id="k-mfmt"><option value="ply">PLY (binary)</option><option value="obj">OBJ</option><option value="stl">STL (binary)</option></select>
       </label>
       <button id="k-msave" class="ghost wide mesh-have">Save surface…</button>
       <button id="k-mclear" class="ghost wide mesh-have">Discard surface</button>
       <p class="hint">Builds a triangle surface from the points and their normals. <b>Detail</b> is the voxel size: smaller is finer and slower, and below the scanner's own point spacing it only adds noise. <b>Fill gaps</b> widens the band each point writes, closing small holes at the cost of rounding sharp edges.</p>
+    </div>
+
+    <div class="grp" data-grp="mesh">
+      <h3>Mesh</h3>
+      <button id="k-meshopen" class="primary wide">Import mesh…</button>
+      <p class="hint mono" id="v-meshinfo">no mesh layer</p>
+      <button id="k-meshmeasure" class="ghost wide mesh-have">Measure area and volume</button>
+      <div class="seg mesh-have">
+        <button id="k-meshflip" class="ghost">Flip faces</button>
+        <button id="k-meshsmooth" class="ghost">Smooth</button>
+        <button id="k-meshdecim" class="ghost">Decimate</button>
+      </div>
+      <label class="row mesh-have"><span>Smooth passes</span><input type="range" id="k-meshiter" min="1" max="20" step="1" value="5"><b class="mono" id="v-meshiter">5</b></label>
+      <label class="row mesh-have"><span>Keep volume</span><input type="checkbox" id="k-meshtaubin" checked></label>
+      <label class="row mesh-have"><span>Decimate to</span><input type="range" id="k-meshcell" min="0.5" max="100" step="0.5" value="10"><b class="mono" id="v-meshcell">10 cm</b></label>
+      <label class="row mesh-have"><span>Sample</span>
+        <select id="k-meshsmode"><option value="count">points in all</option><option value="density">points per m²</option></select>
+      </label>
+      <label class="row mesh-have"><span>How many</span><input type="number" id="k-meshsval" min="100" step="1000" value="200000"></label>
+      <button id="k-meshsample" class="ghost wide mesh-have">Sample points → new layer</button>
+      <label class="row mesh-have"><span>Distance to</span><select id="k-meshref"></select></label>
+      <label class="row mesh-have"><span>Signed</span><input type="checkbox" id="k-meshsigned"></label>
+      <button id="k-meshdist" class="ghost wide mesh-have">Distance from this cloud to that mesh</button>
+      <label class="row mesh-have"><span>Save as</span>
+        <select id="k-meshfmt"><option value="ply">PLY (binary)</option><option value="obj">OBJ</option><option value="stl">STL (binary)</option></select>
+      </label>
+      <button id="k-meshsave" class="ghost wide mesh-have">Save mesh…</button>
+      <p class="hint">A mesh opens as its own layer, drawn alongside the clouds. <b>Area</b> and <b>volume</b> are measured through the layer's transform; volume only means anything when the mesh is closed, so the boundary edge count is reported next to it. <b>Smooth</b> is Taubin with Keep volume on and plain Laplacian with it off. <b>Decimate</b> is vertex clustering at the cell you set, which is fast but cannot hit an exact triangle count.</p>
     </div>
 
     <div class="grp" data-grp="agent">

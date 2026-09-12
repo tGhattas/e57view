@@ -14,7 +14,8 @@ const AGENT_HELP = {
   name: 'e57view agent',
   how: 'In the viewer: Agent → Copy agent URL. That copies a page link plus a bearer token. Keep the tab open and POST commands here with the token in an Authorization header. No MCP config required.',
   auth: "Authorization: Bearer <token from Copy agent URL>  (or JSON { token }). The session id names the mailbox; the token is the credential. Sessions expire after 8 hours and are read-only unless the viewer ticks Allow edits.",
-  post: { session: 'session id', cmd: 'state | screenshot | view | section | probe | heightmap | contour | fitplane | distance | inside | measure | pick | set_view | set | regions | entities | register | distance_to | fit | detect | volume | transform | surface | history | stations | open', args: {} },
+  post: { session: 'session id', cmd: 'state | screenshot | view | section | probe | heightmap | contour | fitplane | distance | inside | measure | pick | set_view | set | regions | entities | register | distance_to | fit | detect | volume | mesh | transform | surface | history | stations | open', args: {} },
+  meshes: 'A PLY, OBJ or STL opened in the viewer becomes a layer of triangles rather than points (entities reports kind:"mesh"), drawn alongside the clouds and moved by transform like one. mesh measure gives area and volume with the boundary edge count beside them, because the volume of an open mesh is not an enclosed volume; mesh sample scatters area-weighted points over the triangles into a new point layer; mesh distance measures the active cloud to the nearest triangle of a mesh layer as a scalar field; flip, smooth (Taubin, so the volume stays) and decimate (vertex clustering) edit one; save writes it out.',
   layers: 'Several clouds can be open at once. Every visible one is drawn; exactly one is active, and every other command works on the active one. entities lists, activates, shows, hides, renames, clones, merges and removes them; register (centres | scales | icp) moves the active layer onto a reference; distance_to writes the distance between them as a scalar field on the active layer.',
   units: 'metres, everywhere. Coordinates are local unless a field says global; global = local + state.translation.',
   modelling: {
@@ -54,13 +55,16 @@ const AGENT_HELP = {
     { cmd: 'fit', args: { shape: 'plane', box: { center: [3, 2, 0], half: [2.5, 1.8, 0.02] } } },
     { cmd: 'detect', args: { tolerance: 0.006, minPoints: 3000 } },
     { cmd: 'volume', args: { reference: 'Ground', cell: 0.05 } },
+    { cmd: 'mesh', args: { op: 'measure' } },
+    { cmd: 'mesh', args: { op: 'sample', density: 400 } },
+    { cmd: 'mesh', args: { op: 'distance', mesh: 'design' } },
     { cmd: 'transform', args: { op: 'level' } },
     { cmd: 'history', args: { op: 'undo' } },
     { cmd: 'revoke' },
   ],
   slow: 'A command that takes more than 50 s returns 202 { pending: N }. Collect it later with GET /agent?s=SESSION&n=N.',
   lifetime: 'The session dies with the browser window: the tab revokes its own token as it closes. It also expires 8 hours after it is created, and Stop session revokes it by hand.',
-  note: 'Commands that drop points, write a file, load another scan, move the cloud or spend real time (regions apply, history undo|redo|save, open, surface build, transform) need Allow edits ticked in the viewer tab. Everything under "modelling" is read-only apart from surface build.',
+  note: 'Commands that drop points, write a file, load another scan, move the cloud or spend real time (regions apply, history undo|redo|save, open, surface build, transform, mesh sample|distance|flip|smooth|decimate|save) need Allow edits ticked in the viewer tab. Everything under "modelling" is read-only apart from surface build.',
 };
 
 /** Constant-time compare of sha256(token) against the stored hash. */
@@ -89,6 +93,7 @@ function needsEdit(cmd, args = {}) {
   if (cmd === 'transform') return (args.op ?? 'get') !== 'get';
   if (cmd === 'entities') return ['add', 'remove', 'clone', 'merge'].includes(args.op ?? 'list');
   if (cmd === 'register' || cmd === 'distance_to' || cmd === 'detect' || cmd === 'volume') return true;
+  if (cmd === 'mesh') return !['list', 'measure', 'show'].includes(args.op ?? 'measure');
   return false;
 }
 

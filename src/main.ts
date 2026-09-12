@@ -6,6 +6,8 @@ import { AgentLink } from './agent';
 import { History, cloneRegions } from './history';
 import { blankState, type Entity } from './entities';
 import { sniff, asciiGuess, ASCII_EXT } from '../shared/importers.mjs';
+import { sniffMesh, parseMesh, meshToStl, MESH_EXT } from '../shared/meshio.mjs';
+import { measureMesh, flipMesh, smoothMesh, decimateMesh, samplePoints, recomputeNormals, type MeshMeasure } from './meshops';
 import type { MeshData } from './meshview';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -55,7 +57,7 @@ function captureActive() {
   st.meta = meta; st.file = currentFile; st.handle = currentHandle; st.cacheKey = cacheKey;
   st.fromCache = fromCache; st.cropped = cropped;
   st.histogram = histogram; st.axisHist = axisHist; st.axisCube = axisCube;
-  st.sfName = sfName; st.meshData = meshData; st.meshInfo = meshInfo;
+  st.sfName = sfName; st.meshData = meshData; st.meshInfo = meshInfo; st.meshFile = meshFile;
   st.dirtyField = dirtyMark.field; st.dirtySurface = dirtyMark.surface;
 }
 function restoreActive() {
@@ -63,7 +65,7 @@ function restoreActive() {
   meta = st.meta; currentFile = st.file; currentHandle = st.handle; cacheKey = st.cacheKey;
   fromCache = st.fromCache; cropped = st.cropped;
   histogram = st.histogram; axisHist = st.axisHist; axisCube = st.axisCube;
-  sfName = st.sfName; meshData = st.meshData; meshInfo = st.meshInfo;
+  sfName = st.sfName; meshData = st.meshData; meshInfo = st.meshInfo; meshFile = st.meshFile;
   dirtyMark.field = st.dirtyField; dirtyMark.surface = st.dirtySurface;
 }
 
@@ -175,7 +177,7 @@ function resetForLoad(name: string, keepOthers = false) {
   histogram = new Uint32Array(256); axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)]; axisCube = null;
   sections.length = 0; deletes.length = 0; cropUI.on = false; cropState.role = 'keep'; syncCropRoleUI();
   prismFull.clear(); countCache.clear();
-  meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
+  meshData = null; meshFile = ''; viewer.setMesh(null); document.body.classList.toggle('has-mesh', viewer.anyMesh);
   viewer.setModel(new THREE.Matrix4()); viewer.setModelGizmo(false);
   sfName = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
   ($('k-color-sf') as HTMLOptionElement).disabled = true; $<HTMLInputElement>('k-cropon').checked = false;
@@ -185,6 +187,30 @@ function resetForLoad(name: string, keepOthers = false) {
 }
 async function openFile(f: File, handle: any = null, add = false) {
   if (f.size < 48) { fail('That file is too small to be a scan.'); return; }
+  // A file with faces in it is a mesh, and a mesh is a layer of its own kind. PLY is the one
+  // format that can be either, so the decision is made on the header rather than the name.
+  try {
+    const head = new Uint8Array(await f.slice(0, 65536).arrayBuffer());
+    if (looksLikeMesh(f.name, head)) {
+      if (!add) {
+        for (const e of viewer.entities.slice()) if (e.id !== viewer.activeId) viewer.removeEntity(e.id);
+        viewer.clear();
+        viewer.active.state = blankState(); viewer.active.name = 'Scan 1';
+        viewer.setMesh(null); viewer.setModel(new THREE.Matrix4()); viewer.setModelGizmo(false);
+        void hist.clear(); mergedNote = ''; frameOrigin = null; clearDirty(true);
+        meshData = null; meshInfo = null; meshFile = ''; meta = null; currentFile = null; currentHandle = null;
+        document.body.classList.remove('has-mesh', 'has-sf', 'sf-filtering');
+        sections.length = 0; deletes.length = 0; cropUI.on = false; cropState.role = 'keep'; syncCropRoleUI();
+        prismFull.clear(); countCache.clear();
+        syncRegions(); updateMeasureList(); setTool('none'); renderSectionList(); updateHistUI();
+      }
+      $('drop').classList.add('hidden'); $('err').classList.add('hidden');
+      try { await importMesh(f); } catch (e: any) { fail('Could not read that mesh: ' + (e?.message ?? e)); return; }
+      $('loading').classList.add('hidden');
+      renderLayers(); updateNames(); updateCacheUI();
+      return;
+    }
+  } catch { /* unreadable head: fall through and let the cloud path report it */ }
   if (add) {
     // a new layer, activated so the load lands in it, with the others left alone
     captureActive();
@@ -556,9 +582,11 @@ function activateEntity(id: string) {
 }
 /** Everything that describes "the" cloud has to be repointed at the newly active one. */
 function afterEntitySwitch() {
-  viewer.setMesh(meshData, viewer.active.state.meshBase.clone());
-  document.body.classList.toggle('has-mesh', !!meshData?.idx.length);
-  setDisplay(meshData?.idx.length ? viewer.display : 'points');
+  // Each layer keeps its own uploaded surface, so switching re-points the UI rather than
+  // re-uploading anything.
+  document.body.classList.toggle('has-mesh', viewer.anyMesh);
+  setDisplay(viewer.anyMesh ? viewer.display : 'points');
+  refreshMeshUI();
   viewer.setStations((meta?.stations ?? []) as Station[], meta?.scans?.[0]?.translation ?? [0, 0, 0]);
   $('k-stations').parentElement!.classList.toggle('hidden', !(meta?.stations?.length));
   const hasSf = viewer.cells.hasScalarField;
@@ -585,7 +613,7 @@ function renderLayers() {
     li.classList.toggle('act', e.id === viewer.activeId);
     li.innerHTML = `<span class="eye${e.visible ? ' on' : ''}" title="Show or hide">${e.visible ? '◉' : '○'}</span>`
       + `<span class="nm" title="Click to make active, double-click to rename">${layerName(e)}</span> `
-      + `<span class="mono">${fmt(e.points)} pts</span>`
+      + `<span class="mono">${e.isMesh ? `${fmt(e.mesh.triangles)} tris` : `${fmt(e.points)} pts`}</span>`
       + (viewer.entities.length > 1 ? `<span class="x" title="Remove this layer">✕</span>` : '');
     li.querySelector('.eye')!.addEventListener('click', ev => {
       ev.stopPropagation();
@@ -614,7 +642,7 @@ function renderLayers() {
   $<HTMLInputElement>('k-layertint').checked = viewer.active.tint.on;
   $<HTMLInputElement>('k-layercolor').value = viewer.active.tint.color;
   ($('k-layermerge') as HTMLButtonElement).disabled = viewer.visibleEntities.length < 2;
-  refreshRegisterUI(); refreshVolumeRefs();
+  refreshRegisterUI(); refreshVolumeRefs(); refreshMeshUI();
 }
 async function removeLayer(e: Entity, ask = true) {
   if (viewer.entities.length <= 1) return;
@@ -640,10 +668,10 @@ $('k-layeradd').addEventListener('click', () => addFile());
 async function addFile() {
   const anyWin = window as any;
   if (anyWin.showOpenFilePicker) {
-    try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las', '.laz', '.ptx', ...ASCII_EXT.map(e => '.' + e)] } }] }); openFile(await h.getFile(), h, true); } catch {}
+    try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las', '.laz', '.ptx', '.obj', '.stl', ...ASCII_EXT.map(e => '.' + e)] } }] }); openFile(await h.getFile(), h, true); } catch {}
     return;
   }
-  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = ['.e57', '.ply', '.las', '.laz', '.ptx', ...ASCII_EXT.map(e => '.' + e)].join(',');
+  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = ['.e57', '.ply', '.las', '.laz', '.ptx', '.obj', '.stl', ...ASCII_EXT.map(e => '.' + e)].join(',');
   inp.onchange = () => inp.files?.[0] && openFile(inp.files[0], null, true); inp.click();
 }
 $('k-layertint').addEventListener('change', e => {
@@ -2635,7 +2663,8 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
     meshData = { pos: done.pos, nrm: done.nrm, col: done.col, idx: done.idx };
     const st0 = done.stats;
     viewer.setMesh(meshData, builtWith);
-    document.body.classList.toggle('has-mesh', !!meshData.idx.length);
+    document.body.classList.toggle('has-mesh', viewer.anyMesh);
+    refreshMeshUI();
     dirtyMark.surface = done.stats.triangles || 0;
     meshInfo = {
       triangles: st0.triangles || 0, vertices: st0.vertices || 0,
@@ -2656,28 +2685,376 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
 }
 $('k-mbuild').addEventListener('click', () => buildMesh().catch(e => { $('v-mesh').textContent = 'failed: ' + (e?.message ?? e); }));
 $('k-mclear').addEventListener('click', () => {
-  meshData = null; meshInfo = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
-  dirtyMark.surface = 0;
+  meshData = null; meshInfo = null; meshFile = ''; viewer.setMesh(null);
+  document.body.classList.toggle('has-mesh', viewer.anyMesh);
+  dirtyMark.surface = 0; refreshMeshUI(); renderLayers();
   sfName = ''; dirtyMark.field = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
   ($('k-color-sf') as HTMLOptionElement).disabled = true;
   setDisplay('points'); $('v-mesh').textContent = '—';
 });
 $('k-msave').addEventListener('click', async () => {
   if (!meshData) return;
-  const fmtSel = $<HTMLSelectElement>('k-mfmt').value as 'ply' | 'obj';
+  const fmtSel = $<HTMLSelectElement>('k-mfmt').value as 'ply' | 'obj' | 'stl';
   const base = (currentFile?.name ?? 'scan').replace(/\.(e57|ply|las)$/i, '') + '-surface';
   const handle = await pickSaveHandle(`${base}.${fmtSel}`, fmtSel);
   if (handle === null) return;
   busy('Writing the surface…'); await tick();
   try {
-    const t = (meta?.scans?.[0]?.translation ?? [0, 0, 0]) as [number, number, number];
-    const blob = fmtSel === 'ply' ? viewer.mesh.toPly(meshData, t) : viewer.mesh.toObj(meshData, t);
+    const blob = meshBlob(fmtSel);
     const file = new File([blob], `${base}.${fmtSel}`);
     await writeOutFile({ file, name: file.name, scratch: '' }, handle);
     $('v-mesh').textContent = `saved ${file.name} · ${mb(blob.size)}`;
   } catch (e: any) { fail('Could not save the surface: ' + (e?.message ?? e)); }
   finally { hideBusy(); }
 });
+
+
+// ------------------------------------------------------------------ meshes as layers
+//
+// A mesh is a layer like a cloud is. That is the whole of Part 12: the renderer already drew
+// a surface, but only the active layer's and only one built from the active layer's points.
+// Importing PLY, OBJ and STL means a layer can now be triangles with no points at all, which
+// is why `Entity` owns a `MeshView` and the draw loop walks every visible one.
+let meshFile = '';
+const meshSettings = { iterations: 5, taubin: true, cellCm: 10, sampleMode: 'count' as 'count' | 'density', sampleVal: 200000 };
+
+/** Every layer that has triangles. */
+function meshEntities(): Entity[] { return viewer.entities.filter(e => e.mesh.hasMesh); }
+/** The world matrix the active layer's triangles are drawn through. */
+function meshModel(): THREE.Matrix4 { return viewer.mesh.model.clone(); }
+
+function refreshMeshUI() {
+  const sel = $<HTMLSelectElement>('k-meshref');
+  const list = meshEntities();
+  const want = list.map(e => e.id).join('|');
+  if (sel.dataset.ids !== want) {
+    sel.innerHTML = '';
+    for (const e of list) { const o = document.createElement('option'); o.value = e.id; o.textContent = layerName(e); sel.appendChild(o); }
+    sel.dataset.ids = want;
+  }
+  ($('k-meshdist') as HTMLButtonElement).disabled = !list.length || !viewer.loaded;
+  const have = !!meshData?.idx.length;
+  for (const id of ['k-meshmeasure', 'k-meshflip', 'k-meshsmooth', 'k-meshdecim', 'k-meshsample', 'k-meshsave'])
+    ($(id) as HTMLButtonElement).disabled = !have;
+  if (!have && !list.length) $('v-meshinfo').textContent = 'no mesh layer';
+}
+function syncMeshOpLabels() {
+  $('v-meshiter').textContent = String(meshSettings.iterations);
+  $('v-meshcell').textContent = `${meshSettings.cellCm.toFixed(1)} cm`;
+}
+$('k-meshiter').addEventListener('input', e => { meshSettings.iterations = Number((e.target as HTMLInputElement).value); syncMeshOpLabels(); });
+$('k-meshcell').addEventListener('input', e => { meshSettings.cellCm = Number((e.target as HTMLInputElement).value); syncMeshOpLabels(); });
+$('k-meshtaubin').addEventListener('change', e => { meshSettings.taubin = (e.target as HTMLInputElement).checked; });
+$('k-meshsmode').addEventListener('change', e => {
+  meshSettings.sampleMode = (e.target as HTMLSelectElement).value as 'count' | 'density';
+  const v = $<HTMLInputElement>('k-meshsval');
+  v.value = String(meshSettings.sampleVal = meshSettings.sampleMode === 'count' ? 200000 : 2000);
+});
+$('k-meshsval').addEventListener('change', e => { meshSettings.sampleVal = Math.max(1, Number((e.target as HTMLInputElement).value) || 1); });
+syncMeshOpLabels();
+
+/** Does this file hold triangles? A PLY can be either, and the header says which. */
+function looksLikeMesh(name: string, head: Uint8Array): 'ply' | 'obj' | 'stl' | null {
+  const k = sniffMesh(name, head);
+  if (k !== 'ply') return k;
+  const text = new TextDecoder('latin1').decode(head);
+  const m = /element\s+face\s+(\d+)/.exec(text);
+  return m && Number(m[1]) > 0 ? 'ply' : null;
+}
+
+/** Open a PLY, OBJ or STL as a layer of triangles.
+ *
+ *  The mesh comes back in a local frame with its shift reported separately, the same contract
+ *  the cloud importers use, and lands through the layer's model matrix rather than being
+ *  baked — so a mesh and a scan of the same building can be nudged onto each other with the
+ *  transform tools exactly like two scans. */
+async function importMesh(f: File): Promise<Entity | null> {
+  busy(`Reading ${f.name}…`); await tick();
+  try {
+    const buf = await f.arrayBuffer();
+    const head = new Uint8Array(buf, 0, Math.min(65536, buf.byteLength));
+    const kind = sniffMesh(f.name, head);
+    if (!kind) throw new Error(`${f.name} is not a mesh e57view reads. It takes PLY, OBJ and STL.`);
+    const raw = parseMesh(kind, buf);
+    const nv = raw.pos.length / 3;
+    const data: MeshData = {
+      pos: raw.pos,
+      nrm: raw.nrm.length === nv * 3 ? raw.nrm : new Float32Array(nv * 3),
+      col: raw.col.length === nv * 3 ? raw.col : new Uint8Array(nv * 3).fill(200),
+      idx: raw.idx,
+    };
+    let withNormal = 0;
+    for (let i = 0; i < nv; i++) if (Math.abs(data.nrm[i * 3]) + Math.abs(data.nrm[i * 3 + 1]) + Math.abs(data.nrm[i * 3 + 2]) > 1e-6) withNormal++;
+    const hadNormals = withNormal > nv * 0.5;
+    if (!hadNormals) data.nrm = recomputeNormals(data);
+
+    captureActive();
+    // an empty viewer has one placeholder layer; fill that rather than leaving it behind
+    const reuse = viewer.entities.length === 1 && !viewer.entities[0].hasContent;
+    const name = f.name.replace(/\.[^.]+$/, '');
+    const e = reuse ? viewer.active : viewer.addEntity(name);
+    e.name = name;
+    viewer.activeId = e.id;
+    restoreActive();
+
+    if (!frameOrigin) frameOrigin = [...raw.origin];
+    const d = raw.origin.map((v, i) => v - frameOrigin![i]);
+    meshData = data; meshFile = f.name;
+    currentFile = f; currentHandle = null; cacheKey = ''; fromCache = false; cropped = false;
+    histogram = new Uint32Array(256); axisCube = null;
+    meta = {
+      scans: [{ name: f.name, points: 0, translation: frameOrigin.slice(), cartesian: true,
+                hasColor: raw.col.length === nv * 3, hasIntensity: false, hasNormals: hadNormals, bounds: null }],
+      stations: [],
+    };
+    viewer.setMesh(data, new THREE.Matrix4());
+    viewer.setModel(new THREE.Matrix4().makeTranslation(d[0], d[1], d[2]));
+    const st = measureMesh(data, e.mesh.model);
+    meshInfo = { triangles: st.triangles, vertices: st.vertices, boundaryEdges: st.boundaryEdges, voxelCm: 0, fromNormals: hadNormals };
+    dirtyMark.surface = 0;              // it came from a file, so nothing is unsaved yet
+    captureActive();
+    document.body.classList.add('has-mesh');
+    viewer.setDisplay(viewer.loadedAll > 0 ? 'both' : 'mesh');
+    revealViewport();
+    afterEntitySwitch();
+    viewer.applyZRange(); syncZLabels(); viewer.fit();
+    const note = raw.badIndices ? ` · ${fmt(raw.badIndices)} faces dropped for indices past the end` : '';
+    $('v-meshinfo').textContent = `${f.name} · ${fmt(st.triangles)} triangles · ${fmt(st.vertices)} vertices`
+      + ` · ${hadNormals ? 'normals from the file' : 'normals computed'}${d.some(v => Math.abs(v) > 1e-9) ? ` · placed ${d.map(v => v.toFixed(2)).join(', ')} m from ${layerName(viewer.entities[0])}` : ''}${note}`;
+    $('tb-points').textContent = `${fmt(st.triangles)} triangles · ${kind.toUpperCase()}`;
+    return e;
+  } finally { hideBusy(); }
+}
+$('k-meshopen').addEventListener('click', () => pickMeshFile());
+async function pickMeshFile() {
+  const anyWin = window as any;
+  const accept = MESH_EXT.map(x => '.' + x);
+  if (anyWin.showOpenFilePicker) {
+    try {
+      const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Mesh', accept: { 'application/octet-stream': accept } }] });
+      await importMesh(await h.getFile()).catch((e: any) => fail('Could not read that mesh: ' + (e?.message ?? e)));
+    } catch {}
+    return;
+  }
+  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = accept.join(',');
+  inp.onchange = () => { const f = inp.files?.[0]; if (f) importMesh(f).catch((e: any) => fail('Could not read that mesh: ' + (e?.message ?? e))); };
+  inp.click();
+}
+
+/** Swap the active layer's triangles for a new set, keeping the frame they are drawn in. */
+function replaceMesh(next: MeshData) {
+  const base = viewer.active.state.meshBase.clone();
+  meshData = next;
+  viewer.setMesh(next, base);
+  const st = measureMesh(next, viewer.mesh.model);
+  meshInfo = { triangles: st.triangles, vertices: st.vertices, boundaryEdges: st.boundaryEdges, voxelCm: meshInfo?.voxelCm ?? 0, fromNormals: meshInfo?.fromNormals ?? false };
+  dirtyMark.surface = st.triangles;      // edited triangles are unsaved work
+  captureActive();
+  renderLayers();
+  viewer.touch();
+  return st;
+}
+
+/** Area, volume and how closed the mesh is, in the world it is drawn in. */
+function measureActiveMesh(): MeshMeasure | null {
+  if (!meshData?.idx.length) return null;
+  const st = measureMesh(meshData, meshModel());
+  const vol = st.closed
+    ? `volume ${st.volume.toFixed(3)} m³`
+    : `volume ${st.volume.toFixed(3)} m³ (open: ${fmt(st.boundaryEdges)} boundary edges, so this is only what the divergence sum gives)`;
+  $('v-meshinfo').textContent = `${fmt(st.triangles)} triangles · ${fmt(st.vertices)} vertices · area ${st.area.toFixed(3)} m² · ${vol}`
+    + (st.nonManifoldEdges ? ` · ${fmt(st.nonManifoldEdges)} non-manifold edges` : '')
+    + (st.degenerate ? ` · ${fmt(st.degenerate)} zero-area triangles` : '');
+  return st;
+}
+$('k-meshmeasure').addEventListener('click', () => measureActiveMesh());
+$('k-meshflip').addEventListener('click', () => {
+  if (!meshData?.idx.length) return;
+  const st = replaceMesh(flipMesh(meshData));
+  $('v-meshinfo').textContent = `flipped ${fmt(st.triangles)} triangles · the other side is now the front`;
+});
+$('k-meshsmooth').addEventListener('click', () => smoothActiveMesh());
+function smoothActiveMesh(opts: { iterations?: number; taubin?: boolean } = {}) {
+  if (!meshData?.idx.length) return null;
+  const it = Math.max(1, Math.round(opts.iterations ?? meshSettings.iterations));
+  const taubin = opts.taubin ?? meshSettings.taubin;
+  const before = measureMesh(meshData, meshModel());
+  const t0 = performance.now();
+  const st = replaceMesh(smoothMesh(meshData, it, 0.5, taubin ? -0.53 : 0));
+  const dv = before.volume > 1e-9 ? ((st.volume - before.volume) / before.volume) * 100 : 0;
+  $('v-meshinfo').textContent = `${taubin ? 'Taubin' : 'Laplacian'} × ${it} · area ${before.area.toFixed(3)} → ${st.area.toFixed(3)} m²`
+    + ` · volume ${dv >= 0 ? '+' : ''}${dv.toFixed(2)}% · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+  return { ...st, volumeChangePct: dv, iterations: it, taubin };
+}
+$('k-meshdecim').addEventListener('click', () => decimateActiveMesh());
+function decimateActiveMesh(opts: { cellCm?: number } = {}) {
+  if (!meshData?.idx.length) return null;
+  const cm = Math.max(0.1, opts.cellCm ?? meshSettings.cellCm);
+  const before = measureMesh(meshData, meshModel());
+  const t0 = performance.now();
+  // the cell is given in world centimetres; the vertices live in the layer's local frame
+  const scale = viewer.cells.modelScale || 1;
+  const st = replaceMesh(decimateMesh(meshData, (cm / 100) / scale));
+  $('v-meshinfo').textContent = `vertex clustering at ${cm.toFixed(1)} cm · ${fmt(before.triangles)} → ${fmt(st.triangles)} triangles`
+    + ` (${((st.triangles / Math.max(before.triangles, 1)) * 100).toFixed(1)}%) · area ${before.area.toFixed(3)} → ${st.area.toFixed(3)} m²`
+    + ` · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+  return { ...st, before: before.triangles, cellCm: cm };
+}
+
+/** Turn arbitrary world-space points into octree leaves on a renderer.
+ *
+ *  Points are binned onto a coarse grid first. Handing the renderer one leaf holding points
+ *  from everywhere would still draw correctly, but every leaf's box would cover the whole
+ *  model, so the level-of-detail pass could never reject one — and the 16-bit quantisation
+ *  inside a leaf would be spread over the whole extent instead of a few metres. */
+function enqueueWorldPoints(cells: typeof viewer.cells, xyz: Float64Array, rgb: Uint8Array, nrm: Float32Array | null, intensity = 180) {
+  const n = xyz.length / 3;
+  if (!n) return 0;
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < n; i++) for (let a = 0; a < 3; a++) { const v = xyz[i * 3 + a]; if (v < mn[a]) mn[a] = v; if (v > mx[a]) mx[a] = v; }
+  const span = Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2], 1e-3);
+  const side = Math.max(1, Math.ceil(Math.cbrt(n / 40000)));
+  const cell = span / side;
+  const bins = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const gx = Math.min(side - 1, Math.floor((xyz[i * 3] - mn[0]) / cell));
+    const gy = Math.min(side - 1, Math.floor((xyz[i * 3 + 1] - mn[1]) / cell));
+    const gz = Math.min(side - 1, Math.floor((xyz[i * 3 + 2] - mn[2]) / cell));
+    const k = (gx * side + gy) * side + gz;
+    let b = bins.get(k); if (!b) { b = []; bins.set(k, b); }
+    b.push(i);
+  }
+  let made = 0;
+  for (const list of bins.values()) {
+    for (let at = 0; at < list.length; at += 400_000) {
+      const part = list.slice(at, at + 400_000);
+      const c = part.length;
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (const i of part) for (let a = 0; a < 3; a++) { const v = xyz[i * 3 + a]; if (v < lo[a]) lo[a] = v; if (v > hi[a]) hi[a] = v; }
+      const size = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 1e-3) * 1.0001;
+      const out = new Uint8Array(c * REC);
+      const o16 = new Uint16Array(out.buffer);
+      const q = 65535 / size;
+      for (let j = 0; j < c; j++) {
+        const i = part[j], b = j * 7, o = j * REC;
+        for (let a = 0; a < 3; a++) o16[b + a] = Math.max(0, Math.min(65535, Math.round((xyz[i * 3 + a] - lo[a]) * q)));
+        out[o + 6] = rgb[i * 3]; out[o + 7] = rgb[i * 3 + 1]; out[o + 8] = rgb[i * 3 + 2];
+        out[o + 9] = intensity;
+        if (nrm) {
+          out[o + 10] = Math.max(-127, Math.min(127, Math.round(nrm[i * 3] * 127))) & 0xff;
+          out[o + 11] = Math.max(-127, Math.min(127, Math.round(nrm[i * 3 + 1] * 127))) & 0xff;
+          out[o + 12] = Math.max(-127, Math.min(127, Math.round(nrm[i * 3 + 2] * 127))) & 0xff;
+        } else out[o + 12] = 127;         // the "no normal" placeholder
+      }
+      cells.enqueue([out.buffer as ArrayBuffer], c, {
+        origin: lo as [number, number, number], size,
+        bmin: lo as [number, number, number], bmax: hi as [number, number, number],
+      });
+      made++;
+    }
+  }
+  cells.flushUploads(Infinity);
+  return made;
+}
+
+$('k-meshsample').addEventListener('click', () => sampleMeshPoints().catch(e => { $('v-meshinfo').textContent = 'sampling failed: ' + (e?.message ?? e); }));
+/** Scatter points over the active layer's triangles into a new point layer. */
+async function sampleMeshPoints(opts: { count?: number; density?: number } = {}) {
+  if (!meshData?.idx.length) throw new Error('the active layer has no mesh');
+  const model = meshModel();
+  const st = measureMesh(meshData, model);
+  let count = opts.count ?? 0;
+  const density = opts.density ?? (meshSettings.sampleMode === 'density' ? meshSettings.sampleVal : 0);
+  if (!count) count = density > 0 ? Math.round(density * st.area) : meshSettings.sampleVal;
+  count = Math.max(1, Math.min(40e6, Math.round(count)));
+  busy(`Sampling ${fmt(count)} points…`); await tick();
+  try {
+    const s = samplePoints(meshData, model, count);
+    captureActive();
+    const src = viewer.active;
+    const e = viewer.addEntity(`${layerName(src)} points`);
+    enqueueWorldPoints(e.cells, s.xyz, s.rgb, s.nrm);
+    e.state = { ...blankState(), meta: src.state.meta, cropped: true };
+    e.robust = null;
+    e.tint = { on: false, color: '#8fd48f' };
+    viewer.activeId = e.id;
+    restoreActive();
+    viewer.retightenBounds();
+    afterEntitySwitch();
+    viewer.applyZRange(); syncZLabels();
+    const dens = s.count / Math.max(s.area, 1e-9);
+    $('v-meshinfo').textContent = `sampled ${fmt(s.count)} points over ${s.area.toFixed(3)} m² · ${dens.toFixed(1)} points per m²`
+      + ` · mean spacing ${(Math.sqrt(1 / dens) * 100).toFixed(1)} cm`;
+    $('tb-points').textContent = `${fmt(s.count)} pts · sampled from a mesh`;
+    return { points: s.count, area: r6(s.area), density: r6(dens), layer: e.id, name: e.name };
+  } finally { hideBusy(); }
+}
+
+$('k-meshdist').addEventListener('click', () => distanceToMesh().catch(e => { $('v-meshinfo').textContent = 'distance failed: ' + (e?.message ?? e); }));
+/** Distance from every point of the active cloud to the nearest triangle of a mesh layer.
+ *
+ *  Point-to-triangle, not point-to-nearest-vertex: on a coarse mesh those differ by most of a
+ *  triangle, and it is the triangle that represents the surface. The result is a scalar field
+ *  on the cloud, so the ramp, the histogram and the filter all work on it like any other. */
+async function distanceToMesh(opts: { mesh?: string; signed?: boolean } = {}) {
+  if (!viewer.loaded) throw new Error('the active layer has no points to measure');
+  const id = opts.mesh ?? $<HTMLSelectElement>('k-meshref').value;
+  const target = viewer.entities.find(e => e.id === id && e.mesh.hasMesh)
+    ?? meshEntities().find(e => e.id !== viewer.activeId) ?? meshEntities()[0];
+  if (!target) throw new Error('no layer has a mesh');
+  const md = target.state.meshData;
+  if (!md?.idx.length) throw new Error(`${layerName(target)} has no triangles in memory`);
+  const signed = opts.signed ?? $<HTMLInputElement>('k-meshsigned').checked;
+  // the mesh goes to the worker in world coordinates, where the cloud's points already are
+  const M = target.mesh.model;
+  const pos = new Float32Array(md.pos.length);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < md.pos.length; i += 3) {
+    v.set(md.pos[i], md.pos[i + 1], md.pos[i + 2]).applyMatrix4(M);
+    pos[i] = v.x; pos[i + 1] = v.y; pos[i + 2] = v.z;
+  }
+  try {
+    const r = await runAnalysis('distance_to_mesh', { meshPos: pos, meshIdx: md.idx, signed });
+    hideBusy();
+    setScalarField(`Distance to ${layerName(target)}`, r.data as Float32Array, r.counts);
+    const s = viewer.cells.scalarStats();
+    $('v-meshinfo').textContent = `distance to ${layerName(target)}${signed ? ' (signed)' : ''} · `
+      + (s ? `${(s.min * 1000).toFixed(1)} to ${(s.max * 1000).toFixed(1)} mm over ${fmt(s.n)} values` : 'no values')
+      + ` · ${fmt(r.points)} points`;
+    return { points: r.points, mesh: target.id, meshName: target.name, signed, stats: s ? { min: r6(s.min), max: r6(s.max), values: s.n } : null };
+  } finally { hideBusy(); }
+}
+
+/** Write the active layer's mesh out. The transform is baked here, as it is for a cloud: a
+ *  file is the one place "do not bake" has to end. */
+function meshBlob(fmtSel: 'ply' | 'obj' | 'stl'): Blob {
+  const t = (meta?.scans?.[0]?.translation ?? [0, 0, 0]) as [number, number, number];
+  if (fmtSel === 'ply') return viewer.mesh.toPly(meshData!, t);
+  if (fmtSel === 'obj') return viewer.mesh.toObj(meshData!, t);
+  const M = viewer.mesh.model;
+  const v = new THREE.Vector3();
+  return new Blob([meshToStl(meshData!.pos, meshData!.idx, (x, y, z, out) => {
+    v.set(x, y, z).applyMatrix4(M);
+    out[0] = v.x + t[0]; out[1] = v.y + t[1]; out[2] = v.z + t[2];
+  })], { type: 'application/octet-stream' });
+}
+$('k-meshsave').addEventListener('click', () => saveMesh().catch(e => { $('v-meshinfo').textContent = 'save failed: ' + (e?.message ?? e); }));
+async function saveMesh(fmtIn?: 'ply' | 'obj' | 'stl') {
+  if (!meshData?.idx.length) throw new Error('the active layer has no mesh');
+  const fmtSel = fmtIn ?? ($<HTMLSelectElement>('k-meshfmt').value as 'ply' | 'obj' | 'stl');
+  const base = (meshFile || currentFile?.name || 'mesh').replace(/\.(ply|obj|stl|e57|las|laz)$/i, '');
+  const handle = await pickSaveHandle(`${base}.${fmtSel}`, fmtSel);
+  if (handle === null) return null;
+  busy('Writing the mesh…'); await tick();
+  try {
+    const blob = meshBlob(fmtSel);
+    const file = new File([blob], `${base}.${fmtSel}`);
+    await writeOutFile({ file, name: file.name, scratch: '' }, handle);
+    dirtyMark.surface = 0; captureActive();
+    $('v-meshinfo').textContent = `saved ${file.name} · ${mb(blob.size)} · ${fmt(meshData.idx.length / 3)} triangles`;
+    return { name: file.name, bytes: blob.size, triangles: meshData.idx.length / 3 };
+  } finally { hideBusy(); }
+}
 
 // ------------------------------------------------------------------ export
 let exportTotal = 0;
@@ -2930,7 +3307,8 @@ function entityList() {
       transform: rowMajor(e.cells.model).map(r6),
       tint: e.tint.on ? e.tint.color : null,
       bounds: b.isEmpty() ? null : { min: arr6(b.min.toArray()), max: arr6(b.max.toArray()) },
-      surface: e.state.meshInfo ? { triangles: e.state.meshInfo.triangles } : null,
+      kind: e.isMesh ? 'mesh' as const : 'points' as const,
+      surface: e.state.meshInfo ? { triangles: e.state.meshInfo.triangles, vertices: e.state.meshInfo.vertices, boundaryEdges: e.state.meshInfo.boundaryEdges, file: e.state.meshFile || null } : null,
       scalarField: e.state.sfName || null,
     };
   });
@@ -3579,6 +3957,66 @@ const agent = new AgentLink({
     viewer.render();
     return { ...r, added: r6(r.added), removed: r6(r.removed), net: r6(r.net), area: r6(r.area), units: 'm³', note: $('v-volume').textContent };
   },
+  mesh: async (a) => {
+    const op = String(a.op ?? 'measure');
+    if (op === 'list') {
+      return {
+        meshes: meshEntities().map(e => ({ id: e.id, name: e.name, triangles: e.mesh.triangles, vertices: e.mesh.vertices, visible: e.visible, active: e.id === viewer.activeId, file: e.state.meshFile || null })),
+        active: viewer.activeId, activeHasMesh: !!meshData?.idx.length,
+      };
+    }
+    if (op === 'import') throw new Error('a mesh file has to be chosen in the viewer (Mesh -> Import mesh…); a page cannot open a file an agent names');
+    if (op === 'show') { setDisplay(a.mode === 'mesh' || a.mode === 'both' ? a.mode : 'points'); viewer.render(); return { display: viewer.display, triangles: viewer.mesh.triangles }; }
+    if (!meshData?.idx.length) throw new Error('the active layer has no mesh — activate a mesh layer first, or build a surface');
+    if (op === 'measure') {
+      const st = measureActiveMesh()!;
+      return {
+        triangles: st.triangles, vertices: st.vertices,
+        area: r6(st.area), volume: r6(st.volume), closed: st.closed,
+        boundaryEdges: st.boundaryEdges, nonManifoldEdges: st.nonManifoldEdges, degenerate: st.degenerate,
+        bounds: { min: arr6(st.bbox.min), max: arr6(st.bbox.max) },
+        units: 'm', note: st.closed ? 'closed mesh: the volume is the enclosed volume'
+          : 'open mesh: the volume is only the divergence sum, which is not an enclosed volume — close the holes or treat it as area only',
+      };
+    }
+    if (op === 'flip') { const st = replaceMesh(flipMesh(meshData)); viewer.render(); return { triangles: st.triangles, flipped: true }; }
+    if (op === 'smooth') {
+      const r = smoothActiveMesh({ iterations: a.iterations !== undefined ? Number(a.iterations) : undefined, taubin: a.taubin !== undefined ? !!a.taubin : undefined })!;
+      viewer.render();
+      return { triangles: r.triangles, vertices: r.vertices, area: r6(r.area), volume: r6(r.volume), volumeChangePct: r6(r.volumeChangePct), iterations: r.iterations, taubin: r.taubin };
+    }
+    if (op === 'decimate') {
+      const r = decimateActiveMesh({ cellCm: a.cellCm !== undefined ? Number(a.cellCm) : a.cell !== undefined ? Number(a.cell) * 100 : undefined })!;
+      viewer.render();
+      return { triangles: r.triangles, before: r.before, vertices: r.vertices, area: r6(r.area), cellCm: r.cellCm, method: 'vertex clustering' };
+    }
+    if (op === 'sample') {
+      const r = await sampleMeshPoints({ count: a.count !== undefined ? Number(a.count) : undefined, density: a.density !== undefined ? Number(a.density) : undefined });
+      viewer.render();
+      return { ...r, entities: entityList(), active: viewer.activeId };
+    }
+    if (op === 'distance') {
+      let id: string | undefined;
+      if (a.mesh !== undefined && a.mesh !== null) {
+        const e = viewer.entities.find(x => (x.id === String(a.mesh) || x.name === String(a.mesh)) && x.mesh.hasMesh);
+        if (!e) throw new Error(`no mesh layer called ${a.mesh}. Have: ${meshEntities().map(x => `${x.id} (${x.name})`).join(', ') || 'none'}`);
+        id = e.id;
+      }
+      const r = await distanceToMesh({ mesh: id, signed: a.signed !== undefined ? !!a.signed : undefined });
+      viewer.render();
+      return { ...r, field: sfName, note: 'point-to-triangle distance, written as a scalar field on the active layer' };
+    }
+    if (op === 'save') {
+      const fmtSel = (String(a.format ?? 'ply').toLowerCase()) as 'ply' | 'obj' | 'stl';
+      if (!['ply', 'obj', 'stl'].includes(fmtSel)) throw new Error('format must be ply, obj or stl');
+      const blob = meshBlob(fmtSel);
+      const base = (meshFile || currentFile?.name || 'mesh').replace(/\.(ply|obj|stl|e57|las|laz)$/i, '');
+      const transferId = (Math.random() * 0xffffffff) >>> 0; const CH = 4 * 1024 * 1024; let seq = 0;
+      for (let off = 0; off < blob.size; off += CH) { const buf = new Uint8Array(await blob.slice(off, off + CH).arrayBuffer()); agent.sendChunk(transferId, seq++, buf); await tick(); }
+      return { transferId, name: `${base}.${fmtSel}`, bytes: blob.size, triangles: meshData.idx.length / 3 };
+    }
+    throw new Error(`unknown mesh op: ${op}. Use list, measure, flip, smooth, decimate, sample, distance, show or save.`);
+  },
   fit: async (a) => {
     if (a.box) { const r = regionFrom(a.box, 'fit-region'); sections.push(r); syncRegions(); viewer.setActiveRegion(r.id); renderSectionList(); }
     const kind = String(a.shape ?? 'plane');
@@ -3654,6 +4092,9 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   if (cmd === 'entities') return ['add', 'remove', 'clone', 'merge'].includes(String(a.op ?? 'list'));
   if (cmd === 'register' || cmd === 'distance_to') return true;
   if (cmd === 'detect' || cmd === 'volume') return true;               // real time, and it writes a scalar field
+  // reading a mesh's numbers is free; editing it, sampling it into a new layer or measuring a
+  // cloud against it is not
+  if (cmd === 'mesh') return !['list', 'measure', 'show'].includes(String(a.op ?? 'measure'));
   return false;
 }
 /** An agent reply is written into a Firestore document, so it must be small and plain.
@@ -3782,10 +4223,10 @@ if (sessionParam) import('./session').then(m => { sessionMod = m; startRemoteSes
 async function pickFile() {
   const anyWin = window as any;
   if (anyWin.showOpenFilePicker) {
-    try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las', '.laz', '.ptx', ...ASCII_EXT.map(e => '.' + e)] } }] }); openFile(await h.getFile(), h); } catch {}
+    try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las', '.laz', '.ptx', '.obj', '.stl', ...ASCII_EXT.map(e => '.' + e)] } }] }); openFile(await h.getFile(), h); } catch {}
     return;
   }
-  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = ['.e57', '.ply', '.las', '.laz', '.ptx', ...ASCII_EXT.map(e => '.' + e)].join(',');
+  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = ['.e57', '.ply', '.las', '.laz', '.ptx', '.obj', '.stl', ...ASCII_EXT.map(e => '.' + e)].join(',');
   inp.onchange = () => inp.files?.[0] && openFile(inp.files[0]); inp.click();
 }
 /** Open another scan: the same picker the start screen uses, behind the unsaved-work guard. */
@@ -3878,4 +4319,8 @@ refreshCachedList();
   activateEntity, cloneActive, mergeIntoActive, renderLayers, entityList, setReference,
   matchCentres, matchScales, runIcp, distanceToReference, removeLayer, addFile,
   get entities() { return viewer.entities; }, get activeId() { return viewer.activeId; },
-  get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; } };
+  get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; },
+  agentRun: (cmd: string, args: any) => agent.run(cmd, args),
+  importMesh, measureActiveMesh, smoothActiveMesh, decimateActiveMesh, sampleMeshPoints, distanceToMesh,
+  replaceMesh, flipMesh, meshEntities, meshBlob, saveMesh, refreshMeshUI, setDisplay,
+  get meshFile() { return meshFile; }, get meshInfo() { return meshInfo; } };

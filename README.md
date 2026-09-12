@@ -105,7 +105,7 @@ of the same room register to **0.000 mm** and their distance field reads **0.00 
   the preview dims whichever half is going so what you see is what Apply will leave. The
   confirmation counts both sides — *"roughly 6,050 points removed, 6,050 kept"*. The file on
   disk is never touched; *Undo* puts the points back and *Reload* brings everything back.
-- **Formats in** — **E57**, **PLY**, **LAS**, **LAZ**, **PTX** and plain text
+- **Formats in** — **E57**, **PLY**, **LAS**, **LAZ**, **PTX**, mesh **PLY/OBJ/STL** and plain text
   (`.txt .xyz .pts .asc .csv .neu`). LAZ is decompressed a chunk at a time by laz-rs compiled
   to WebAssembly, through the same ranged-read shim the E57 path uses, so a multi-gigabyte LAZ
   never enters wasm memory whole; COPC files read as ordinary LAZ. A LAS or LAZ classification
@@ -232,6 +232,22 @@ of the same room register to **0.000 mm** and their distance field reads **0.00 
   2.5D difference against another layer or a flat plane, with cut and fill reported separately
   because their sum hides both: measured against a pyramid and a half-cylinder whose volumes
   are arithmetic, **64.202 m³ against 64.274 m³ — 0.11%**.
+- **Meshes as layers** — a **PLY**, **OBJ** or **STL** with faces in it opens as a layer of
+  triangles rather than points: it appears in the Layers list with its triangle count, carries
+  its own transform so the move/rotate/level tools place it, and **every visible layer's
+  surface is drawn**, so a design model and a scan of what was built can be looked at
+  together. *Measure* gives surface area and volume through the layer's transform with the
+  boundary edge count beside them — a unit cube reads **6.000 m² and 1.000 m³** — and an open
+  mesh is called open rather than quietly returning a volume that is not one. *Sample points*
+  scatters area-weighted points over the triangles into a new point layer with normals and
+  colours, which is the bridge back to every cloud tool. *Distance* measures each point of a
+  cloud to the nearest **triangle** of a mesh layer as a scalar field — point-to-triangle, via
+  a uniform triangle grid, because on a coarse mesh the nearest vertex is most of a triangle
+  away: a shell of points 250 mm outside a sphere mesh reads **249.96 to 250.64 mm**. *Flip*
+  reverses the winding; *Smooth* is **Taubin** (**+0.12%** volume over ten passes, against
+  **−1.98%** for plain Laplacian); *Decimate* is **vertex clustering** with a quadric-optimal
+  representative per cell, which is linear and fast but takes a cell size rather than a
+  triangle target. Saves as PLY, OBJ or STL with the transform and the global shift baked in.
 - **View link** — copies a URL that restores the camera and colour mode when the same file
   is opened again.
 
