@@ -210,6 +210,17 @@ of the same room register to **0.000 mm** and their distance field reads **0.00 
   ratio, and **recommendedSource** — points or surface, and why. `surface export` writes the
   mesh with the transform and the global shift baked in. Replies bigger than the relay's 1 MiB
   document come back in numbered parts. See `public/llms.txt`.
+- **Fit** — a plane, sphere, cylinder or circle through whatever the active region holds, drawn
+  in the view and reported with its **RMS**, because the parameters alone never say whether to
+  believe them: a cylinder fitted to a flat wall has a radius and an axis. A cylinder's axis
+  comes from the normals, which is what makes it robust on a partial arc. **Detect shapes** is
+  RANSAC over the points, one shape at a time, removing each shape's inliers before looking for
+  the next — which is also the non-maximum suppression, since two fits of the same wall cannot
+  both be supported. Every point gets a *Shape* index as a scalar field, each row isolates its
+  own shape, and *Keep / Remove inliers* cuts through the usual undoable mask. Validated
+  natively against known primitives with a millimetre of noise: plane normal to **0.008°**,
+  sphere centre and radius to **0.01 mm**, cylinder axis to **0.0000°**, and three planted
+  planes plus a sphere recovered from a scene that is a fifth noise.
 - **View link** — copies a URL that restores the camera and colour mode when the same file
   is opened again.
 

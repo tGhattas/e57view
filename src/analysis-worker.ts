@@ -4,7 +4,7 @@
 // index over all of them, and each operation returns a single flat array the size of the
 // cloud: new normals, one scalar per point, or a keep mask. Record bytes are decoded on
 // arrival and dropped, so the worker never holds a second copy of the cloud.
-import init, { CloudAnalysis } from './wasm/e57_wasm.js';
+import init, { CloudAnalysis, fit_shape, detect_shapes } from './wasm/e57_wasm.js';
 import wasmUrl from './wasm/e57_wasm_bg.wasm?url';
 
 let wasmReady: Promise<any> | null = null;
@@ -43,6 +43,25 @@ self.onmessage = async (ev: MessageEvent) => {
       refStarted = false; refFed = 0;
       fed = 0;
       post({ type: 'ready' });
+      return;
+    }
+
+    // Fitting and detection take the points directly rather than through the grid, so they
+    // do not disturb whatever the analyser is holding.
+    if (m.type === 'fit') {
+      await ensureWasm();
+      post({ type: 'fit', json: fit_shape(m.kind, new Float32Array(m.xyz), new Float32Array(m.nrm ?? new Float32Array(0))) });
+      return;
+    }
+    if (m.type === 'detect') {
+      await ensureWasm();
+      const d = detect_shapes(new Float32Array(m.xyz), new Float32Array(m.nrm ?? new Float32Array(0)),
+        m.tol, m.minPts, m.maxShapes ?? 12, m.kinds ?? 'plane,sphere,cylinder', m.trials ?? 400,
+        (i: number) => post({ type: 'progress', phase: `Looking for shape ${i + 1}`, done: i, total: m.maxShapes ?? 12 }));
+      const json = d.json;
+      const labels = d.labels();
+      d.free();
+      post({ type: 'detect', json, labels }, [labels.buffer]);
       return;
     }
 

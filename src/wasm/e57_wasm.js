@@ -285,6 +285,54 @@ export class CloudAnalysis {
 if (Symbol.dispose) CloudAnalysis.prototype[Symbol.dispose] = CloudAnalysis.prototype.free;
 
 /**
+ * RANSAC detection. `labels` is one shape index per point, -1 for the points no shape
+ * claimed, in the order they were handed in.
+ */
+export class Detection {
+    static __wrap(ptr) {
+        const obj = Object.create(Detection.prototype);
+        obj.__wbg_ptr = ptr;
+        DetectionFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        DetectionFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_detection_free(ptr, 0);
+    }
+    /**
+     * @returns {string}
+     */
+    get json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.detection_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @returns {Int32Array}
+     */
+    labels() {
+        const ret = wasm.detection_labels(this.__wbg_ptr);
+        var v1 = getArrayI32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+}
+if (Symbol.dispose) Detection.prototype[Symbol.dispose] = Detection.prototype.free;
+
+/**
  * Streams points into a new E57 file. Field order: xyz f64 (relative to
  * the pose translation), rgb u8, intensity u8, normal i8.
  */
@@ -755,6 +803,55 @@ export class PointSink {
 if (Symbol.dispose) PointSink.prototype[Symbol.dispose] = PointSink.prototype.free;
 
 /**
+ * @param {Float32Array} xyz
+ * @param {Float32Array} nrm
+ * @param {number} tol
+ * @param {number} min_pts
+ * @param {number} max_shapes
+ * @param {string} kinds
+ * @param {number} trials
+ * @param {Function | null} [progress]
+ * @returns {Detection}
+ */
+export function detect_shapes(xyz, nrm, tol, min_pts, max_shapes, kinds, trials, progress) {
+    const ptr0 = passArrayF32ToWasm0(xyz, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF32ToWasm0(nrm, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(kinds, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.detect_shapes(ptr0, len0, ptr1, len1, tol, min_pts, max_shapes, ptr2, len2, trials, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+    return Detection.__wrap(ret);
+}
+
+/**
+ * Fit one primitive to a set of points. `xyz` is x,y,z triples; `nrm` the same length for
+ * a cylinder (its axis comes from the normals) and may be empty otherwise.
+ * @param {string} kind
+ * @param {Float32Array} xyz
+ * @param {Float32Array} nrm
+ * @returns {string}
+ */
+export function fit_shape(kind, xyz, nrm) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF32ToWasm0(xyz, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArrayF32ToWasm0(nrm, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.fit_shape(ptr0, len0, ptr1, len1, ptr2, len2);
+        deferred4_0 = ret[0];
+        deferred4_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * The laszip VLR body for a point format, so a caller can lay out the file's header
  * before it starts compressing: the offset to point data depends on this record's length.
  * @param {number} fmt
@@ -900,6 +997,9 @@ function __wbg_get_imports() {
 const CloudAnalysisFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_cloudanalysis_free(ptr, 1));
+const DetectionFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_detection_free(ptr, 1));
 const E57ExportFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_e57export_free(ptr, 1));
@@ -933,6 +1033,11 @@ function getArrayF32FromWasm0(ptr, len) {
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+
+function getArrayI32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getInt32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 function getArrayI8FromWasm0(ptr, len) {
@@ -972,6 +1077,14 @@ function getFloat64ArrayMemory0() {
         cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
     }
     return cachedFloat64ArrayMemory0;
+}
+
+let cachedInt32ArrayMemory0 = null;
+function getInt32ArrayMemory0() {
+    if (cachedInt32ArrayMemory0 === null || cachedInt32ArrayMemory0.byteLength === 0) {
+        cachedInt32ArrayMemory0 = new Int32Array(wasm.memory.buffer);
+    }
+    return cachedInt32ArrayMemory0;
 }
 
 let cachedInt8ArrayMemory0 = null;
@@ -1116,6 +1229,7 @@ function __wbg_finalize_init(instance, module) {
     cachedDataViewMemory0 = null;
     cachedFloat32ArrayMemory0 = null;
     cachedFloat64ArrayMemory0 = null;
+    cachedInt32ArrayMemory0 = null;
     cachedInt8ArrayMemory0 = null;
     cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;

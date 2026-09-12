@@ -942,3 +942,42 @@ scanner position and a 4×4 pose; points are in the scanner's own frame and a sh
 nothing is written as `0 0 0`. Applying each pose puts every scan in one frame, skipping the
 zeros drops the misses, and each scan's translation becomes a station — so the station markers
 and "view from here" work on a Leica export with no panoramas in it at all.
+
+## Fits that report a residual, and a detector that removes what it finds
+
+Every fit here returns an RMS beside its parameters, and that is the whole design. A cylinder
+fitted to a flat wall comes back with a radius and an axis and a centre — perfectly formed,
+entirely meaningless — and the only thing that says so is the residual. `drive-fit.mjs` tests
+exactly that case: a sphere fitted to the pipe reports **118.7 mm RMS against 0.4 mm for the
+right shape**.
+
+Each fit is algebraic first and geometric second. A sphere's algebraic form (`x²+y²+z² + ax +
+by + cz + d = 0`) is linear, so it cannot fail to converge and gives a starting point; then a
+dozen Gauss-Newton steps on the true distance `|p - c| - r` make the RMS mean what it says.
+The cylinder's axis comes from the **normals**, not the points: every normal of a cylinder is
+perpendicular to its axis, so the normal set spans a plane and the axis is the direction they
+vary least in — which works on a 90° arc, where fitting the axis from the points would not.
+Measured against known primitives with a millimetre of jitter: plane normal **0.008°** off,
+sphere centre **0.011 mm** and radius **0.000 mm**, cylinder axis **0.0000°** and radius
+**0.000 mm**, circle radius **0.01 mm**.
+
+The detector is RANSAC, one shape at a time, and the part worth stating is that **removing
+each shape's inliers before looking for the next is the non-maximum suppression**. Two fits of
+the same wall cannot both survive, because after the first there is nothing left for the second
+to be supported by — no scoring heuristic, no overlap test, just an invariant. Each shape is
+then refitted on everything that agreed with it, which is what turns a lucky three-point sample
+into a measurement: in the native scene the refitted planes come back at **0.6 mm RMS** from
+1 mm of noise.
+
+RANSAC runs on a sample, because it does not need ten million points to find a wall. But the
+labels a sample produces only cover the sample, so the field is built by classifying **every**
+point against the few shapes that were found — cheaper than feeding everything to the
+detector, and honest about what it knows. On the test scene: **38,299 points labelled of
+38,291 real ones, with 2,000 noise points left unclaimed.**
+
+Two things the driver shook out. **Undo refused to run on an empty layer.** `undoEdit` began
+with `if (!viewer.loaded) return null`, which is precisely backwards: an edit that removed
+everything is the one that most needs undoing, and there was no way back from it. And a fit
+over a region that also contains noise reports a worse residual — which is correct, and meant
+the test fixture had to keep its noise out of the boxes it fits in, rather than the code
+pretending the noise was not there.

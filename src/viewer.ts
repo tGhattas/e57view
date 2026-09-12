@@ -598,6 +598,54 @@ export class Viewer {
     this.onRegionChange?.(r);
   }
 
+  // ------------------------------------------------------- fitted primitives
+  private primitive: THREE.Object3D | null = null;
+  /** Draw a fitted primitive in the overlay, or clear it. Seeing the shape against the points
+   *  is most of how anyone judges a fit; the RMS is the other half. */
+  setPrimitive(p: any | null) {
+    if (this.primitive) { this.overlay.remove(this.primitive); this.primitive = null; }
+    if (p) {
+      const col = 0xf2b544;
+      const line = (g: THREE.BufferGeometry) => new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.9, depthTest: false }));
+      const fill = new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthTest: false, depthWrite: false });
+      const g = new THREE.Group();
+      const size = Math.max(p.size ?? 1, 0.05);
+      if (p.shape === 'plane') {
+        const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...p.normal).normalize());
+        const patch = new THREE.Mesh(new THREE.PlaneGeometry(size, size), fill);
+        patch.quaternion.copy(q);
+        const edges = line(new THREE.EdgesGeometry(new THREE.PlaneGeometry(size, size)));
+        edges.quaternion.copy(q);
+        const nrm = new THREE.ArrowHelper(new THREE.Vector3(...p.normal).normalize(), new THREE.Vector3(), size * 0.35, col, size * 0.08, size * 0.05);
+        g.add(patch, edges, nrm);
+        g.position.set(...(p.centroid as [number, number, number]));
+      } else if (p.shape === 'sphere') {
+        const sg = new THREE.SphereGeometry(p.radius, 32, 20);
+        g.add(new THREE.Mesh(sg, fill), new THREE.LineSegments(new THREE.WireframeGeometry(new THREE.SphereGeometry(p.radius, 18, 12)), new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.5, depthTest: false })));
+        g.position.set(...(p.centre as [number, number, number]));
+      } else if (p.shape === 'cylinder') {
+        const len = Math.max(p.length ?? size, 0.05);
+        const cg = new THREE.CylinderGeometry(p.radius, p.radius, len, 32, 1, true);
+        g.add(new THREE.Mesh(cg, fill), new THREE.LineSegments(new THREE.WireframeGeometry(new THREE.CylinderGeometry(p.radius, p.radius, len, 18, 1, true)), new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.5, depthTest: false })));
+        // the geometry's own axis is +Y
+        g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...p.axis).normalize());
+        g.position.set(...(p.centre as [number, number, number]));
+      } else if (p.shape === 'circle') {
+        const pts: THREE.Vector3[] = [];
+        for (let i = 0; i <= 96; i++) { const a = (i / 96) * Math.PI * 2; pts.push(new THREE.Vector3(Math.cos(a) * p.radius, Math.sin(a) * p.radius, 0)); }
+        const cg = new THREE.BufferGeometry().setFromPoints(pts);
+        const ring = new THREE.Line(cg, new THREE.LineBasicMaterial({ color: col, depthTest: false, transparent: true }));
+        g.add(ring, new THREE.Mesh(new THREE.CircleGeometry(p.radius, 64), fill));
+        g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...p.normal).normalize());
+        g.position.set(...(p.centre as [number, number, number]));
+      }
+      this.overlay.add(g);
+      this.primitive = g;
+    }
+    this.dirty = true;
+  }
+  get hasPrimitive() { return !!this.primitive; }
+
   /** Replace the reconstructed surface. Passing null drops it.
    *
    *  The mesher is fed the cloud's transform, so the vertices come back in the world the

@@ -25,8 +25,8 @@ curl -s https://opensketch.web.app/agent \
   -d '{"session":"SESSION","cmd":"state"}'
 
 Commands: state, screenshot, view, section, probe, heightmap, contour, fitplane, distance,
-inside, measure, pick, set_view, set, regions, entities, register, distance_to, transform,
-surface, history, stations, open.
+inside, measure, pick, set_view, set, regions, entities, register, distance_to, fit, detect,
+transform, surface, history, stations, open.
 
 {"session":"S","cmd":"screenshot","args":{"width":1024}}
 {"session":"S","cmd":"set_view","args":{"preset":"top"}}
@@ -75,7 +75,7 @@ Then open the viewer with ?agent=1 and allow local network access when Chrome as
 The server listens on ws://127.0.0.1:7337 and the tab connects out to it; nothing is exposed
 off the machine, which makes this the safer option when the agent runs beside the browser.
 
-Tools: viewer_entities, viewer_register, viewer_distance_to,
+Tools: viewer_entities, viewer_register, viewer_distance_to, viewer_fit, viewer_detect,
 viewer_state, viewer_screenshot, viewer_view, viewer_section, viewer_probe,
 viewer_heightmap, viewer_contour, viewer_fitplane, viewer_distance, viewer_inside,
 viewer_set_view, viewer_set, viewer_regions, viewer_pick, viewer_measure, viewer_transform,
@@ -176,6 +176,21 @@ within its rejection gate.
 the reference as a scalar field, so the ramp, the histogram and the value filter work on it.
 `signed:true` projects onto the reference point's own normal, which says which side of the
 reference surface each point is on.
+
+## Fitting and finding primitives
+
+{"session":"S","cmd":"fit","args":{"shape":"plane","box":{"center":[3,2,0],"half":[2.5,1.8,0.02]}}}
+{"session":"S","cmd":"detect","args":{"tolerance":0.006,"minPoints":3000,"shapes":["plane","sphere","cylinder"]}}
+
+`fit` fits a plane, sphere, cylinder or circle to the active region's contents (or to the box
+you give, or the whole layer) and returns the parameters **with the RMS**. Read the RMS: a
+cylinder fitted to a flat wall has a radius and an axis and means nothing, and the residual is
+the only thing that says so. A cylinder needs normals, because its axis comes from them.
+
+`detect` is RANSAC over the points, one shape at a time, removing each shape's inliers before
+looking for the next — which is also what stops two fits of the same wall both surviving. It
+writes a scalar field named `Shape` holding each point's shape index, so the colour ramp shows
+them and the value filter isolates one; points no shape claimed have no value.
 
 ## Regions are shapes, not cuts
 

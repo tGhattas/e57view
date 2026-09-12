@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_cloudanalysis_free: (a: number, b: number) => void;
+export const __wbg_detection_free: (a: number, b: number) => void;
 export const __wbg_e57export_free: (a: number, b: number) => void;
 export const __wbg_e57handle_free: (a: number, b: number) => void;
 export const __wbg_lazreader_free: (a: number, b: number) => void;
@@ -36,6 +37,9 @@ export const cloudanalysis_sor: (a: number, b: number, c: number, d: number) => 
 export const cloudanalysis_start_reference: (a: number, b: number) => void;
 export const cloudanalysis_subsample: (a: number, b: number) => [number, number];
 export const cloudanalysis_write_normals: (a: number, b: number, c: number, d: any) => void;
+export const detect_shapes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => number;
+export const detection_json: (a: number) => [number, number];
+export const detection_labels: (a: number) => [number, number];
 export const e57export_add_points: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
 export const e57export_finish: (a: number) => [number, number, number];
 export const e57export_new: (a: any, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
@@ -43,6 +47,7 @@ export const e57handle_image_blob: (a: number, b: number) => [number, number, nu
 export const e57handle_meta: (a: number) => [number, number];
 export const e57handle_new: (a: any, b: number) => [number, number, number];
 export const e57handle_stream: (a: number, b: number, c: number, d: number, e: number, f: any, g: any, h: any) => [number, number, number];
+export const fit_shape: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
 export const laz_vlr: (a: number, b: number) => [number, number, number, number];
 export const lazreader_new: (a: any, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const lazreader_read: (a: number, b: number) => [number, number, number, number];

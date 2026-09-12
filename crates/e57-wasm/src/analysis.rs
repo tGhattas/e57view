@@ -100,6 +100,9 @@ pub struct Analyzer {
     built: bool,
 }
 
+/// Public wrapper, so the shape fits can share this rather than carry a second copy.
+pub fn eigen_sym3_pub(a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) { eigen_sym3(a) }
+
 /// Eigen decomposition of a symmetric 3x3 matrix by cyclic Jacobi rotations.
 /// Returns eigenvalues ascending, with the matching eigenvectors as columns.
 fn eigen_sym3(mut a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {

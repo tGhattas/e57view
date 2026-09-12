@@ -208,6 +208,17 @@ server.tool('viewer_distance_to', 'Distance from every point of the ACTIVE layer
   reference: z.string(), signed: z.boolean().optional(),
 }, async (a) => withShot(await call('distance_to', a, 900000), true));
 
+server.tool('viewer_fit', 'Fit a primitive to the ACTIVE REGION\'s contents, or to the whole layer when no region is active — or give a box and it fits inside that. Returns the parameters and the RMS, which is the number that decides whether to believe them: a cylinder fitted to a flat wall has a radius and an axis and means nothing, and only the residual says so. The fitted shape is drawn in the view.', {
+  shape: z.enum(['plane', 'sphere', 'cylinder', 'circle']),
+  box: z.object({ center: z.array(z.number()).length(3), half: z.array(z.number()).length(3), quat: z.array(z.number()).length(4).optional() }).optional(),
+}, async (a) => withShot(await call('fit', a, 300000), true));
+
+server.tool('viewer_detect', 'Find shapes without being told where: RANSAC over the points, one shape at a time, removing each shape\'s inliers before looking for the next. Returns the shapes with their parameters, point counts and RMS, and writes a scalar field named "Shape" holding each point\'s shape index — so the ramp shows them and the value filter isolates one.', {
+  tolerance: z.number().optional().describe('metres a point may be from a shape and still belong to it, default 0.02'),
+  minPoints: z.number().int().optional().describe('support a shape needs, default 2000'),
+  shapes: z.array(z.enum(['plane', 'sphere', 'cylinder'])).optional(),
+}, async (a) => withShot(await call('detect', a, 900000), true));
+
 server.tool('viewer_transform', 'Move, rotate, scale or level the whole cloud. The points are never rewritten: the cloud carries a 4x4 matrix applied at render, test, analysis and export time, so this is instant, lossless and undoable, and only a written file bakes it. get reports the matrix; set replaces it (16 numbers, row-major); translate/rotate/scale compose on top of it; level fits a plane to a sample and turns it horizontal; reset clears it.', {
   op: z.enum(['get', 'set', 'translate', 'rotate', 'scale', 'level', 'reset']),
   matrix: z.array(z.number()).length(16).optional().describe('op=set: row-major 4x4'),

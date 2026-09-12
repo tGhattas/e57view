@@ -352,6 +352,38 @@
       <p class="hint mono" id="v-analysis">—</p>
     </div>
 
+    <div class="grp" data-grp="fit">
+      <h3>Fit</h3>
+      <p class="hint">Fits a primitive to the <b>active region's contents</b>, or to the whole layer when no region is active. The RMS is the number that says whether to believe it.</p>
+      <div class="seg">
+        <button id="k-fitplane" class="ghost">Plane</button>
+        <button id="k-fitsphere" class="ghost">Sphere</button>
+      </div>
+      <div class="seg">
+        <button id="k-fitcyl" class="ghost">Cylinder</button>
+        <button id="k-fitcircle" class="ghost">Circle</button>
+      </div>
+      <p class="hint mono" id="v-fit">—</p>
+      <button id="k-fitclear" class="ghost wide">Clear the drawn shape</button>
+
+      <p class="lab mono">DETECT</p>
+      <label class="row"><span title="How far a point may be from a shape and still count as part of it.">Tolerance</span><input type="range" id="k-dettol" min="0.002" max="0.2" step="0.002" value="0.02"><b class="mono" id="v-dettol">0.02 m</b></label>
+      <label class="row"><span>Min points</span><input type="range" id="k-detmin" min="100" max="20000" step="100" value="2000"><b class="mono" id="v-detmin">2,000</b></label>
+      <label class="row"><span>Look for</span>
+        <select id="k-detkinds">
+          <option value="plane">Planes</option>
+          <option value="plane,cylinder">Planes and cylinders</option>
+          <option value="plane,sphere,cylinder" selected>Planes, spheres, cylinders</option>
+        </select>
+      </label>
+      <button id="k-detect" class="primary wide">Detect shapes…</button>
+      <ul id="det-list" class="mlist"></ul>
+      <div class="seg det-have">
+        <button id="k-detkeep" class="ghost">Keep only inliers</button>
+        <button id="k-detremove" class="ghost">Remove inliers</button>
+      </div>
+    </div>
+
     <div class="grp sf-have" data-grp="field">
       <h3>Scalar field</h3>
       <p class="hint mono" id="v-sfname">no field</p>

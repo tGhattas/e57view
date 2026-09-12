@@ -3,6 +3,7 @@ pub mod octree;
 pub mod core;
 pub mod mesh;
 pub mod analysis;
+pub mod shapes;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
@@ -603,6 +604,70 @@ mod wasm_mesh {
 }
 
 #[cfg(target_arch = "wasm32")]
+mod wasm_shapes {
+    use crate::shapes;
+    use wasm_bindgen::prelude::*;
+
+    fn j(v: &[f64]) -> String { v.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(",") }
+
+    /// Fit one primitive to a set of points. `xyz` is x,y,z triples; `nrm` the same length for
+    /// a cylinder (its axis comes from the normals) and may be empty otherwise.
+    #[wasm_bindgen]
+    pub fn fit_shape(kind: &str, xyz: &[f32], nrm: &[f32]) -> String {
+        let n = xyz.len() / 3;
+        let idx: Vec<u32> = (0..n as u32).collect();
+        match kind {
+            "plane" => match shapes::fit_plane(&idx, xyz) {
+                Some(p) => format!("{{\"shape\":\"plane\",\"normal\":[{}],\"centroid\":[{}],\"rms\":{},\"worst\":{},\"points\":{}}}", j(&p.n), j(&p.c), p.rms, p.worst, n),
+                None => "{\"error\":\"a plane needs at least three points\"}".into(),
+            },
+            "sphere" => match shapes::fit_sphere(&idx, xyz) {
+                Some(p) => format!("{{\"shape\":\"sphere\",\"centre\":[{}],\"radius\":{},\"rms\":{},\"worst\":{},\"points\":{}}}", j(&p.c), p.r, p.rms, p.worst, n),
+                None => "{\"error\":\"no sphere fits those points\"}".into(),
+            },
+            "cylinder" => match shapes::fit_cylinder(&idx, xyz, nrm) {
+                Some(p) => format!("{{\"shape\":\"cylinder\",\"axis\":[{}],\"centre\":[{}],\"radius\":{},\"length\":{},\"rms\":{},\"worst\":{},\"points\":{}}}", j(&p.axis), j(&p.c), p.r, p.length, p.rms, p.worst, n),
+                None => "{\"error\":\"no cylinder fits those points — it needs normals, and at least six of them\"}".into(),
+            },
+            "circle" => match shapes::fit_circle(&idx, xyz) {
+                Some(p) => format!("{{\"shape\":\"circle\",\"normal\":[{}],\"centre\":[{}],\"radius\":{},\"rms\":{},\"worst\":{},\"points\":{}}}", j(&p.n), j(&p.c), p.r, p.rms, p.worst, n),
+                None => "{\"error\":\"no circle fits those points\"}".into(),
+            },
+            _ => "{\"error\":\"shape: plane | sphere | cylinder | circle\"}".into(),
+        }
+    }
+
+    /// RANSAC detection. `labels` is one shape index per point, -1 for the points no shape
+    /// claimed, in the order they were handed in.
+    #[wasm_bindgen]
+    pub struct Detection { json: String, labels: Vec<i32> }
+    #[wasm_bindgen]
+    impl Detection {
+        #[wasm_bindgen(getter)]
+        pub fn json(&self) -> String { self.json.clone() }
+        pub fn labels(&mut self) -> Vec<i32> { std::mem::take(&mut self.labels) }
+    }
+
+    #[wasm_bindgen]
+    pub fn detect_shapes(xyz: &[f32], nrm: &[f32], tol: f32, min_pts: u32, max_shapes: u32,
+                         kinds: &str, trials: u32, progress: Option<js_sys::Function>) -> Detection {
+        let want = (kinds.contains("plane"), kinds.contains("sphere"), kinds.contains("cylinder"));
+        let (found, labels) = shapes::detect(
+            xyz, nrm, tol, min_pts as usize, max_shapes as usize, want, trials as usize, 0x9E3779B97F4A7C15,
+            |i| { if let Some(f) = &progress { let _ = f.call1(&JsValue::NULL, &JsValue::from_f64(i as f64)); } });
+        let items: Vec<String> = found.iter().map(|d| {
+            let named = match d.kind {
+                "plane" => format!("\"normal\":[{}],\"centroid\":[{}]", j(&d.params[0..3]), j(&d.params[3..6])),
+                "sphere" => format!("\"centre\":[{}],\"radius\":{}", j(&d.params[0..3]), d.params[3]),
+                _ => format!("\"axis\":[{}],\"centre\":[{}],\"radius\":{}", j(&d.params[0..3]), j(&d.params[3..6]), d.params[6]),
+            };
+            format!("{{\"shape\":\"{}\",{},\"rms\":{},\"points\":{}}}", d.kind, named, d.rms, d.support)
+        }).collect();
+        Detection { json: format!("{{\"shapes\":[{}]}}", items.join(",")), labels }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 mod wasm_analysis {
     use crate::analysis::{Analyzer, Feature};
     use wasm_bindgen::prelude::*;
@@ -756,3 +821,6 @@ mod wasm_analysis {
         pub fn cut_distance(&self) -> f32 { self.last_cut }
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm_shapes::*;

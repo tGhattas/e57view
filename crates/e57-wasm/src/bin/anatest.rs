@@ -1,5 +1,6 @@
 // Native validation of the neighbourhood analyses against shapes with known answers.
 use e57_wasm::analysis::{Analyzer, Feature};
+use e57_wasm::shapes;
 
 fn recs(pts: &[[f32; 3]], origin: [f32; 3], size: f32) -> Vec<u8> {
     let k = 65536.0 / size;
@@ -334,6 +335,119 @@ fn main() {
     let signed_span = ds.iter().copied().filter(|v| v.is_finite()).fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v), b.max(v)));
     ck("signed distance keeps both sides", signed_span.0 < -0.005 && signed_span.1 > 0.005,
        format!("{:.4} to {:.4} m", signed_span.0, signed_span.1));
+
+    // ---------------------------------------------------------------- fitting primitives
+    // Known shapes with a millimetre of noise on them, because a fit that is only tested on
+    // exact data is only tested on the one case that never happens.
+    let mut rs = 0x2545F4914F6CDD1Du64;
+    let mut jit = move |amp: f32| { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; (rs as f32 / u64::MAX as f32 - 0.5) * 2.0 * amp };
+
+    // a plane tilted 20 degrees, 1 mm of noise
+    let (sp, cp) = 20.0f32.to_radians().sin_cos();
+    let planep: Vec<[f32; 3]> = (0..80).flat_map(|i| (0..80).map(move |j| (i, j)).collect::<Vec<_>>()).map(|(i, j)| {
+        let (x, y) = (i as f32 * 0.05, j as f32 * 0.05);
+        [20.0 + x, 20.0 + y * cp, 20.0 + y * sp]
+    }).map(|p| [p[0] + jit(0.001), p[1] + jit(0.001), p[2] + jit(0.001)]).collect();
+    let flat: Vec<f32> = planep.iter().flat_map(|p| p.iter().copied()).collect();
+    let idx: Vec<u32> = (0..planep.len() as u32).collect();
+    let pl = shapes::fit_plane(&idx, &flat).unwrap();
+    let want_n = [0.0f64, -(sp as f64), cp as f64];
+    let dotn = (pl.n[0] * want_n[0] + pl.n[1] * want_n[1] + pl.n[2] * want_n[2]).abs();
+    ck("plane normal is the true one", dotn > 0.99999, format!("{:.5} deg off, RMS {:.3} mm", dotn.clamp(-1.0, 1.0).acos().to_degrees(), pl.rms * 1000.0));
+    ck("plane RMS is the noise, not more", pl.rms < 0.0012 && pl.rms > 0.0002, format!("{:.3} mm against 1 mm of jitter", pl.rms * 1000.0));
+
+    // a sphere of radius 1.25 at a known centre
+    let sc = [30.0f64, 12.0, 7.5];
+    let sr = 1.25f64;
+    let ga2 = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
+    let sph: Vec<f32> = (0..20_000).flat_map(|i| {
+        let y = 1.0 - (i as f32 / 19_999.0) * 2.0;
+        let rad = (1.0 - y * y).max(0.0).sqrt();
+        let th = ga2 * i as f32;
+        [sc[0] as f32 + th.cos() * rad * sr as f32 + jit(0.001),
+         sc[1] as f32 + y * sr as f32 + jit(0.001),
+         sc[2] as f32 + th.sin() * rad * sr as f32 + jit(0.001)]
+    }).collect();
+    let sidx: Vec<u32> = (0..(sph.len() / 3) as u32).collect();
+    let sf = shapes::fit_sphere(&sidx, &sph).unwrap();
+    let cerr = ((sf.c[0] - sc[0]).powi(2) + (sf.c[1] - sc[1]).powi(2) + (sf.c[2] - sc[2]).powi(2)).sqrt();
+    ck("sphere centre to under a millimetre", cerr < 0.001, format!("{:.4} mm off", cerr * 1000.0));
+    ck("sphere radius to under a millimetre", (sf.r - sr).abs() < 0.001, format!("{:.5} m against {sr}, RMS {:.3} mm", sf.r, sf.rms * 1000.0));
+
+    // a cylinder about a tilted axis, with its true normals
+    let axis = { let v = [0.3f64, 0.0, 1.0]; let l = (v[0] * v[0] + v[2] * v[2]).sqrt(); [v[0] / l, 0.0, v[2] / l] };
+    let u = [axis[2], 0.0, -axis[0]];
+    let w = [0.0f64, 1.0, 0.0];
+    let cyr = 0.4f64;
+    let cyc = [5.0f64, 6.0, 7.0];
+    let mut cyl: Vec<f32> = Vec::new();
+    let mut cyn: Vec<f32> = Vec::new();
+    for i in 0..200 {
+        for k in 0..60 {
+            let t = -1.5 + 3.0 * (i as f64 / 199.0);
+            let a = 2.0 * std::f64::consts::PI * (k as f64 / 60.0);
+            let n = [u[0] * a.cos() + w[0] * a.sin(), u[1] * a.cos() + w[1] * a.sin(), u[2] * a.cos() + w[2] * a.sin()];
+            for d in 0..3 { cyl.push((cyc[d] + axis[d] * t + n[d] * cyr) as f32 + jit(0.0005)); }
+            for d in 0..3 { cyn.push(n[d] as f32); }
+        }
+    }
+    let cidx: Vec<u32> = (0..(cyl.len() / 3) as u32).collect();
+    let cf = shapes::fit_cylinder(&cidx, &cyl, &cyn).unwrap();
+    let adot = (cf.axis[0] * axis[0] + cf.axis[1] * axis[1] + cf.axis[2] * axis[2]).abs().clamp(0.0, 1.0);
+    ck("cylinder axis to under a tenth of a degree", adot.acos().to_degrees() < 0.1, format!("{:.4} deg off", adot.acos().to_degrees()));
+    ck("cylinder radius to under a millimetre", (cf.r - cyr).abs() < 0.001, format!("{:.5} m against {cyr}, RMS {:.3} mm", cf.r, cf.rms * 1000.0));
+
+    // a circle in a tilted plane
+    let mut cir: Vec<f32> = Vec::new();
+    for k in 0..2000 {
+        let a = 2.0 * std::f64::consts::PI * (k as f64 / 2000.0);
+        for d in 0..3 { cir.push((cyc[d] + (u[d] * a.cos() + w[d] * a.sin()) * 0.8) as f32 + jit(0.0005)); }
+    }
+    let ciidx: Vec<u32> = (0..(cir.len() / 3) as u32).collect();
+    let cir_f = shapes::fit_circle(&ciidx, &cir).unwrap();
+    ck("circle radius and centre", (cir_f.r - 0.8).abs() < 0.001 && ((cir_f.c[0] - cyc[0]).powi(2) + (cir_f.c[1] - cyc[1]).powi(2) + (cir_f.c[2] - cyc[2]).powi(2)).sqrt() < 0.001,
+       format!("r {:.5} m against 0.8, centre {:.4} mm off", cir_f.r, ((cir_f.c[0] - cyc[0]).powi(2) + (cir_f.c[1] - cyc[1]).powi(2) + (cir_f.c[2] - cyc[2]).powi(2)).sqrt() * 1000.0));
+
+    // ---------------------------------------------------------------- detection
+    // three walls of a room, a sphere sitting in it, and a fifth of the points as pure noise
+    let mut scene: Vec<f32> = Vec::new();
+    let mut snrm: Vec<f32> = Vec::new();
+    let push = |s: &mut Vec<f32>, n: &mut Vec<f32>, p: [f32; 3], q: [f32; 3]| { s.extend_from_slice(&p); n.extend_from_slice(&q); };
+    for i in 0..100 { for k in 0..100 {
+        let (a, b) = (i as f32 * 0.06, k as f32 * 0.06);
+        push(&mut scene, &mut snrm, [a + jit(0.001), b + jit(0.001), jit(0.001)], [0.0, 0.0, 1.0]);          // floor
+        push(&mut scene, &mut snrm, [a + jit(0.001), jit(0.001), b + jit(0.001)], [0.0, 1.0, 0.0]);          // wall y=0
+        push(&mut scene, &mut snrm, [jit(0.001), a + jit(0.001), b + jit(0.001)], [1.0, 0.0, 0.0]);          // wall x=0
+    }}
+    let ball = [3.0f32, 3.0, 1.2];
+    for i in 0..8000 {
+        let y = 1.0 - (i as f32 / 7999.0) * 2.0;
+        let rad = (1.0 - y * y).max(0.0).sqrt();
+        let th = ga2 * i as f32;
+        let d = [th.cos() * rad, y, th.sin() * rad];
+        push(&mut scene, &mut snrm, [ball[0] + d[0] * 0.5 + jit(0.001), ball[1] + d[1] * 0.5 + jit(0.001), ball[2] + d[2] * 0.5 + jit(0.001)], d);
+    }
+    let planted = scene.len() / 3;
+    for _ in 0..(planted / 5) {
+        push(&mut scene, &mut snrm, [jit(3.0) + 3.0, jit(3.0) + 3.0, jit(3.0) + 3.0], [0.0, 0.0, 1.0]);
+    }
+    let t_det = std::time::Instant::now();
+    let (found, labels) = shapes::detect(&scene, &snrm, 0.006, 4000, 6, (true, true, true), 300, 12345, |_| {});
+    println!("\n  detection: {} points ({} noise), {} shapes in {:.2}s",
+             scene.len() / 3, (scene.len() / 3) - planted, found.len(), t_det.elapsed().as_secs_f32());
+    for f in found.iter() { println!("      {} · {} points · RMS {:.2} mm", f.kind, f.support, f.rms * 1000.0); }
+    let planes = found.iter().filter(|f| f.kind == "plane").count();
+    let spheres = found.iter().filter(|f| f.kind == "sphere").count();
+    ck("RANSAC finds the three planted planes", planes >= 3, format!("{planes} planes"));
+    ck("and the planted sphere", spheres >= 1, format!("{spheres} spheres"));
+    if let Some(sp) = found.iter().find(|f| f.kind == "sphere") {
+        let d = ((sp.params[0] - ball[0] as f64).powi(2) + (sp.params[1] - ball[1] as f64).powi(2) + (sp.params[2] - ball[2] as f64).powi(2)).sqrt();
+        ck("the sphere it found is the one that was planted", d < 0.01 && (sp.params[3] - 0.5).abs() < 0.01,
+           format!("centre {:.1} mm off, r {:.4} m against 0.5", d * 1000.0, sp.params[3]));
+    }
+    let claimed = labels.iter().filter(|&&l| l >= 0).count();
+    ck("the noise is left unclaimed", claimed >= planted * 9 / 10 && claimed <= planted + planted / 20,
+       format!("{claimed} of {planted} real points labelled, {} noise points present", (scene.len() / 3) - planted));
 
     println!("\n{}", if fails == 0 { "ALL CHECKS PASSED".into() } else { format!("{fails} CHECK(S) FAILED") });
     std::process::exit(if fails == 0 { 0 } else { 1 });

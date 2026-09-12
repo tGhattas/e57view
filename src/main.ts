@@ -1077,7 +1077,8 @@ async function undoEdit() {
   const e = hist.peekUndo(); if (!e) return null;
   // a step belongs to one layer; putting it back means going there first
   if (e.entity && e.entity !== viewer.activeId) activateEntity(e.entity);
-  if (!viewer.loaded && e.kind !== 'transform') return null;
+  // No guard on the point count: an edit that removed *everything* is exactly the one that
+  // most needs undoing, and refusing because the layer is empty left no way back.
   busy('Undoing…'); await tick();
   try {
     if (e.kind === 'transform') {
@@ -1104,7 +1105,6 @@ async function redoEdit() {
   const e = hist.peekRedo(); if (!e) return null;
   // a step belongs to one layer; putting it back means going there first
   if (e.entity && e.entity !== viewer.activeId) activateEntity(e.entity);
-  if (!viewer.loaded && e.kind !== 'transform') return null;
   busy('Redoing…'); await tick();
   try {
     if (e.kind === 'transform') {
@@ -2010,6 +2010,197 @@ $('k-sfapply').addEventListener('click', async () => {
   await commitMask('Keep only this range',
     masks, `<p>Keeps points whose <b>${sfName}</b> is between ${sfFmt(lo)} and ${sfFmt(hi)}. <b>{n}</b> points will be dropped, leaving {k}.</p>`);
 });
+
+// ------------------------------------------------------------------ fitting and detection
+// A fit answers with an RMS as well as its parameters, because the parameters alone are never
+// enough: a cylinder fitted to a flat wall has a radius and an axis and means nothing, and
+// the residual is the only thing that says so.
+
+const fitUi = { tol: 0.02, minPts: 2000 };
+for (const [id, key, lab, f] of [['k-dettol', 'tol', 'v-dettol', (v: number) => `${v.toFixed(3)} m`],
+                                 ['k-detmin', 'minPts', 'v-detmin', (v: number) => fmt(v)]] as [string, 'tol' | 'minPts', string, (v: number) => string][]) {
+  $(id).addEventListener('input', e => { fitUi[key] = Number((e.target as HTMLInputElement).value); $(lab).textContent = f(fitUi[key]); });
+  $(lab).textContent = f(fitUi[key]);
+}
+
+/** The points a fit should work on: the active region's contents, or the whole layer. Sampled
+ *  when there are more than the fit can usefully use — a plane is no better fitted from ten
+ *  million points than from half a million, and the transfer is the expensive part. */
+function fitPoints(max = 400_000): { xyz: Float32Array; nrm: Float32Array; count: number; inRegion: boolean; box: THREE.Box3 } {
+  const r = activeRegion();
+  const box = new THREE.Box3();
+  const est = r ? viewer.cells.countInside(r, 8) : viewer.loaded;
+  const stride = Math.max(1, Math.ceil(est / max));
+  const xs: number[] = [], ns: number[] = [];
+  const p = new THREE.Vector3(), nv = new THREE.Vector3();
+  const lb = new THREE.Box3();
+  const reach = r ? Math.hypot(r.half[0], r.half[1], r.half[2]) + (r.kind === 'sphere' ? r.radius : 0) : 0;
+  const want = r ? new THREE.Box3(new THREE.Vector3(...r.center).addScalar(-reach), new THREE.Vector3(...r.center).addScalar(reach)) : null;
+  const rot = new THREE.Matrix3().setFromMatrix4(viewer.cells.model);
+  for (const leaf of viewer.cells.leavesForMask()) {
+    if (want && !viewer.cells.leafBox(leaf, lb).intersectsBox(want)) continue;
+    const recs = leaf.readback(viewer.cells.gl2);
+    const xyz = viewer.cells.transformRecordsInto(recs, leaf.count, leaf, new Float64Array(leaf.count * 3));
+    for (let i = 0; i < leaf.count; i += stride) {
+      p.set(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]);
+      if (r && !pointInRegion(p, r)) continue;
+      xs.push(p.x, p.y, p.z);
+      box.expandByPoint(p);
+      const o = i * REC;
+      const a = recs[o + 10] << 24 >> 24, b = recs[o + 11] << 24 >> 24, c = recs[o + 12] << 24 >> 24;
+      if (a === 0 && b === 0 && c === 127) ns.push(0, 0, 0);
+      else { nv.set(a, b, c).applyMatrix3(rot); if (nv.lengthSq() > 1e-12) nv.normalize(); ns.push(nv.x, nv.y, nv.z); }
+    }
+  }
+  return { xyz: new Float32Array(xs), nrm: new Float32Array(ns), count: xs.length / 3, inRegion: !!r, box };
+}
+
+let lastFit: any = null;
+async function fitShape(kind: 'plane' | 'sphere' | 'cylinder' | 'circle') {
+  if (!viewer.loaded) return null;
+  busy('Reading the points…'); await tick();
+  try {
+    const pts = fitPoints();
+    if (pts.count < 8) { $('v-fit').textContent = `only ${pts.count} points there — place a region over something first`; return null; }
+    busy(`Fitting a ${kind} to ${fmt(pts.count)} points…`); await tick();
+    anaError = null; anaAlive = true;
+    const xyz = pts.xyz.buffer as ArrayBuffer, nrm = pts.nrm.buffer as ArrayBuffer;
+    anaWorker.postMessage({ type: 'fit', kind, xyz, nrm }, [xyz, nrm]);
+    const r = JSON.parse((await anaOnce('fit')).json);
+    if (r.error) { $('v-fit').textContent = r.error; return null; }
+    r.size = Math.max(...pts.box.getSize(new THREE.Vector3()).toArray(), 0.1) * 1.1;
+    if (kind === 'cylinder' && !r.length) r.length = r.size;
+    lastFit = r;
+    viewer.setPrimitive(r);
+    const mm = (v: number) => `${(v * 1000).toFixed(2)} mm`;
+    const v3 = (a: number[]) => a.map(v => v.toFixed(4)).join(', ');
+    $('v-fit').textContent = kind === 'plane'
+      ? `plane · normal ${v3(r.normal)} · through ${v3(r.centroid)} · RMS ${mm(r.rms)} · worst ${mm(r.worst)} · ${fmt(r.points)} points`
+      : kind === 'sphere' ? `sphere · centre ${v3(r.centre)} · r ${r.radius.toFixed(4)} m · RMS ${mm(r.rms)} · ${fmt(r.points)} points`
+      : kind === 'cylinder' ? `cylinder · axis ${v3(r.axis)} · through ${v3(r.centre)} · r ${r.radius.toFixed(4)} m · ${r.length.toFixed(3)} m long · RMS ${mm(r.rms)} · ${fmt(r.points)} points`
+      : `circle · centre ${v3(r.centre)} · r ${r.radius.toFixed(4)} m · normal ${v3(r.normal)} · RMS ${mm(r.rms)} · ${fmt(r.points)} points`;
+    viewer.touch();
+    return r;
+  } catch (e: any) { $('v-fit').textContent = 'fit failed: ' + (e?.message ?? e); return null; }
+  finally { hideBusy(); }
+}
+$('k-fitplane').addEventListener('click', () => fitShape('plane'));
+$('k-fitsphere').addEventListener('click', () => fitShape('sphere'));
+$('k-fitcyl').addEventListener('click', () => fitShape('cylinder'));
+$('k-fitcircle').addEventListener('click', () => fitShape('circle'));
+$('k-fitclear').addEventListener('click', () => { viewer.setPrimitive(null); lastFit = null; $('v-fit').textContent = '—'; });
+
+/** Distance from a point to a detected shape, the same measure the detector used. */
+function shapeDistance(sh: any, x: number, y: number, z: number): number {
+  if (sh.shape === 'plane') return Math.abs((x - sh.centroid[0]) * sh.normal[0] + (y - sh.centroid[1]) * sh.normal[1] + (z - sh.centroid[2]) * sh.normal[2]);
+  if (sh.shape === 'sphere') return Math.abs(Math.hypot(x - sh.centre[0], y - sh.centre[1], z - sh.centre[2]) - sh.radius);
+  const d = [x - sh.centre[0], y - sh.centre[1], z - sh.centre[2]];
+  const t = d[0] * sh.axis[0] + d[1] * sh.axis[1] + d[2] * sh.axis[2];
+  return Math.abs(Math.hypot(d[0] - t * sh.axis[0], d[1] - t * sh.axis[1], d[2] - t * sh.axis[2]) - sh.radius);
+}
+let shapes: any[] = [];
+/** Label every point of the layer by the nearest detected shape within tolerance.
+ *
+ *  The detector works on a sample, because RANSAC does not need ten million points to find a
+ *  wall. Classifying all of them afterwards against the few shapes it found is both cheaper
+ *  and more honest than pretending the sample's labels covered everything. */
+function applyShapeField(tol: number): number {
+  if (!shapes.length) return 0;
+  let claimed = 0;
+  const per: Float32Array[] = [];
+  for (const leaf of viewer.cells.leavesForMask()) {
+    const recs = leaf.readback(viewer.cells.gl2);
+    const xyz = viewer.cells.transformRecordsInto(recs, leaf.count, leaf, new Float64Array(leaf.count * 3));
+    const a = new Float32Array(leaf.count);
+    for (let i = 0; i < leaf.count; i++) {
+      let best = tol, at = -1;
+      for (let k = 0; k < shapes.length; k++) {
+        const d = shapeDistance(shapes[k], xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]);
+        if (d <= best) { best = d; at = k; }
+      }
+      a[i] = at < 0 ? NaN : at;
+      if (at >= 0) claimed++;
+    }
+    per.push(a);
+  }
+  viewer.cells.setScalarField(per);
+  sfName = `Shape (${shapes.length})`;
+  dirtyMark.field = sfName;
+  document.body.classList.add('has-sf');
+  ($('k-color-sf') as HTMLOptionElement).disabled = false;
+  setColorMode(5);
+  autoScalarRange(); refreshScalarUI();
+  return claimed;
+}
+function renderShapeList() {
+  const ul = $('det-list'); ul.innerHTML = '';
+  document.body.classList.toggle('has-shapes', shapes.length > 0);
+  shapes.forEach((sh, i) => {
+    const li = document.createElement('li');
+    const what = sh.shape === 'plane' ? `normal ${sh.normal.map((v: number) => v.toFixed(2)).join(', ')}`
+      : sh.shape === 'sphere' ? `r ${sh.radius.toFixed(3)} m`
+      : `r ${sh.radius.toFixed(3)} m, axis ${sh.axis.map((v: number) => v.toFixed(2)).join(', ')}`;
+    li.innerHTML = `<span class="ok">${i}: ${sh.shape}</span> <span class="mono">${what} · ${fmt(sh.points)} pts · RMS ${(sh.rms * 1000).toFixed(1)} mm</span>`;
+    li.querySelector('.ok')!.addEventListener('click', () => {
+      // narrow the field's value filter to this one shape, which is what "highlight" means
+      // when the highlight is a scalar field
+      $<HTMLInputElement>('k-sffilter').checked = true;
+      const lo = sfStats ? (i - 0.4 - sfStats.min) / Math.max(sfStats.max - sfStats.min, 1e-9) : 0;
+      const hi = sfStats ? (i + 0.4 - sfStats.min) / Math.max(sfStats.max - sfStats.min, 1e-9) : 1;
+      $<HTMLInputElement>('k-sflo').value = String(Math.round(Math.max(0, lo) * 1000));
+      $<HTMLInputElement>('k-sfhi').value = String(Math.round(Math.min(1, hi) * 1000));
+      refreshScalarUI();
+      viewer.setPrimitive({ ...sh, size: Math.max(...viewer.bounds().getSize(new THREE.Vector3()).toArray()) * 0.5, length: sh.length ?? Math.max(...viewer.bounds().getSize(new THREE.Vector3()).toArray()) * 0.5 });
+    });
+    ul.appendChild(li);
+  });
+}
+async function detectShapes(opts: { tol?: number; minPts?: number; kinds?: string } = {}) {
+  if (!viewer.loaded) return null;
+  const tol = opts.tol ?? fitUi.tol, minPts = Math.round(opts.minPts ?? fitUi.minPts);
+  const kinds = opts.kinds ?? $<HTMLSelectElement>('k-detkinds').value;
+  busy('Reading the points…'); await tick();
+  const t0 = performance.now();
+  try {
+    const pts = fitPoints(500_000);
+    if (pts.count < minPts) { $('v-fit').textContent = `only ${fmt(pts.count)} points — fewer than the ${fmt(minPts)} a shape needs`; return null; }
+    busy(`Looking for shapes in ${fmt(pts.count)} points…`); await tick();
+    anaError = null; anaAlive = true;
+    const xyz = pts.xyz.buffer as ArrayBuffer, nrm = pts.nrm.buffer as ArrayBuffer;
+    // the minimum support scales with the sample, or a stride would silently rule everything out
+    const sampled = Math.max(20, Math.round(minPts * pts.count / Math.max(viewer.loaded, 1)));
+    anaWorker.postMessage({ type: 'detect', xyz, nrm, tol, minPts: sampled, maxShapes: 12, kinds, trials: 400 }, [xyz, nrm]);
+    const res = await anaOnce('detect');
+    shapes = JSON.parse(res.json).shapes ?? [];
+    renderShapeList();
+    if (!shapes.length) { $('v-fit').textContent = `no shape had ${fmt(minPts)} points within ${tol} m`; return []; }
+    busy('Labelling the points…'); await tick();
+    const claimed = applyShapeField(tol);
+    $('v-fit').textContent = `${shapes.length} shape${shapes.length > 1 ? 's' : ''} · ${fmt(claimed)} of ${fmt(viewer.loaded)} points claimed · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+    viewer.touch();
+    return shapes;
+  } catch (e: any) { $('v-fit').textContent = 'detection failed: ' + (e?.message ?? e); return null; }
+  finally { hideBusy(); }
+}
+$('k-detect').addEventListener('click', () => { detectShapes(); });
+/** Keep or remove the points a shape claimed, through the same mask machinery as everything
+ *  else, so it undoes like any other edit. */
+async function applyShapeMask(keep: boolean) {
+  if (!shapes.length || !viewer.cells.hasScalarField) return null;
+  const masks: Uint8Array[] = [];
+  for (const l of viewer.cells.leavesForMask()) {
+    const m = new Uint8Array(l.count);
+    for (let i = 0; i < l.count; i++) {
+      const inlier = !!l.sf && Number.isFinite(l.sf[i]);
+      m[i] = (inlier === keep) ? 1 : 0;
+    }
+    masks.push(m);
+  }
+  return commitMask(keep ? 'Keep only the detected shapes' : 'Remove the detected shapes', masks,
+    `<p>${keep ? 'Everything not claimed by one of the detected shapes' : 'Every point claimed by a detected shape'} will be dropped: <b>{n}</b> of them, leaving {k}.</p>`);
+}
+$('k-detkeep').addEventListener('click', () => applyShapeMask(true));
+$('k-detremove').addEventListener('click', () => applyShapeMask(false));
 
 // ------------------------------------------------------------------ surface reconstruction
 const meshWorker = new Worker(new URL('./mesh-worker.ts', import.meta.url), { type: 'module' });
@@ -3045,6 +3236,24 @@ const agent = new AgentLink({
       note: $('v-register').textContent,
     };
   },
+  fit: async (a) => {
+    if (a.box) { const r = regionFrom(a.box, 'fit-region'); sections.push(r); syncRegions(); viewer.setActiveRegion(r.id); renderSectionList(); }
+    const kind = String(a.shape ?? 'plane');
+    if (!['plane', 'sphere', 'cylinder', 'circle'].includes(kind)) throw new Error("shape: 'plane' | 'sphere' | 'cylinder' | 'circle'");
+    const r = await fitShape(kind as any);
+    if (a.box) { const i = sections.findIndex(x => x.id === 'fit-region'); if (i >= 0) sections.splice(i, 1); syncRegions(); renderSectionList(); }
+    viewer.render();
+    if (!r) throw new Error($('v-fit').textContent || 'the fit failed');
+    return { ...r, note: $('v-fit').textContent };
+  },
+  detect: async (a) => {
+    const r = await detectShapes({ tol: a.tolerance !== undefined ? Number(a.tolerance) : undefined,
+      minPts: a.minPoints !== undefined ? Number(a.minPoints) : undefined,
+      kinds: Array.isArray(a.shapes) ? a.shapes.join(',') : a.shapes });
+    viewer.render();
+    if (!r) throw new Error($('v-fit').textContent || 'detection failed');
+    return { shapes: r, field: sfName, note: $('v-fit').textContent };
+  },
   transform: async (a) => {
     const op = a.op ?? 'get';
     if (op === 'get') return transformState();
@@ -3101,6 +3310,7 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   if (cmd === 'transform') return (a.op ?? 'get') !== 'get';
   if (cmd === 'entities') return ['add', 'remove', 'clone', 'merge'].includes(String(a.op ?? 'list'));
   if (cmd === 'register' || cmd === 'distance_to') return true;
+  if (cmd === 'detect') return true;               // real time, and it writes a scalar field
   return false;
 }
 /** An agent reply is written into a Firestore document, so it must be small and plain.
@@ -3297,7 +3507,7 @@ addEventListener('orientationchange', () => setTimeout(() => { viewer.resize(); 
 document.querySelectorAll<HTMLElement>('#panel .grp').forEach((g, i) => {
   const h = g.querySelector('h3'); if (!h) return;
   const name = g.dataset.grp ?? h.textContent ?? String(i); const key = 'grp:' + name;
-  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface', 'analysis', 'field', 'transform', 'register'].includes(name);
+  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface', 'analysis', 'field', 'transform', 'register', 'fit'].includes(name);
   const stored = localStorage.getItem(key); g.classList.toggle('closed', stored ? stored === '1' : defaultClosed);
   h.addEventListener('click', () => { g.classList.toggle('closed'); localStorage.setItem(key, g.classList.contains('closed') ? '1' : '0'); });
 });
@@ -3318,6 +3528,7 @@ refreshCachedList();
   dirtyList, isDirty, openAnother, confirmReplace,
   stateRecord, recommendedSource, surfaceRecord, heightmapCmd, contourCmd, fitPlaneCmd, dispatchAgent,
   createPrismRegion, placeRegion, scaleRegion, fitToContents, activeRegion, startSize, buildClassificationField,
+  fitShape, detectShapes, fitPoints, applyShapeMask, get shapes() { return shapes; },
   get sections() { return sections; }, renderSectionList, regionCount, syncRegions,
   activateEntity, cloneActive, mergeIntoActive, renderLayers, entityList, setReference,
   matchCentres, matchScales, runIcp, distanceToReference, removeLayer, addFile,

@@ -69,6 +69,18 @@ export class CloudAnalysis {
 }
 
 /**
+ * RANSAC detection. `labels` is one shape index per point, -1 for the points no shape
+ * claimed, in the order they were handed in.
+ */
+export class Detection {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    labels(): Int32Array;
+    readonly json: string;
+}
+
+/**
  * Streams points into a new E57 file. Field order: xyz f64 (relative to
  * the pose translation), rgb u8, intensity u8, normal i8.
  */
@@ -185,6 +197,14 @@ export class PointSink {
     push(xyz: Float64Array, rgb: Uint8Array, inten: Uint8Array, nrm: Int8Array, cls: Uint8Array, n: number, preview: Function): void;
 }
 
+export function detect_shapes(xyz: Float32Array, nrm: Float32Array, tol: number, min_pts: number, max_shapes: number, kinds: string, trials: number, progress?: Function | null): Detection;
+
+/**
+ * Fit one primitive to a set of points. `xyz` is x,y,z triples; `nrm` the same length for
+ * a cylinder (its axis comes from the normals) and may be empty otherwise.
+ */
+export function fit_shape(kind: string, xyz: Float32Array, nrm: Float32Array): string;
+
 /**
  * The laszip VLR body for a point format, so a caller can lay out the file's header
  * before it starts compressing: the offset to point data depends on this record's length.
@@ -198,6 +218,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_cloudanalysis_free: (a: number, b: number) => void;
+    readonly __wbg_detection_free: (a: number, b: number) => void;
     readonly __wbg_e57export_free: (a: number, b: number) => void;
     readonly __wbg_e57handle_free: (a: number, b: number) => void;
     readonly __wbg_lazreader_free: (a: number, b: number) => void;
@@ -232,6 +253,9 @@ export interface InitOutput {
     readonly cloudanalysis_start_reference: (a: number, b: number) => void;
     readonly cloudanalysis_subsample: (a: number, b: number) => [number, number];
     readonly cloudanalysis_write_normals: (a: number, b: number, c: number, d: any) => void;
+    readonly detect_shapes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => number;
+    readonly detection_json: (a: number) => [number, number];
+    readonly detection_labels: (a: number) => [number, number];
     readonly e57export_add_points: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly e57export_finish: (a: number) => [number, number, number];
     readonly e57export_new: (a: any, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];
@@ -239,6 +263,7 @@ export interface InitOutput {
     readonly e57handle_meta: (a: number) => [number, number];
     readonly e57handle_new: (a: any, b: number) => [number, number, number];
     readonly e57handle_stream: (a: number, b: number, c: number, d: number, e: number, f: any, g: any, h: any) => [number, number, number];
+    readonly fit_shape: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly laz_vlr: (a: number, b: number) => [number, number, number, number];
     readonly lazreader_new: (a: any, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly lazreader_read: (a: number, b: number) => [number, number, number, number];
