@@ -480,8 +480,10 @@ mod wasm_mesh {
             MeshBuilder { inner: Mesher::new(voxel, trunc_voxels, min_weight), out: None }
         }
         /// One octree leaf: its cube origin and size, plus the packed 14-byte records.
-        pub fn add_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8], stride: u32) {
-            self.inner.add_records([ox, oy, oz], size, recs, stride as usize);
+        /// `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
+        pub fn add_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8], stride: u32, model: &[f32]) {
+            let m: Option<[f32; 16]> = if model.len() == 16 { Some(model.try_into().unwrap()) } else { None };
+            self.inner.add_records([ox, oy, oz], size, recs, stride as usize, m.as_ref());
         }
         pub fn bricks(&self) -> u32 { self.inner.brick_count() as u32 }
         /// Extract the surface. Returns a JSON summary; the buffers follow.
@@ -531,8 +533,10 @@ mod wasm_analysis {
         pub fn new(cell: f32) -> CloudAnalysis {
             CloudAnalysis { inner: Analyzer::new(cell), cursor: 0, last_count: 0, last_mean: 0.0, last_cut: 0.0 }
         }
-        pub fn add_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8]) {
-            self.inner.add_records([ox, oy, oz], size, recs);
+        /// `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
+        pub fn add_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8], model: &[f32]) {
+            let m: Option<[f32; 16]> = if model.len() == 16 { Some(model.try_into().unwrap()) } else { None };
+            self.inner.add_records([ox, oy, oz], size, recs, m.as_ref());
         }
         pub fn len(&self) -> u32 { self.inner.len() as u32 }
         pub fn build(&mut self) { self.inner.build(); }
@@ -544,6 +548,9 @@ mod wasm_analysis {
             let vp = if use_viewpoint { Some([vx, vy, vz]) } else { None };
             self.inner.orient_normals(k as usize, vp, |i| tick(&progress, i));
         }
+        /// Turn each normal toward the nearest scanner station. `vps` is a flat x,y,z list in
+        /// the same frame as the points (so already through the cloud's model matrix).
+        pub fn orient_to_viewpoints(&mut self, vps: &[f32]) { self.inner.orient_to_viewpoints(vps); }
         pub fn invert_normals(&mut self) { self.inner.invert_normals(); }
 
         /// Normals interleaved as x,y,z signed bytes, for the viewer to patch into its records.

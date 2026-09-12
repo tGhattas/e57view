@@ -16,10 +16,29 @@ fn recs(pts: &[[f32; 3]], origin: [f32; 3], size: f32) -> Vec<u8> {
     out
 }
 fn mk(pts: &[[f32; 3]], cell: f32) -> Analyzer {
+    mk_m(pts, cell, None)
+}
+/// Same, but seen through a row-major 4x4 model matrix — what the viewer does when the cloud
+/// carries a transform it has not baked into the records.
+fn mk_m(pts: &[[f32; 3]], cell: f32, model: Option<&[f32; 16]>) -> Analyzer {
     let mut a = Analyzer::new(cell);
-    a.add_records([0.0, 0.0, 0.0], 100.0, &recs(pts, [0.0, 0.0, 0.0], 100.0));
+    a.add_records([0.0, 0.0, 0.0], 100.0, &recs(pts, [0.0, 0.0, 0.0], 100.0), model);
     a.build();
     a
+}
+/// Row-major rotation about X by `deg`, translating about `c` so the shape stays in the
+/// positive octant the 16-bit quantisation lives in.
+fn rot_x(deg: f32, c: [f32; 3]) -> [f32; 16] {
+    let (s, k) = (deg.to_radians().sin(), deg.to_radians().cos());
+    // R about the point c:  p' = R (p - c) + c
+    let r = [[1.0, 0.0, 0.0], [0.0, k, -s], [0.0, s, k]];
+    let mut m = [0.0f32; 16];
+    for i in 0..3 {
+        for j in 0..3 { m[i * 4 + j] = r[i][j]; }
+        m[i * 4 + 3] = c[i] - (r[i][0] * c[0] + r[i][1] * c[1] + r[i][2] * c[2]);
+    }
+    m[15] = 1.0;
+    m
 }
 fn med(v: &mut Vec<f32>) -> f32 {
     v.retain(|x| x.is_finite());
@@ -105,6 +124,86 @@ fn main() {
         (d[0] * s.nx[i] as f32 + d[1] * s.ny[i] as f32 + d[2] * s.nz[i] as f32) < 0.0
     }).count();
     ck("invert flips them", inward > s.len() * 98 / 100, format!("{:.1}% inward", inward as f32 / s.len() as f32 * 100.0));
+
+    // ------------------------------------------------- interior room, station orientation
+    // Points on the *inside* faces of a box with the scanner in the middle. "Away from the
+    // cloud centroid" is exactly wrong here, so this is the case the per-point station flip
+    // exists for: every wall must end up facing the station.
+    let (lo, hi) = (10.0f32, 16.0f32);
+    let mid = (lo + hi) / 2.0;
+    let station = [mid, mid, mid];
+    let mut room: Vec<[f32; 3]> = Vec::new();
+    let step = 0.06f32;
+    let cells = ((hi - lo) / step) as usize;
+    for i in 0..=cells { for j in 0..=cells {
+        let (u, v) = (lo + i as f32 * step, lo + j as f32 * step);
+        room.push([u, v, lo]); room.push([u, v, hi]);          // floor, ceiling
+        room.push([u, lo, v]); room.push([u, hi, v]);          // two walls
+        room.push([lo, u, v]); room.push([hi, u, v]);          // two walls
+    }}
+    let mut rm = mk(&room, 0.15);
+    rm.compute_normals(16, |_| {});
+    rm.orient_normals(16, None, |_| {});
+    let toward = |a: &Analyzer| (0..a.len()).filter(|&i| {
+        let d = [station[0] - a.x[i], station[1] - a.y[i], station[2] - a.z[i]];
+        d[0] * a.nx[i] as f32 + d[1] * a.ny[i] as f32 + d[2] * a.nz[i] as f32 > 0.0
+    }).count();
+    let before = toward(&rm);
+    rm.orient_to_viewpoints(&[station[0], station[1], station[2]]);
+    let after = toward(&rm);
+    ck("centroid vote gets an interior wrong", (before as f32) < rm.len() as f32 * 0.75,
+       format!("{:.1}% faced the station", before as f32 / rm.len() as f32 * 100.0));
+    ck("station flip faces them all inward", after > rm.len() * 99 / 100,
+       format!("{:.1}% of {} face the station", after as f32 / rm.len() as f32 * 100.0, rm.len()));
+
+    // many stations: nearest-station orientation must still be right everywhere
+    let mut many = Vec::new();
+    for k in 0..4 { for a in 0..3 { many.push(station[a] + if a == 0 { k as f32 * 0.4 - 0.6 } else { 0.0 }); } }
+    let mut rm2 = mk(&room, 0.15);
+    rm2.compute_normals(16, |_| {});
+    rm2.orient_normals(16, None, |_| {});
+    rm2.orient_to_viewpoints(&many);
+    let after2 = (0..rm2.len()).filter(|&i| {
+        // nearest of the four stations, recomputed here independently
+        let mut best = (f32::INFINITY, 0usize);
+        for k in 0..many.len() / 3 {
+            let d = (many[k * 3] - rm2.x[i]).powi(2) + (many[k * 3 + 1] - rm2.y[i]).powi(2) + (many[k * 3 + 2] - rm2.z[i]).powi(2);
+            if d < best.0 { best = (d, k); }
+        }
+        let k = best.1;
+        let d = [many[k * 3] - rm2.x[i], many[k * 3 + 1] - rm2.y[i], many[k * 3 + 2] - rm2.z[i]];
+        d[0] * rm2.nx[i] as f32 + d[1] * rm2.ny[i] as f32 + d[2] * rm2.nz[i] as f32 > 0.0
+    }).count();
+    ck("four stations, all face their nearest", after2 > rm2.len() * 99 / 100,
+       format!("{:.1}% correct", after2 as f32 / rm2.len() as f32 * 100.0));
+
+    // ------------------------------------------------- model matrix through the analyser
+    // A plane tilted 30 degrees, read back through the inverse rotation as the cloud's model
+    // matrix: the analyser must see a level plane, which is what lets verticality and the
+    // rest of the features describe the cloud on screen rather than the raw records.
+    let tilt_c = [12.0f32, 12.0, 20.0];
+    let tilted: Vec<[f32; 3]> = {
+        let m = rot_x(30.0, tilt_c);
+        plane.iter().map(|p| [
+            m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
+            m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
+            m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
+        ]).collect()
+    };
+    let mut t_raw = mk(&tilted, 0.2);
+    let mut f = t_raw.feature(Feature::Verticality, 16, 0.3, |_| {});
+    let v_raw = med(&mut f);
+    let inv = rot_x(-30.0, tilt_c);
+    let mut t_lev = mk_m(&tilted, 0.2, Some(&inv));
+    let mut f = t_lev.feature(Feature::Verticality, 16, 0.3, |_| {});
+    let v_lev = med(&mut f);
+    // verticality is 1 - |nz| of the surface normal, so a 30 degree tilt reads 1 - cos(30)
+    ck("tilted plane reads tilted raw", (v_raw - 0.134).abs() < 0.02, format!("verticality {:.3}, 1-cos(30) = 0.134", v_raw));
+    ck("inverse model levels it", v_lev < 0.06, format!("verticality {:.3} through the model", v_lev));
+    // and the normals come back rotated with it
+    t_lev.compute_normals(16, |_| {});
+    let up = t_lev.nz.iter().filter(|&&v| v.abs() > 120).count();
+    ck("levelled normals point along z", up > t_lev.len() * 98 / 100, format!("{}/{}", up, t_lev.len()));
 
     // ---------------------------------------------------------------- outliers
     let mut noisy = plane.clone();

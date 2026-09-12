@@ -139,6 +139,66 @@ fn main() {
     check("open plane keeps its border", b2 > 100, format!("{} boundary edges", b2));
     check("plane is manifold", nm2 == 0, format!("{} edges with >2 faces", nm2));
 
+    // ---------------------------------------------------------- plane through a model matrix
+    // The viewer never bakes a cloud transform into its records, so the mesher has to apply
+    // it. Feed the same plane rotated 25 degrees about X, hand the mesher the inverse as the
+    // cloud's model matrix, and the surface must come back where the unrotated plane was —
+    // which is what keeps a reconstructed surface glued to the points that made it.
+    let (sa, ca) = 25.0f32.to_radians().sin_cos();
+    let piv = [3.0f32, 3.0, 2.0];
+    // row-major rotation about X through piv
+    let mut mm = [0.0f32; 16];
+    {
+        let rr = [[1.0, 0.0, 0.0], [0.0, ca, -sa], [0.0, sa, ca]];
+        for i in 0..3 {
+            for j in 0..3 { mm[i * 4 + j] = rr[i][j]; }
+            mm[i * 4 + 3] = piv[i] - (rr[i][0] * piv[0] + rr[i][1] * piv[1] + rr[i][2] * piv[2]);
+        }
+        mm[15] = 1.0;
+    }
+    let mut inv = [0.0f32; 16];
+    {
+        let rr = [[1.0, 0.0, 0.0], [0.0, ca, sa], [0.0, -sa, ca]];
+        for i in 0..3 {
+            for j in 0..3 { inv[i * 4 + j] = rr[i][j]; }
+            inv[i * 4 + 3] = piv[i] - (rr[i][0] * piv[0] + rr[i][1] * piv[1] + rr[i][2] * piv[2]);
+        }
+        inv[15] = 1.0;
+    }
+    // 14-byte records of the rotated plane, exactly as a leaf would hold them
+    let mut recs = vec![0u8; pl.len() * 14];
+    let kq = 65536.0f32 / 16.0;
+    for (i, (p, n)) in pl.iter().enumerate() {
+        let rp = [
+            mm[0] * p[0] + mm[1] * p[1] + mm[2] * p[2] + mm[3],
+            mm[4] * p[0] + mm[5] * p[1] + mm[6] * p[2] + mm[7],
+            mm[8] * p[0] + mm[9] * p[1] + mm[10] * p[2] + mm[11],
+        ];
+        let rn = [
+            mm[0] * n[0] + mm[1] * n[1] + mm[2] * n[2],
+            mm[4] * n[0] + mm[5] * n[1] + mm[6] * n[2],
+            mm[8] * n[0] + mm[9] * n[1] + mm[10] * n[2],
+        ];
+        let o = i * 14;
+        for a in 0..3 {
+            let q = (rp[a] * kq).round().clamp(0.0, 65535.0) as u16;
+            recs[o + a * 2..o + a * 2 + 2].copy_from_slice(&q.to_le_bytes());
+        }
+        recs[o + 6] = 30; recs[o + 7] = 200; recs[o + 8] = 90;
+        for a in 0..3 { recs[o + 10 + a] = ((rn[a] * 127.0).round().clamp(-127.0, 127.0) as i8) as u8; }
+    }
+    let mut m4 = Mesher::new(0.05, 2.0, 0.5);
+    m4.add_records([0.0, 0.0, 0.0], 16.0, &recs, 1, Some(&inv));
+    let (mesh4, st4) = m4.extract(1, 1.0);
+    let nv4 = mesh4.pos.len() / 3;
+    let mut zerr4 = 0.0f32;
+    for v in 0..nv4 { zerr4 = zerr4.max((mesh4.pos[v * 3 + 2] - 2.0).abs()); }
+    println!("\nrotated plane meshed through the inverse model · {} verts {} tris", st4.vertices, st4.triangles);
+    check("model matrix levels the surface", nv4 > 1000 && zerr4 < 0.04, format!("worst |z-2.0| = {:.4} m over {} verts", zerr4, nv4));
+    let mut upn = 0usize;
+    for v in 0..nv4 { if mesh4.nrm[v * 3 + 2].abs() > 0.9 { upn += 1; } }
+    check("model matrix rotates the normals", upn > nv4 * 95 / 100, format!("{}/{} with |nz|>0.9", upn, nv4));
+
     // ---------------------------------------------------------------- unoriented fallback
     let mut m3 = Mesher::new(0.06, 2.0, 0.5);
     for (p, _) in &pts {

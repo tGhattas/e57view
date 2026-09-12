@@ -158,6 +158,18 @@ fn eigen_sym3(mut a: [[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
     (vals, vecs)
 }
 
+/// Negate a quantised normal without landing on (0,0,127), which the record format
+/// reserves for "this point has no normal".
+#[inline]
+fn flip(nx: &mut i8, ny: &mut i8, nz: &mut i8) {
+    *nx = -(*nx).max(-127);
+    *ny = -(*ny).max(-127);
+    *nz = -(*nz).max(-127);
+    if *nx == 0 && *ny == 0 && *nz == 127 {
+        *nz = 126;
+    }
+}
+
 impl Analyzer {
     pub fn new(cell: f32) -> Analyzer {
         let cell = cell.max(1e-4);
@@ -172,7 +184,13 @@ impl Analyzer {
     pub fn len(&self) -> usize { self.x.len() }
 
     /// Decode one octree leaf's 14-byte records into the flat arrays.
-    pub fn add_records(&mut self, origin: [f32; 3], size: f32, recs: &[u8]) {
+    ///
+    /// `model` is the cloud's 4x4 transform, **row-major**, or None for identity. The viewer
+    /// keeps its points quantised in their original leaf cubes and carries the transform
+    /// separately, so every analysis has to apply it here or read a cloud that is not the
+    /// one on screen — verticality on a levelled scan being the obvious case. Normals are
+    /// rotated by the upper-left 3x3 and requantised.
+    pub fn add_records(&mut self, origin: [f32; 3], size: f32, recs: &[u8], model: Option<&[f32; 16]>) {
         const REC: usize = 14;
         let n = recs.len() / REC;
         let k = size / 65536.0;
@@ -182,12 +200,38 @@ impl Analyzer {
             let qx = u16::from_le_bytes([recs[o], recs[o + 1]]) as f32;
             let qy = u16::from_le_bytes([recs[o + 2], recs[o + 3]]) as f32;
             let qz = u16::from_le_bytes([recs[o + 4], recs[o + 5]]) as f32;
-            self.x.push(origin[0] + qx * k);
-            self.y.push(origin[1] + qy * k);
-            self.z.push(origin[2] + qz * k);
-            self.nx.push(recs[o + 10] as i8);
-            self.ny.push(recs[o + 11] as i8);
-            self.nz.push(recs[o + 12] as i8);
+            let p = [origin[0] + qx * k, origin[1] + qy * k, origin[2] + qz * k];
+            let (mut nx, mut ny, mut nz) = (recs[o + 10] as i8, recs[o + 11] as i8, recs[o + 12] as i8);
+            let p = match model {
+                None => p,
+                Some(m) => {
+                    // rotate the normal too, unless it is the "no normal" placeholder
+                    if !(nx == 0 && ny == 0 && nz == 127) {
+                        let (a, b, c) = (nx as f32, ny as f32, nz as f32);
+                        let tx = m[0] * a + m[1] * b + m[2] * c;
+                        let ty = m[4] * a + m[5] * b + m[6] * c;
+                        let tz = m[8] * a + m[9] * b + m[10] * c;
+                        let l = (tx * tx + ty * ty + tz * tz).sqrt();
+                        if l > 1e-9 {
+                            nx = (tx / l * 127.0).round().clamp(-127.0, 127.0) as i8;
+                            ny = (ty / l * 127.0).round().clamp(-127.0, 127.0) as i8;
+                            nz = (tz / l * 127.0).round().clamp(-127.0, 127.0) as i8;
+                            if nx == 0 && ny == 0 && nz == 127 { nz = 126; }
+                        }
+                    }
+                    [
+                        m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
+                        m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
+                        m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
+                    ]
+                }
+            };
+            self.x.push(p[0]);
+            self.y.push(p[1]);
+            self.z.push(p[2]);
+            self.nx.push(nx);
+            self.ny.push(ny);
+            self.nz.push(nz);
         }
         self.built = false;
     }
@@ -332,13 +376,18 @@ impl Analyzer {
         }
     }
 
-    /// Make neighbouring normals agree, then flip the whole cloud outward.
+    /// Make neighbouring normals agree, then flip each connected component as a unit.
     ///
-    /// A breadth-first walk over the neighbour graph propagates orientation from a seed,
-    /// flipping any normal that disagrees with the one it came from. That is the spirit of
-    /// a minimum spanning tree traversal without the cost of building one. Each connected
-    /// component is then flipped as a unit so its normals point away from the cloud centre,
-    /// or toward a viewpoint when one is supplied.
+    /// A breadth-first walk over the neighbour graph propagates orientation outward from a
+    /// seed, flipping any normal that disagrees with the one it was reached from. That is
+    /// the spirit of a minimum spanning tree traversal without the cost of building one:
+    /// the queue is an index into a growing vector, so a point is visited in order of how
+    /// many neighbour hops it is from the seed, which keeps the propagation path short and
+    /// the sign decisions local. Each component is then flipped as a unit so its normals
+    /// point away from the cloud centre, or toward a viewpoint when one is supplied.
+    ///
+    /// The whole-component vote is only right for an object seen from outside. For an
+    /// interior scan use `orient_to_viewpoints` afterwards, which decides per point.
     pub fn orient_normals(&mut self, k: usize, viewpoint: Option<[f32; 3]>, mut progress: impl FnMut(usize)) {
         self.build();
         let n = self.len();
@@ -359,7 +408,10 @@ impl Analyzer {
             seen[seed] = true;
             queue.clear(); comp.clear();
             queue.push(seed as u32);
-            while let Some(cur) = queue.pop() {
+            let mut head = 0usize;
+            while head < queue.len() {
+                let cur = queue[head];
+                head += 1;
                 let ci = cur as usize;
                 comp.push(cur);
                 done += 1;
@@ -372,10 +424,9 @@ impl Analyzer {
                     seen[ju] = true;
                     let dot = cn[0] * self.nx[ju] as f32 + cn[1] * self.ny[ju] as f32 + cn[2] * self.nz[ju] as f32;
                     if dot < 0.0 {
-                        self.nx[ju] = -self.nx[ju].max(-127);
-                        self.ny[ju] = -self.ny[ju].max(-127);
-                        self.nz[ju] = -self.nz[ju].max(-127);
-                        if self.nx[ju] == 0 && self.ny[ju] == 0 && self.nz[ju] == 127 { self.nz[ju] = 126; }
+                        let (mut a, mut b, mut c) = (self.nx[ju], self.ny[ju], self.nz[ju]);
+                        flip(&mut a, &mut b, &mut c);
+                        self.nx[ju] = a; self.ny[ju] = b; self.nz[ju] = c;
                     }
                     queue.push(j);
                 }
@@ -394,21 +445,56 @@ impl Analyzer {
             if vote < 0 {
                 for &p in comp.iter() {
                     let pu = p as usize;
-                    self.nx[pu] = -self.nx[pu].max(-127);
-                    self.ny[pu] = -self.ny[pu].max(-127);
-                    self.nz[pu] = -self.nz[pu].max(-127);
-                    if self.nx[pu] == 0 && self.ny[pu] == 0 && self.nz[pu] == 127 { self.nz[pu] = 126; }
+                    let (mut a, mut b, mut c) = (self.nx[pu], self.ny[pu], self.nz[pu]);
+                    flip(&mut a, &mut b, &mut c);
+                    self.nx[pu] = a; self.ny[pu] = b; self.nz[pu] = c;
                 }
+            }
+        }
+    }
+
+    /// Turn every normal toward the nearest of the scanner's own viewpoints.
+    ///
+    /// `vps` is a flat list of x,y,z triples in the same frame as the points. A laser scan
+    /// only ever saw a surface from the station that measured it, so "toward the station"
+    /// is the physically correct outward direction — and for an interior it is the opposite
+    /// of "away from the cloud centroid", which is why a whole-component vote turns every
+    /// wall in a building the wrong way round. Decided per point, so one cloud covering
+    /// many rooms comes out right everywhere.
+    ///
+    /// Stations number in the hundreds, so the nearest one is found by brute force: fewer
+    /// distance computations per point than the neighbour search that produced the normals.
+    pub fn orient_to_viewpoints(&mut self, vps: &[f32]) {
+        let m = vps.len() / 3;
+        if m == 0 { return; }
+        for i in 0..self.len() {
+            let (px, py, pz) = (self.x[i], self.y[i], self.z[i]);
+            let mut best = f32::INFINITY;
+            let mut bk = 0usize;
+            for k in 0..m {
+                let dx = vps[k * 3] - px;
+                let dy = vps[k * 3 + 1] - py;
+                let dz = vps[k * 3 + 2] - pz;
+                let d = dx * dx + dy * dy + dz * dz;
+                if d < best { best = d; bk = k; }
+            }
+            let rx = vps[bk * 3] - px;
+            let ry = vps[bk * 3 + 1] - py;
+            let rz = vps[bk * 3 + 2] - pz;
+            let dot = rx * self.nx[i] as f32 + ry * self.ny[i] as f32 + rz * self.nz[i] as f32;
+            if dot < 0.0 {
+                let (mut a, mut b, mut c) = (self.nx[i], self.ny[i], self.nz[i]);
+                flip(&mut a, &mut b, &mut c);
+                self.nx[i] = a; self.ny[i] = b; self.nz[i] = c;
             }
         }
     }
 
     pub fn invert_normals(&mut self) {
         for i in 0..self.len() {
-            self.nx[i] = -self.nx[i].max(-127);
-            self.ny[i] = -self.ny[i].max(-127);
-            self.nz[i] = -self.nz[i].max(-127);
-            if self.nx[i] == 0 && self.ny[i] == 0 && self.nz[i] == 127 { self.nz[i] = 126; }
+            let (mut a, mut b, mut c) = (self.nx[i], self.ny[i], self.nz[i]);
+            flip(&mut a, &mut b, &mut c);
+            self.nx[i] = a; self.ny[i] = b; self.nz[i] = c;
         }
     }
 

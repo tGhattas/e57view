@@ -13,6 +13,10 @@ const ensureWasm = () => (wasmReady ??= init({ module_or_path: wasmUrl }));
 let a: CloudAnalysis | null = null;
 let fed = 0;
 let maxPoints = 30e6;
+/** The cloud's 4x4 transform, row-major, or empty for identity. The viewer keeps its points
+ *  quantised in their original leaf cubes and carries the transform separately, so every
+ *  leaf has to be read through it here. */
+let model = new Float32Array(0);
 
 const post = (m: any, t: Transferable[] = []) => (self as any).postMessage(m, t);
 const prog = (phase: string, total: number) => {
@@ -32,6 +36,7 @@ self.onmessage = async (ev: MessageEvent) => {
       a?.free();
       a = new CloudAnalysis(m.cell);
       maxPoints = m.maxPoints || 30e6;
+      model = m.model && m.model.length === 16 ? new Float32Array(m.model) : new Float32Array(0);
       fed = 0;
       post({ type: 'ready' });
       return;
@@ -39,7 +44,7 @@ self.onmessage = async (ev: MessageEvent) => {
 
     if (m.type === 'leaf') {
       const recs = new Uint8Array(m.recs);
-      a!.add_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs);
+      a!.add_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs, model);
       fed++;
       const n = a!.len();
       if (n > maxPoints) {
@@ -62,8 +67,15 @@ self.onmessage = async (ev: MessageEvent) => {
       if (op === 'normals') {
         a!.compute_normals(m.k, prog('Computing normals', n));
         if (m.orient) {
+          const vps: Float32Array | null = m.viewpoints && m.viewpoints.length >= 3 ? new Float32Array(m.viewpoints) : null;
           const v = m.viewpoint;
-          a!.orient_normals(m.k, v ? v[0] : 0, v ? v[1] : 0, v ? v[2] : 0, !!v, prog('Orienting normals', n));
+          // Propagation first: it makes neighbouring normals agree, which is a local
+          // decision and the only one the neighbour graph can make. Then the global sign.
+          a!.orient_normals(m.k, v ? v[0] : 0, v ? v[1] : 0, v ? v[2] : 0, !!v && !vps, prog('Orienting normals', n));
+          // With the scanner's own stations known, the outward direction is "toward the
+          // nearest station", decided per point. That overrides the per-component vote,
+          // which is wrong for anything scanned from the inside.
+          if (vps) { post({ type: 'progress', phase: 'Facing the stations', done: 0, total: n }); a!.orient_to_viewpoints(vps); }
         }
       } else if (op === 'invert') {
         a!.invert_normals();

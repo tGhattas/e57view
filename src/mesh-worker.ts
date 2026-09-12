@@ -11,6 +11,9 @@ let builder: MeshBuilder | null = null;
 let stride = 1;
 let fed = 0;
 let maxBytes = 900e6;
+/** The cloud's 4x4 transform, row-major, or empty for identity: the surface has to be built
+ *  in the same frame the points are drawn in, or it will not sit on them. */
+let model = new Float32Array(0);
 const BRICK_BYTES = 8 * 8 * 8 * 7;   // sd + weight + rgb per voxel
 
 const post = (m: any, t: Transferable[] = []) => (self as any).postMessage(m, t);
@@ -24,13 +27,14 @@ self.onmessage = async (ev: MessageEvent) => {
       builder = new MeshBuilder(m.voxel, m.trunc, m.minWeight);
       stride = Math.max(1, m.stride | 0);
       maxBytes = m.maxBytes || 900e6;
+      model = m.model && m.model.length === 16 ? new Float32Array(m.model) : new Float32Array(0);
       fed = 0;
       post({ type: 'ready' });
       return;
     }
     if (m.type === 'leaf') {
       const recs = new Uint8Array(m.recs);
-      builder!.add_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs, stride);
+      builder!.add_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs, stride, model);
       fed++;
       if ((fed & 7) === 0) {
         const bricks = builder!.bricks();

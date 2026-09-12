@@ -228,7 +228,11 @@ impl Mesher {
 
     /// Records are the viewer's 14-byte layout: u16 x,y,z quantised in the leaf cube,
     /// u8 r,g,b, u8 intensity, i8 nx,ny,nz, pad.
-    pub fn add_records(&mut self, origin: [f32; 3], size: f32, recs: &[u8], stride: usize) {
+    ///
+    /// `model` is the cloud's 4x4 transform, **row-major**, or None for identity. The points
+    /// on screen are the raw records seen through that matrix, so the surface has to be built
+    /// through it as well or it will not sit on the cloud it came from.
+    pub fn add_records(&mut self, origin: [f32; 3], size: f32, recs: &[u8], stride: usize, model: Option<&[f32; 16]>) {
         const REC: usize = 14;
         let n = recs.len() / REC;
         let k = size / 65536.0;
@@ -239,13 +243,13 @@ impl Mesher {
             let qx = u16::from_le_bytes([recs[o], recs[o + 1]]) as f32;
             let qy = u16::from_le_bytes([recs[o + 2], recs[o + 3]]) as f32;
             let qz = u16::from_le_bytes([recs[o + 4], recs[o + 5]]) as f32;
-            let p = [origin[0] + qx * k, origin[1] + qy * k, origin[2] + qz * k];
+            let mut p = [origin[0] + qx * k, origin[1] + qy * k, origin[2] + qz * k];
             let rgb = (recs[o + 6], recs[o + 7], recs[o + 8]);
             let nx = recs[o + 10] as i8;
             let ny = recs[o + 11] as i8;
             let nz = recs[o + 12] as i8;
             // (0,0,127) is the placeholder written when a file carries no normals
-            let n = if nx == 0 && ny == 0 && nz == 127 {
+            let mut n = if nx == 0 && ny == 0 && nz == 127 {
                 None
             } else {
                 let (a, b, c) = (nx as f32 / 127.0, ny as f32 / 127.0, nz as f32 / 127.0);
@@ -256,6 +260,20 @@ impl Mesher {
                     None
                 }
             };
+            if let Some(m) = model {
+                p = [
+                    m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
+                    m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
+                    m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
+                ];
+                if let Some(v) = n {
+                    let tx = m[0] * v[0] + m[1] * v[1] + m[2] * v[2];
+                    let ty = m[4] * v[0] + m[5] * v[1] + m[6] * v[2];
+                    let tz = m[8] * v[0] + m[9] * v[1] + m[10] * v[2];
+                    let l = (tx * tx + ty * ty + tz * tz).sqrt();
+                    n = if l > 1e-9 { Some([tx / l, ty / l, tz / l]) } else { None };
+                }
+            }
             self.add_point(p, n, rgb);
             i += step;
         }

@@ -17,16 +17,20 @@ export class CloudAnalysis {
         wasm.__wbg_cloudanalysis_free(ptr, 0);
     }
     /**
+     * `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
      * @param {number} ox
      * @param {number} oy
      * @param {number} oz
      * @param {number} size
      * @param {Uint8Array} recs
+     * @param {Float32Array} model
      */
-    add_leaf(ox, oy, oz, size, recs) {
+    add_leaf(ox, oy, oz, size, recs, model) {
         const ptr0 = passArray8ToWasm0(recs, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        wasm.cloudanalysis_add_leaf(this.__wbg_ptr, ox, oy, oz, size, ptr0, len0);
+        const ptr1 = passArrayF32ToWasm0(model, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.cloudanalysis_add_leaf(this.__wbg_ptr, ox, oy, oz, size, ptr0, len0, ptr1, len1);
     }
     build() {
         wasm.cloudanalysis_build(this.__wbg_ptr);
@@ -147,6 +151,16 @@ export class CloudAnalysis {
      */
     orient_normals(k, vx, vy, vz, use_viewpoint, progress) {
         wasm.cloudanalysis_orient_normals(this.__wbg_ptr, k, vx, vy, vz, use_viewpoint, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+    }
+    /**
+     * Turn each normal toward the nearest scanner station. `vps` is a flat x,y,z list in
+     * the same frame as the points (so already through the cloud's model matrix).
+     * @param {Float32Array} vps
+     */
+    orient_to_viewpoints(vps) {
+        const ptr0 = passArrayF32ToWasm0(vps, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.cloudanalysis_orient_to_viewpoints(this.__wbg_ptr, ptr0, len0);
     }
     rewind() {
         wasm.cloudanalysis_rewind(this.__wbg_ptr);
@@ -357,17 +371,21 @@ export class MeshBuilder {
     }
     /**
      * One octree leaf: its cube origin and size, plus the packed 14-byte records.
+     * `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
      * @param {number} ox
      * @param {number} oy
      * @param {number} oz
      * @param {number} size
      * @param {Uint8Array} recs
      * @param {number} stride
+     * @param {Float32Array} model
      */
-    add_leaf(ox, oy, oz, size, recs, stride) {
+    add_leaf(ox, oy, oz, size, recs, stride, model) {
         const ptr0 = passArray8ToWasm0(recs, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        wasm.meshbuilder_add_leaf(this.__wbg_ptr, ox, oy, oz, size, ptr0, len0, stride);
+        const ptr1 = passArrayF32ToWasm0(model, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        wasm.meshbuilder_add_leaf(this.__wbg_ptr, ox, oy, oz, size, ptr0, len0, stride, ptr1, len1);
     }
     /**
      * @returns {number}
@@ -757,6 +775,13 @@ function isLikeNone(x) {
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayF32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getFloat32ArrayMemory0().set(arg, ptr / 4);
     WASM_VECTOR_LEN = arg.length;
     return ptr;
 }

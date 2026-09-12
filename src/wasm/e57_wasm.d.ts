@@ -9,7 +9,10 @@
 export class CloudAnalysis {
     free(): void;
     [Symbol.dispose](): void;
-    add_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array): void;
+    /**
+     * `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
+     */
+    add_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array, model: Float32Array): void;
     build(): void;
     components(radius: number, min_pts: number, progress?: Function | null): Float32Array;
     compute_normals(k: number, progress?: Function | null): void;
@@ -24,6 +27,11 @@ export class CloudAnalysis {
      */
     normals_bytes(): Int8Array;
     orient_normals(k: number, vx: number, vy: number, vz: number, use_viewpoint: boolean, progress?: Function | null): void;
+    /**
+     * Turn each normal toward the nearest scanner station. `vps` is a flat x,y,z list in
+     * the same frame as the points (so already through the cloud's model matrix).
+     */
+    orient_to_viewpoints(vps: Float32Array): void;
     rewind(): void;
     /**
      * Returns the keep mask; the mean and cut-off used are reported separately.
@@ -85,8 +93,9 @@ export class MeshBuilder {
     [Symbol.dispose](): void;
     /**
      * One octree leaf: its cube origin and size, plus the packed 14-byte records.
+     * `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
      */
-    add_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array, stride: number): void;
+    add_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array, stride: number, model: Float32Array): void;
     bricks(): number;
     /**
      * Extract the surface. Returns a JSON summary; the buffers follow.
@@ -128,7 +137,7 @@ export interface InitOutput {
     readonly __wbg_e57handle_free: (a: number, b: number) => void;
     readonly __wbg_meshbuilder_free: (a: number, b: number) => void;
     readonly __wbg_pointsink_free: (a: number, b: number) => void;
-    readonly cloudanalysis_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly cloudanalysis_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly cloudanalysis_build: (a: number) => void;
     readonly cloudanalysis_component_count: (a: number) => number;
     readonly cloudanalysis_components: (a: number, b: number, c: number, d: number) => [number, number];
@@ -143,6 +152,7 @@ export interface InitOutput {
     readonly cloudanalysis_noise: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_normals_bytes: (a: number) => [number, number];
     readonly cloudanalysis_orient_normals: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly cloudanalysis_orient_to_viewpoints: (a: number, b: number, c: number) => void;
     readonly cloudanalysis_rewind: (a: number) => void;
     readonly cloudanalysis_sor: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_subsample: (a: number, b: number) => [number, number];
@@ -154,7 +164,7 @@ export interface InitOutput {
     readonly e57handle_meta: (a: number) => [number, number];
     readonly e57handle_new: (a: any, b: number) => [number, number, number];
     readonly e57handle_stream: (a: number, b: number, c: number, d: number, e: number, f: any, g: any, h: any) => [number, number, number];
-    readonly meshbuilder_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly meshbuilder_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
     readonly meshbuilder_bricks: (a: number) => number;
     readonly meshbuilder_build: (a: number, b: number, c: number) => [number, number];
     readonly meshbuilder_colors: (a: number) => [number, number];
