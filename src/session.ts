@@ -58,8 +58,12 @@ export function watchAgentSession(sid: string, dispatch: (cmd: string, args: any
     const cmd = d.cmd; if (!cmd || cmd.n === handling || d.res?.n === cmd.n) return;
     handling = cmd.n;
     try {
-      const out = await dispatch(cmd.name, cmd.args ?? {});
-      await setDoc(ref, { res: { n: cmd.n, ok: true, ...out, at: Date.now() }, viewerAt: Date.now() }, { merge: true });
+      // Arguments and answers cross this mailbox as JSON strings. Firestore refuses an array
+      // directly inside an array — pixel pairs, polylines, anything genuinely 2D — so a
+      // structure would be rejected on the way through; a string is just a string.
+      const args = typeof cmd.argsJson === 'string' ? JSON.parse(cmd.argsJson) : (cmd.args ?? {});
+      const out = await dispatch(cmd.name, args);
+      await setDoc(ref, { res: { n: cmd.n, ok: true, json: JSON.stringify(out ?? null), at: Date.now() }, viewerAt: Date.now() }, { merge: true });
     } catch (e: any) {
       await setDoc(ref, { res: { n: cmd.n, ok: false, error: String(e?.message ?? e), at: Date.now() }, viewerAt: Date.now() }, { merge: true });
     }

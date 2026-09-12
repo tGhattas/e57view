@@ -124,6 +124,19 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
   exported coordinates and the readout rather than anything on screen. *Save a copy* bakes
   the matrix into the file, and the on-device cache stores it, so a cached transformed scan
   reopens transformed.
+- **Agent modelling tools** — what an AI needs to build a model from a scan, which is not
+  more screenshots. `view` renders a preset with a **true orthographic projection**, so one
+  metre is the same number of pixels everywhere and the mapping it returns turns any pixel
+  into a world point exactly; `probe` turns pixels of that image back into world points by
+  re-establishing its camera, so the answer holds after the view has moved. `section` is a
+  floor plan or a wall elevation of one slab. `contour` gives the same slab as **polylines in
+  metres** rather than pixels — the thing you actually draw from. `fitplane` fits a plane by
+  PCA and reports the RMS that says whether to believe it. `heightmap` is a grey raster of the
+  highest surface per cell with its metre mapping. `distance` and `inside` answer lengths and
+  counts from the data. `state` reports bounds, spacing, normal coverage, the surface's hole
+  ratio, and **recommendedSource** — points or surface, and why. `surface export` writes the
+  mesh with the transform and the global shift baked in. Replies bigger than the relay's 1 MiB
+  document come back in numbered parts. See `public/llms.txt`.
 - **View link** — copies a URL that restores the camera and colour mode when the same file
   is opened again.
 

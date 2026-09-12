@@ -24,8 +24,8 @@ curl -s https://opensketch.web.app/agent \
   -H 'Content-Type: application/json' \
   -d '{"session":"SESSION","cmd":"state"}'
 
-Commands: state, screenshot, set_view, set, regions, pick, measure, transform, surface,
-history, stations, open.
+Commands: state, screenshot, view, section, probe, heightmap, contour, fitplane, distance,
+inside, measure, pick, set_view, set, regions, transform, surface, history, stations, open.
 
 {"session":"S","cmd":"screenshot","args":{"width":1024}}
 {"session":"S","cmd":"set_view","args":{"preset":"top"}}
@@ -69,9 +69,68 @@ Then open the viewer with ?agent=1 and allow local network access when Chrome as
 The server listens on ws://127.0.0.1:7337 and the tab connects out to it; nothing is exposed
 off the machine, which makes this the safer option when the agent runs beside the browser.
 
-Tools: viewer_state, viewer_screenshot, viewer_set_view, viewer_set, viewer_regions,
-viewer_pick, viewer_measure, viewer_transform, viewer_export, viewer_open, viewer_surface,
-viewer_history, viewer_stations.
+Tools: viewer_state, viewer_screenshot, viewer_view, viewer_section, viewer_probe,
+viewer_heightmap, viewer_contour, viewer_fitplane, viewer_distance, viewer_inside,
+viewer_set_view, viewer_set, viewer_regions, viewer_pick, viewer_measure, viewer_transform,
+viewer_export, viewer_open, viewer_surface, viewer_history, viewer_stations.
+
+## 3D modelling workflow
+
+Everything here is in metres. Coordinates are local unless a field says global; global =
+local + state.translation. Nothing you are shown is uncalibrated: every image comes with the
+mapping that turns its pixels into world points, and every number comes from the points or
+the surface rather than off a picture.
+
+1. `state` first. It reports the point count, local and global bounds, the global shift, the
+   median point spacing (the scan's own resolution — do not model below it), what fraction of
+   points carry a real normal, the scalar field, the surface, the station count, the cloud
+   transform, and **recommendedSource**: whether to measure the points or the reconstructed
+   surface, with the reason. A surface is recommended only when it was built from oriented
+   normals and its holeRatio (boundary edges / triangles) is under 0.2.
+
+2. `view {"preset":"top"}` for a measurable image. With a preset the projection is genuinely
+   orthographic, so one metre is the same number of pixels everywhere:
+
+   {"session":"S","cmd":"view","args":{"preset":"top","width":1024}}
+
+   The reply's `mapping` is exact. Either form works:
+     world = topLeft + x * perPixelRight + y * perPixelDown        (any orientation)
+     world[rightAxis] = originX + (x + 0.5) * metresPerPixel       (axis-aligned presets)
+     world[upAxis]    = originY + (height - 0.5 - y) * metresPerPixel
+   Presets: top, bottom, front, back, left, right, iso, current. `ortho:false` gives an
+   ordinary perspective look instead, with no mapping. The colour mode is left alone, so a
+   scalar field photographs as itself.
+
+3. `probe {"pixels":[[x,y],…]}` turns pixels of the **last** `view` or `section` back into
+   world points. That render's camera is re-established first, so the answer stays exact
+   after the view has moved. null where the pixel hit nothing.
+
+4. `section {"axis":"z","at":1.5,"thickness":0.3}` is a floor plan; axis x or y is a wall
+   elevation. Only that slab is drawn, with the same exact mapping.
+
+5. `contour {"z":1.5,"thickness":0.3}` gives the same slab as **polylines in metres** rather
+   than pixels — closed rings where the walls are. That is the thing to draw a plan from.
+   Traced by marching squares over an occupancy raster whose cell never goes below a couple
+   of point spacings, then simplified; `dilate:true` helps on a sparse or patchy scan.
+
+6. `fitplane {"box":{"center":[…],"half":[…]}}` fits a plane by PCA to the points inside and
+   returns its normal, centroid, dip, dip direction, and the **RMS** distance — which is what
+   says whether the thing really is a plane. Keep the box tight: a box that catches the floor
+   as well as the wall reports the corner, not the wall.
+
+7. `heightmap {"resolution":512}` is a grey PNG of the highest surface per cell with its
+   metre mapping. Grey 0 means no data, 1..255 spans [zMin, zMax].
+
+8. `distance {"a":[…],"b":[…]}` and `inside {"box":…}` are straight answers from the data:
+   a length with its height difference, and an exact point count with its bounding box.
+
+9. `surface {"op":"build","voxelCm":6}` then `surface {"op":"export","format":"ply"}`. The
+   export has the cloud transform and the global shift baked in. Build needs Allow edits;
+   everything else in this list is read-only.
+
+A reply travels in one Firestore document capped at 1 MiB, so a large payload comes back as
+{part, parts, data}. Ask for the rest with the same command plus part: 1, 2, … and
+concatenate before decoding. Over MCP the server does that for you.
 
 ## Cloud transform
 

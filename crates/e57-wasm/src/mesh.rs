@@ -82,6 +82,24 @@ pub struct MeshStats {
     pub triangles: u32,
     pub oriented: u64,
     pub unoriented: u64,
+    /// Edges with exactly one triangle: the rim of every hole and of the scan's own border.
+    /// Divided by the triangle count it is the one number that says whether this surface is
+    /// complete enough to measure against, which is what an agent needs to know.
+    pub boundary_edges: u32,
+}
+
+/// Count edges used by exactly one triangle.
+fn boundary_edges(idx: &[u32]) -> u32 {
+    let mut seen: FastMap<u64, u32> = FastMap::default();
+    seen.reserve(idx.len());
+    for t in idx.chunks_exact(3) {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            let e = if a < b { (a as u64) << 32 | b as u64 } else { (b as u64) << 32 | a as u64 };
+            *seen.entry(e).or_insert(0) += 1;
+        }
+    }
+    seen.values().filter(|&&c| c == 1).count() as u32
 }
 
 pub struct Mesh {
@@ -501,6 +519,7 @@ impl Mesher {
             triangles: (mesh.idx.len() / 3) as u32,
             oriented: self.oriented,
             unoriented: self.unoriented,
+            boundary_edges: boundary_edges(&mesh.idx),
         };
         (mesh, stats)
     }

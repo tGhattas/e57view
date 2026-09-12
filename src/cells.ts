@@ -28,6 +28,9 @@ uniform mat4 uVP, uView, uModel;
 uniform vec3 uOrigin; uniform float uSize, uSpacing;
 uniform float uPtSize, uSizeMode, uColorMode, uZMin, uZMax, uIMin, uIMax;
 uniform float uScreenH, uSlope, uMinPx, uMaxPx, uClipZMin, uClipZMax;
+// > 0 when the projection is orthographic: one metre is the same number of pixels
+// everywhere, which is the whole point of a measurable plan or elevation.
+uniform float uOrthoMpp;
 uniform float uSFMin, uSFMax, uSFLo, uSFHi, uSFHide;
 // Regions: up to 16, each a box (1), sphere (2) or slab (3) with its own frame.
 // role 0 = keep (a point must be inside at least one keep region),
@@ -90,7 +93,7 @@ void main(){
     if (!inRange) { if (uSFHide > 0.5) vDrop = 1.0; else vOut = 1.0; }
   }
 
-  float projFactor = (0.5 * uScreenH) / (uSlope * max(-mv.z, 0.001));
+  float projFactor = uOrthoMpp > 0.0 ? (1.0 / uOrthoMpp) : (0.5 * uScreenH) / (uSlope * max(-mv.z, 0.001));
   float px = (uSizeMode > 0.5) ? uPtSize * uSpacing * projFactor : uPtSize * 2.0;
   gl_PointSize = clamp(px, uMinPx, uMaxPx);
 }`;
@@ -271,6 +274,8 @@ export interface DrawParams {
   screenH: number; fovDeg: number;
   sfMin?: number; sfMax?: number; sfLo?: number; sfHi?: number; sfHide?: boolean;
   regions?: Region[]; regionHide?: boolean;
+  /** Metres per pixel, when the camera's projection has been swapped for an orthographic one. */
+  orthoMpp?: number;
 }
 
 export type RegionKind = 'box' | 'sphere' | 'slab';
@@ -360,7 +365,7 @@ export class CellRenderer {
     for (const n of ['uSFMin','uSFMax','uSFLo','uSFHi','uSFHide',
       'uVP','uView','uOrigin','uSize','uSpacing','uPtSize','uSizeMode','uColorMode','uZMin','uZMax',
                      'uIMin','uIMax','uScreenH','uSlope','uMinPx','uMaxPx','uClipZMin','uClipZMax',
-                     'uRound','uNormalShade','uBright','uGamma','uRegN','uRegHide','uModel']) {
+                     'uRound','uNormalShade','uBright','uGamma','uRegN','uRegHide','uModel','uOrthoMpp']) {
       this.u[n] = gl.getUniformLocation(this.prog, n);
     }
     for (let i = 0; i < 16; i++) for (const n of ['uRegMode', 'uRegRole', 'uRegC', 'uRegS', 'uRegRot']) {
@@ -433,7 +438,7 @@ export class CellRenderer {
   /** Per-leaf affine that turns a quantised record into a world position, so a point costs
    *  three multiply-adds instead of a matrix product. The leaf's quantisation and the
    *  cloud's model matrix fold into the same three columns. */
-  private leafFold(lf: Leaf) {
+  private leafFold(lf: { origin: THREE.Vector3; size: number }) {
     const k = lf.size / 65536;
     const e = this.model.elements;    // column-major
     const bx = e[0] * lf.origin.x + e[4] * lf.origin.y + e[8] * lf.origin.z + e[12];
@@ -463,8 +468,9 @@ export class CellRenderer {
     return out;
   }
   private get identity() { return _ident.equals(this.model); }
-  /** Decode `count` records of `leaf` into world-space double triples. */
-  transformRecordsInto(recs: Uint8Array, count: number, leaf: Leaf, out: Float64Array): Float64Array {
+  /** Decode `count` records of `leaf` into world-space double triples. `leaf` only has to
+   *  carry its cube, so the structural leaf `records()` yields is accepted too. */
+  transformRecordsInto(recs: Uint8Array, count: number, leaf: { origin: THREE.Vector3; size: number }, out: Float64Array): Float64Array {
     const u16 = new Uint16Array(recs.buffer, recs.byteOffset, (count * REC) >> 1);
     const fold = this.leafFold(leaf);
     const p = new THREE.Vector3();
@@ -846,6 +852,31 @@ export class CellRenderer {
     return n;
   }
 
+  /** Exact count and world bounding box of the points inside a region. Whole cells are
+   *  counted without being read back; only the cells the region cuts through are. */
+  insideExact(r: Region): { count: number; min: number[] | null; max: number[] | null } {
+    const inv = new THREE.Matrix3().fromArray(Array.from(invRot(r.quat)));
+    const p = new THREE.Vector3(), l = new THREE.Vector3(), box = new THREE.Box3();
+    const b = new THREE.Box3();
+    let n = 0;
+    for (const lf of this.leaves) {
+      if (lf.preview || !lf.count) continue;
+      const lb = this.leafBox(lf, b);
+      const c = classifyRegion(lb.min, lb.max, r, inv);
+      if (c === false) continue;
+      const src = lf.readback(this.gl);
+      const u16 = new Uint16Array(src.buffer, src.byteOffset, (lf.count * REC) >> 1);
+      const fold = this.leafFold(lf);
+      for (let i = 0; i < lf.count; i++) {
+        const q = i * 7;
+        fold.at(u16[q], u16[q + 1], u16[q + 2], p);
+        if (c !== true && !insideLocal(toLocal(p, r, inv, l), r)) continue;
+        n++; box.expandByPoint(p);
+      }
+    }
+    return { count: n, min: box.isEmpty() ? null : box.min.toArray(), max: box.isEmpty() ? null : box.max.toArray() };
+  }
+
   /** A uniform sample: the first `perLeaf` records of each leaf (they are shuffled). */
   *sample(perLeaf: number | ((l: Leaf) => number) = 1500): Generator<{ leaf: Leaf; recs: Uint8Array; n: number }> {
     const gl = this.gl;
@@ -897,6 +928,7 @@ export class CellRenderer {
     this.vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.vp);
     const slope = Math.tan((p.fovDeg * Math.PI / 180) / 2);
+    const mpp = p.orthoMpp ?? 0;
     const camPos = camera.position;
     const near = camera.near;
 
@@ -911,7 +943,7 @@ export class CellRenderer {
       if (!this.frustum.intersectsSphere(sph)) continue;
       const d = Math.max(camPos.distanceTo(sph.center) - sph.radius, near);
       l.dist = d;
-      const rpx = sph.radius * (0.5 * p.screenH) / (slope * d);
+      const rpx = mpp > 0 ? sph.radius / mpp : sph.radius * (0.5 * p.screenH) / (slope * d);
       const area = Math.PI * rpx * rpx;
       l.desired = Math.min(l.capacity, Math.ceil(p.density * area));
       want += l.desired;
@@ -960,6 +992,7 @@ export class CellRenderer {
     gl.uniform1f(this.u.uZMin, p.zMin); gl.uniform1f(this.u.uZMax, p.zMax);
     gl.uniform1f(this.u.uIMin, p.iMin); gl.uniform1f(this.u.uIMax, p.iMax);
     gl.uniform1f(this.u.uScreenH, p.screenH); gl.uniform1f(this.u.uSlope, slope);
+    gl.uniform1f(this.u.uOrthoMpp, mpp);
     gl.uniform1f(this.u.uMinPx, p.minPx); gl.uniform1f(this.u.uMaxPx, p.maxPx);
     gl.uniform1f(this.u.uClipZMin, p.clipZMin); gl.uniform1f(this.u.uClipZMax, p.clipZMax);
     gl.uniform1f(this.u.uRound, p.round ? 1 : 0); gl.uniform1f(this.u.uNormalShade, p.normalShade ? 1 : 0);

@@ -1,7 +1,7 @@
 import './style.css';
 import * as THREE from 'three';
 import { Viewer, isTouch, isIOS, type Knobs, type Station, type GizmoMode } from './viewer';
-import { REC, type Region } from './cells';
+import { REC, pointInRegion, type Region } from './cells';
 import { AgentLink } from './agent';
 import { History, cloneRegions } from './history';
 import type { MeshData } from './meshview';
@@ -1381,9 +1381,15 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
     meshWorker.postMessage({ type: 'build', smooth, iso: 1.0 });
     const done = await meshOnce('mesh');
     meshData = { pos: done.pos, nrm: done.nrm, col: done.col, idx: done.idx };
+    const st0 = done.stats;
     viewer.setMesh(meshData, builtWith);
     document.body.classList.toggle('has-mesh', !!meshData.idx.length);
     dirtyMark.surface = done.stats.triangles || 0;
+    meshInfo = {
+      triangles: st0.triangles || 0, vertices: st0.vertices || 0,
+      boundaryEdges: st0.boundaryEdges ?? 0, voxelCm: +(voxel * 100).toFixed(2),
+      fromNormals: (st0.oriented ?? 0) > (st0.unoriented ?? 0) * 4,
+    };
     setDisplay(meshData.idx.length ? 'mesh' : 'points');
     const st = done.stats;
     const mode = st.oriented > st.unoriented * 4 ? 'from normals' : 'density (no usable normals)';
@@ -1398,7 +1404,7 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
 }
 $('k-mbuild').addEventListener('click', () => buildMesh().catch(e => { $('v-mesh').textContent = 'failed: ' + (e?.message ?? e); }));
 $('k-mclear').addEventListener('click', () => {
-  meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
+  meshData = null; meshInfo = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
   dirtyMark.surface = 0;
   sfName = ''; dirtyMark.field = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
   ($('k-color-sf') as HTMLOptionElement).disabled = true;
@@ -1584,16 +1590,542 @@ function applyUrlCommands() {
 }
 try { if (location.hash.length > 2) pendingView = JSON.parse(atob(location.hash.slice(1))); } catch {}
 
+// ------------------------------------------------------------------ agent: 3D modelling aids
+// What an agent needs to model from a scan is not more screenshots. It needs a *calibrated*
+// image — one metre is this many pixels, and this pixel is that world point — measurements
+// taken from the data rather than from the picture, and a straight answer about whether the
+// points or the reconstructed surface is the better thing to trust. These commands are that.
+
+/** Base64 characters per part. The HTTP relay puts a reply in one Firestore document, and
+ *  that document is capped at 1 MiB, so anything bigger comes back in numbered parts. */
+const PAGE = 560_000;
+let pageKey = '';
+let pageParts: string[] = [];
+function pagePart(i: number, mime?: string) {
+  const j = Math.max(0, Math.min(i, pageParts.length - 1));
+  return { part: j, parts: pageParts.length, chars: pageParts[j].length, data: pageParts[j], ...(mime ? { mime } : {}) };
+}
+/** A part of a payload already built. Null when this is a fresh request. */
+function pagedHit(key: string, part: number, mime?: string) {
+  if (key !== pageKey || !pageParts.length || part <= 0) return null;
+  return pagePart(part, mime);
+}
+function pagedSet(key: string, s: string, part = 0, mime?: string) {
+  pageParts = [];
+  for (let o = 0; o < s.length; o += PAGE) pageParts.push(s.slice(o, o + PAGE));
+  if (!pageParts.length) pageParts = [''];
+  pageKey = key;
+  return pagePart(part, mime);
+}
+/** Wrap an image for a reply: whole when it fits a single part, paged when it does not. */
+function image(key: string, b64: string, mime = 'image/jpeg', part = 0) {
+  return b64.length <= PAGE
+    ? { mime, part: 0, parts: 1, chars: b64.length, data: b64 }
+    : pagedSet(key, b64, part, mime);
+}
+
+const r6 = (n: number) => +n.toFixed(6);
+const arr6 = (a: number[]) => a.map(r6);
+const globalShift = () => (meta?.scans?.[0]?.translation ?? [0, 0, 0]) as number[];
+const toGlobal = (p: number[]) => { const t = globalShift(); return p.map((v, i) => r6(v + (t[i] ?? 0))); };
+const clampPx = (v: any, d = 1024) => Math.max(64, Math.min(2048, Math.round(Number(v) || d)));
+
+function boundsRecord() {
+  const b = viewer.bounds();
+  if (b.isEmpty()) return null;
+  return {
+    local: { min: arr6(b.min.toArray()), max: arr6(b.max.toArray()), size: arr6(b.getSize(new THREE.Vector3()).toArray()) },
+    global: { min: toGlobal(b.min.toArray()), max: toGlobal(b.max.toArray()) },
+  };
+}
+/** Fraction of points carrying a real normal, from a uniform sample of the cells. */
+function normalFraction(): number {
+  let n = 0, have = 0;
+  for (const { recs, n: cnt } of viewer.cells.sample(400)) {
+    for (let i = 0; i < cnt; i++) {
+      const o = i * REC;
+      const a = recs[o + 10] << 24 >> 24, b = recs[o + 11] << 24 >> 24, c = recs[o + 12] << 24 >> 24;
+      n++; if (!(a === 0 && b === 0 && c === 127)) have++;
+    }
+  }
+  return n ? r6(have / n) : 0;
+}
+
+/** What the last build produced, for `state.surface` and the source recommendation. */
+let meshInfo: { triangles: number; vertices: number; boundaryEdges: number; voxelCm: number; fromNormals: boolean } | null = null;
+function surfaceRecord() {
+  if (!meshData || !meshInfo) return null;
+  const holeRatio = meshInfo.triangles ? meshInfo.boundaryEdges / meshInfo.triangles : 1;
+  return { ...meshInfo, holeRatio: r6(holeRatio), display: viewer.display };
+}
+/** Points or surface — and why. An agent that measures the wrong one produces a wrong model. */
+function recommendedSource(): { source: 'points' | 'mesh'; reason: string } {
+  const s = surfaceRecord();
+  if (!s) return { source: 'points', reason: 'No surface has been reconstructed. Measure the points: section and contour give plans and elevations, fitplane gives planes, inside gives counts.' };
+  if (!s.fromNormals) return { source: 'points', reason: 'The surface came from a density isosurface because the points carry no usable normals, so it is rounder than what was scanned. Run analysis normals with orient, rebuild, then ask again.' };
+  if (s.holeRatio >= 0.2) return { source: 'points', reason: `The surface has ${fmt(s.boundaryEdges)} boundary edges to ${fmt(s.triangles)} triangles (hole ratio ${s.holeRatio.toFixed(2)}), so it is too open to measure against. Raise fillGaps or use a coarser voxel, or measure the points.` };
+  return { source: 'mesh', reason: `The surface was built from oriented normals at a ${s.voxelCm} cm voxel and is nearly closed (hole ratio ${s.holeRatio.toFixed(2)}), so it averages out scanner noise and is the better thing to measure.` };
+}
+
+function stateRecord() {
+  const sf = viewer.cells.hasScalarField ? viewer.cells.scalarStats() : null;
+  return {
+    units: 'm' as const,
+    file: currentFile?.name ?? null, points: viewer.loaded, cells: viewer.cells.leafCount,
+    cropped, fromCache, dirty: isDirty(), unsaved: dirtyList(),
+    history: hist.steps,
+    bounds: boundsRecord(), translation: globalShift(),
+    medianSpacing: r6(viewer.cells.medianSpacing),
+    hasNormals: normalFraction(),
+    scalarField: sf ? { name: sfName, min: r6(sf.min), max: r6(sf.max), values: sf.n } : null,
+    surface: surfaceRecord(),
+    stations: viewer.stations.length,
+    transform: transformState(),
+    recommendedSource: recommendedSource(),
+    view: viewer.getView(), camera: viewer.cameraRecord(), knobs,
+    regions: allRegions(),
+    measurements: viewer.measureList.map(m => ({ a: arr6(m.a.toArray()), b: arr6(m.b.toArray()), dist: r6(m.dist) })),
+    bubble: viewer.bubble?.index ?? null,
+    cached: cachedItems.map(c => ({ key: c.key, name: c.name, points: c.points })),
+  };
+}
+
+// ------------------------------------------------------------------ calibrated views
+const PRESETS: Record<string, [number, number, number]> = {
+  top: [0, 0, -1], bottom: [0, 0, 1], front: [0, 1, 0], back: [0, -1, 0],
+  left: [-1, 0, 0], right: [1, 0, 0], iso: [-0.62, -0.62, -0.48],
+};
+/** The camera of the most recent calibrated render, so `probe` can re-establish exactly it
+ *  even after the user has moved the view. */
+let lastRender: { label: string; run: <T>(fn: (m: any) => T) => T } | null = null;
+
+function runView<T>(a: any, fn: (m: any) => T): T {
+  if (!viewer.loaded) throw new Error('nothing loaded');
+  const name = String(a.preset ?? 'current').toLowerCase();
+  const px = clampPx(a.width);
+  const dir = PRESETS[name];
+  if (!dir) {
+    if (name !== 'current') throw new Error(`preset: current | ${Object.keys(PRESETS).join(' | ')}`);
+    const saved = viewer.getView();
+    try { viewer.renderClean(); return fn(null); } finally { viewer.setView(saved); }
+  }
+  const f = new THREE.Vector3(...dir).normalize();
+  const bb = viewer.bounds().clone();
+  if (a.ortho === false) {
+    // a plain look from that direction: not measurable, but it is what a person would frame
+    const saved = viewer.getView();
+    const c = bb.getCenter(new THREE.Vector3());
+    const radius = Math.max(bb.getBoundingSphere(new THREE.Sphere()).radius, 0.5);
+    const dist = radius / Math.sin((viewer.camera.fov * Math.PI / 180) / 2) * 1.05;
+    try {
+      viewer.setView({ p: c.clone().addScaledVector(f, -dist).toArray(), t: c.toArray() });
+      viewer.renderClean();
+      return fn(null);
+    } finally { viewer.setView(saved); }
+  }
+  return viewer.withOrtho({ forward: f, bb, px }, m => { viewer.renderClean(); return fn(m); });
+}
+
+function runSection<T>(a: any, fn: (m: any, info: any) => T): T {
+  if (!viewer.loaded) throw new Error('nothing loaded');
+  const b = viewer.bounds();
+  if (b.isEmpty()) throw new Error('nothing loaded');
+  const axis = String(a.axis ?? 'z').toLowerCase();
+  const i = axis === 'x' ? 0 : axis === 'y' ? 1 : axis === 'z' ? 2 : -1;
+  if (i < 0) throw new Error("axis: 'x' | 'y' | 'z'");
+  const centre = b.getCenter(new THREE.Vector3());
+  const at = Number(a.at ?? centre.getComponent(i));
+  if (!isFinite(at)) throw new Error('at must be a number, in metres in the local frame');
+  const th = Math.max(1e-3, Number(a.thickness ?? Math.max(0.1, viewer.cells.medianSpacing * 8)));
+  const px = clampPx(a.width);
+  // the slab as a keep region, so the points outside it vanish in the shader, and as a clip
+  // box so the surface is cut the same way
+  const half = b.getSize(new THREE.Vector3()).multiplyScalar(0.5).addScalar(1);
+  half.setComponent(i, th / 2);
+  const sc = centre.clone(); sc.setComponent(i, at);
+  const region: Region = {
+    id: 'sec-view', kind: 'box', role: 'keep',
+    center: sc.toArray() as [number, number, number], half: half.toArray() as [number, number, number],
+    radius: half.x, quat: [0, 0, 0, 1],
+  };
+  const bb = b.clone();
+  bb.min.setComponent(i, at - th / 2); bb.max.setComponent(i, at + th / 2);
+  const f = new THREE.Vector3(); f.setComponent(i, -1);
+  viewer.setRegions([region]); viewer.regionHide = true;
+  viewer.meshClip = { min: bb.min.clone(), max: bb.max.clone() };
+  try {
+    return viewer.withOrtho({ forward: f, bb, px }, m => {
+      viewer.renderClean();
+      return fn(m, { axis, at: r6(at), thickness: r6(th), surfaceIncluded: viewer.display !== 'points' });
+    });
+  } finally {
+    viewer.meshClip = null;
+    viewer.regionHide = $<HTMLInputElement>('k-crophide').checked;
+    syncRegions(); viewer.touch();
+  }
+}
+
+// ------------------------------------------------------------------ rasters
+/** Max coordinate along `axis` per cell, over a uniform sample — a height model, fast enough
+ *  on 18 million points because the leaves are shuffled and a prefix of each is a sample. */
+function heightmapCmd(a: any) {
+  if (!viewer.loaded) throw new Error('nothing loaded');
+  const axis = String(a.axis ?? 'z').toLowerCase();
+  const iAx = axis === 'x' ? 0 : axis === 'y' ? 1 : axis === 'z' ? 2 : -1;
+  if (iAx < 0) throw new Error("axis: 'x' | 'y' | 'z'");
+  const [uAx, vAx] = [[1, 2], [0, 2], [0, 1]][iAx];
+  const b = viewer.bounds();
+  if (b.isEmpty()) throw new Error('nothing loaded');
+  const res = Math.max(16, Math.min(1024, Math.round(Number(a.resolution) || 512)));
+  const size = b.getSize(new THREE.Vector3()).toArray(), mn = b.min.toArray();
+  const su = Math.max(size[uAx], 1e-3), sv = Math.max(size[vAx], 1e-3);
+  const mpp = Math.max(su, sv) / res;
+  const w = Math.max(1, Math.round(su / mpp)), h = Math.max(1, Math.round(sv / mpp));
+  const grid = new Float32Array(w * h).fill(-Infinity);
+  let sampled = 0;
+  for (const { leaf, recs, n: cnt } of viewer.cells.sample(Math.max(200, Math.min(20000, Math.round(Number(a.perCell) || 6000))))) {
+    const xyz = viewer.cells.transformRecordsInto(recs, cnt, leaf, new Float64Array(cnt * 3));
+    for (let i = 0; i < cnt; i++) {
+      const u = Math.floor((xyz[i * 3 + uAx] - mn[uAx]) / mpp);
+      const v = Math.floor((xyz[i * 3 + vAx] - mn[vAx]) / mpp);
+      if (u < 0 || v < 0 || u >= w || v >= h) continue;
+      const k = (h - 1 - v) * w + u;                 // image rows run top to bottom
+      const q = xyz[i * 3 + iAx];
+      if (q > grid[k]) grid[k] = q;
+      sampled++;
+    }
+  }
+  let lo = Infinity, hi = -Infinity, filled = 0;
+  for (const g of grid) if (isFinite(g)) { filled++; if (g < lo) lo = g; if (g > hi) hi = g; }
+  if (!filled) throw new Error('no points fell in the raster');
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d')!;
+  const img = ctx.createImageData(w, h);
+  const span = Math.max(hi - lo, 1e-9);
+  for (let k = 0; k < grid.length; k++) {
+    const g = grid[k];
+    const q = isFinite(g) ? Math.round(((g - lo) / span) * 254) + 1 : 0;   // 0 means no data
+    img.data[k * 4] = q; img.data[k * 4 + 1] = q; img.data[k * 4 + 2] = q; img.data[k * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const b64 = cv.toDataURL('image/png').split(',')[1] ?? '';
+  const names = ['x', 'y', 'z'];
+  return {
+    axis, measured: names[iAx], sampled, filledCells: filled, cells: w * h,
+    zMin: r6(lo), zMax: r6(hi),
+    mapping: {
+      width: w, height: h, metresPerPixel: r6(mpp),
+      axes: [names[uAx], names[vAx]],
+      originX: r6(mn[uAx]), originY: r6(mn[vAx]),
+      extentX: r6(w * mpp), extentY: r6(h * mpp),
+      note: `pixel (0,0) is the top left; world ${names[uAx]} = originX + (x + 0.5) * metresPerPixel, world ${names[vAx]} = originY + (height - 0.5 - y) * metresPerPixel. Grey 0 means no data; 1..255 maps linearly onto [zMin, zMax].`,
+    },
+    translation: globalShift(),
+    image: image('heightmap', b64, 'image/png', Math.round(Number(a.part) || 0)),
+  };
+}
+
+/** Ramer-Douglas-Peucker: drop the vertices that do not change the shape by more than `tol`.
+ *
+ *  A closed ring has to be cut first. The algorithm keeps the two endpoints and measures every
+ *  other vertex against the line between them — and on a ring those endpoints are the same
+ *  point, so that line has no length and the whole outline collapses to a single vertex. Split
+ *  it at the vertex furthest from the start and simplify the two halves. */
+function simplify(line: number[][], tol: number): number[][] {
+  if (line.length < 3) return line;
+  const closed = Math.hypot(line[0][0] - line[line.length - 1][0], line[0][1] - line[line.length - 1][1]) < tol * 1e-3 + 1e-9;
+  if (closed && line.length > 4) {
+    let far = 1, best = -1;
+    for (let i = 1; i < line.length - 1; i++) {
+      const d = Math.hypot(line[i][0] - line[0][0], line[i][1] - line[0][1]);
+      if (d > best) { best = d; far = i; }
+    }
+    const a = rdp(line.slice(0, far + 1), tol), b = rdp(line.slice(far), tol);
+    return a.concat(b.slice(1));
+  }
+  return rdp(line, tol);
+}
+function rdp(line: number[][], tol: number): number[][] {
+  if (line.length < 3) return line;
+  const keep = new Uint8Array(line.length); keep[0] = 1; keep[line.length - 1] = 1;
+  const stack: [number, number][] = [[0, line.length - 1]];
+  while (stack.length) {
+    const [s, e] = stack.pop()!;
+    const [x1, y1] = line[s], [x2, y2] = line[e];
+    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1e-9;
+    let worst = -1, at = -1;
+    for (let i = s + 1; i < e; i++) {
+      const d = Math.abs((line[i][0] - x1) * dy - (line[i][1] - y1) * dx) / len;
+      if (d > worst) { worst = d; at = i; }
+    }
+    if (worst > tol && at > 0) { keep[at] = 1; stack.push([s, at], [at, e]); }
+  }
+  return line.filter((_, i) => keep[i]);
+}
+
+/** Marching squares over the occupancy of a horizontal slab: the footprint primitive. */
+function contourCmd(a: any) {
+  if (!viewer.loaded) throw new Error('nothing loaded');
+  const b = viewer.bounds();
+  if (b.isEmpty()) throw new Error('nothing loaded');
+  const z = Number(a.z ?? b.getCenter(new THREE.Vector3()).z);
+  if (!isFinite(z)) throw new Error('z must be a number, in metres in the local frame');
+  const th = Math.max(1e-3, Number(a.thickness ?? Math.max(0.15, viewer.cells.medianSpacing * 10)));
+  const res = Math.max(16, Math.min(1024, Math.round(Number(a.resolution) || 400)));
+  const size = b.getSize(new THREE.Vector3());
+  // A raster cell finer than the point spacing leaves gaps a wall cannot be traced through,
+  // so the cell size has a floor of a couple of spacings whatever resolution is asked for.
+  const mpp = Math.max(Math.max(size.x, size.y) / res, viewer.cells.medianSpacing * 2.5, 1e-3);
+  const w = Math.max(5, Math.ceil(size.x / mpp) + 5), h = Math.max(5, Math.ceil(size.y / mpp) + 5);
+  // two empty rings of cells around the data, so the outline of something touching the edge
+  // of the cloud still has cells on both sides to be traced between
+  const x0 = b.min.x - 2 * mpp, y0 = b.min.y - 2 * mpp;
+  const occ = new Uint8Array(w * h);
+  let inSlab = 0;
+  // Every point of every cell the slab touches, not a sample: a thin slab holds a small
+  // fraction of the cloud, so a uniform sample of the cloud is a sparse sample of the slab
+  // and the outline comes back as confetti. Cells the slab misses are never read back, which
+  // is what keeps this affordable — a 30 cm slab of a building touches few of them.
+  const lb = new THREE.Box3();
+  for (const leaf of viewer.cells.leavesForMask()) {
+    viewer.cells.leafBox(leaf, lb);
+    if (lb.max.z < z - th / 2 || lb.min.z > z + th / 2) continue;
+    const recs = leaf.readback(viewer.cells.gl2);
+    const cnt = leaf.count;
+    const xyz = viewer.cells.transformRecordsInto(recs, cnt, leaf, new Float64Array(cnt * 3));
+    for (let i = 0; i < cnt; i++) {
+      const pz = xyz[i * 3 + 2];
+      if (pz < z - th / 2 || pz > z + th / 2) continue;
+      const u = Math.round((xyz[i * 3] - x0) / mpp), v = Math.round((xyz[i * 3 + 1] - y0) / mpp);
+      if (u < 0 || v < 0 || u >= w || v >= h) continue;
+      occ[v * w + u] = 1; inSlab++;
+    }
+  }
+  // Optional: grow the occupancy by one cell. Not needed when the raster cell is a couple of
+  // point spacings across, because then a wall fills its cells without gaps — but a sparse or
+  // patchy scan traces into confetti without it, at the cost of a cell of thickness each side.
+  if (a.dilate === true) {
+    const grown = new Uint8Array(occ);
+    for (let v = 0; v < h; v++) for (let u = 0; u < w; u++) {
+      if (!occ[v * w + u]) continue;
+      for (let dv = -1; dv <= 1; dv++) for (let du = -1; du <= 1; du++) {
+        const uu = u + du, vv = v + dv;
+        if (uu >= 0 && vv >= 0 && uu < w && vv < h) grown[vv * w + uu] = 1;
+      }
+    }
+    occ.set(grown);
+  }
+  if (!inSlab) return { z: r6(z), thickness: r6(th), inSlab: 0, polylines: [], note: 'no points in that slab' };
+  // corner values are 0 or 1, so every crossing is exactly at an edge midpoint
+  const segs: number[][] = [];
+  for (let v = 0; v < h - 1; v++) for (let u = 0; u < w - 1; u++) {
+    const code = (occ[v * w + u] ? 1 : 0) | (occ[v * w + u + 1] ? 2 : 0)
+               | (occ[(v + 1) * w + u + 1] ? 4 : 0) | (occ[(v + 1) * w + u] ? 8 : 0);
+    if (code === 0 || code === 15) continue;
+    const ab = [u + 0.5, v], bc = [u + 1, v + 0.5], cd = [u + 0.5, v + 1], da = [u, v + 0.5];
+    const push = (p: number[], q: number[]) => segs.push([p[0], p[1], q[0], q[1]]);
+    switch (code) {
+      case 1: case 14: push(da, ab); break;
+      case 2: case 13: push(ab, bc); break;
+      case 3: case 12: push(da, bc); break;
+      case 4: case 11: push(bc, cd); break;
+      case 6: case 9: push(ab, cd); break;
+      case 7: case 8: push(da, cd); break;
+      case 5: push(da, ab); push(bc, cd); break;      // saddle, resolved one way
+      case 10: push(ab, bc); push(cd, da); break;
+    }
+  }
+  // stitch the segments into polylines through their shared endpoints
+  const key = (x: number, y: number) => `${Math.round(x * 2)},${Math.round(y * 2)}`;
+  const node = new Map<string, { p: number[]; to: string[] }>();
+  for (const [x1, y1, x2, y2] of segs) {
+    const k1 = key(x1, y1), k2 = key(x2, y2);
+    if (!node.has(k1)) node.set(k1, { p: [x1, y1], to: [] });
+    if (!node.has(k2)) node.set(k2, { p: [x2, y2], to: [] });
+    node.get(k1)!.to.push(k2); node.get(k2)!.to.push(k1);
+  }
+  const used = new Set<string>();
+  const ek = (p: string, q: string) => p < q ? p + '|' + q : q + '|' + p;
+  const keys = [...node.keys()].sort((p, q) => node.get(p)!.to.length - node.get(q)!.to.length);
+  let lines: number[][][] = [];
+  for (const s of keys) {
+    for (const first of node.get(s)!.to) {
+      if (used.has(ek(s, first))) continue;
+      const line: number[][] = [node.get(s)!.p];
+      let cur = s, nxt: string | undefined = first;
+      while (nxt) {
+        used.add(ek(cur, nxt));
+        line.push(node.get(nxt)!.p);
+        const n2: string = nxt;
+        const opts = node.get(n2)!.to.filter(t => !used.has(ek(n2, t)));
+        cur = n2; nxt = opts[0];
+        if (line.length > 400_000) break;
+      }
+      if (line.length >= 3) lines.push(line);
+    }
+  }
+  // grid units to metres, then simplify until the reply is a sensible size
+  lines = lines.map(l => l.map(([gx, gy]) => [x0 + gx * mpp, y0 + gy * mpp]));
+  let tol = mpp * 0.75, simplified = lines.map(l => simplify(l, tol));
+  const budget = Math.max(500, Math.min(40_000, Math.round(Number(a.maxVertices) || 12_000)));
+  const count = (ls: number[][][]) => ls.reduce((n, l) => n + l.length, 0);
+  while (count(simplified) > budget && tol < mpp * 64) { tol *= 2; simplified = lines.map(l => simplify(l, tol)); }
+  const bx = new THREE.Box3();
+  const v2 = new THREE.Vector3();
+  for (const l of simplified) for (const [x, y] of l) bx.expandByPoint(v2.set(x, y, z));
+  const closed = simplified.filter(l => Math.hypot(l[0][0] - l[l.length - 1][0], l[0][1] - l[l.length - 1][1]) < mpp * 1.5).length;
+  return {
+    z: r6(z), thickness: r6(th), inSlab,
+    raster: { width: w, height: h, metresPerPixel: r6(mpp), originX: r6(x0), originY: r6(y0), dilated: a.dilate === true },
+    simplifyTolerance: r6(tol),
+    polylines: simplified.map(l => l.map(([x, y]) => [r6(x), r6(y)])),
+    vertices: count(simplified), closedPolylines: closed,
+    bounds: bx.isEmpty() ? null : { min: arr6([bx.min.x, bx.min.y]), max: arr6([bx.max.x, bx.max.y]) },
+    frame: 'local metres; add translation for global coordinates',
+    translation: globalShift(),
+  };
+}
+
+// ------------------------------------------------------------------ geometry from the points
+function regionFrom(o: any, id = 'probe-box'): Region {
+  if (!o || !Array.isArray(o.center) || !Array.isArray(o.half)) throw new Error('box: { center:[x,y,z], half:[x,y,z], quat?:[x,y,z,w] }');
+  const half = o.half.map((v: any) => Math.max(1e-4, Math.abs(Number(v))));
+  return {
+    id, kind: 'box', role: 'keep',
+    center: o.center.map(Number) as [number, number, number],
+    half: half as [number, number, number], radius: half[0],
+    quat: (o.quat ?? [0, 0, 0, 1]).map(Number) as [number, number, number, number],
+  };
+}
+/** Best-fit plane by PCA, over the points inside a box or over a list handed in. */
+function fitPlaneCmd(a: any) {
+  let pts: number[][] = [];
+  let counted = 0, sampledEvery = 1;
+  if (Array.isArray(a.points) && a.points.length) {
+    pts = a.points.map((p: any) => p.map(Number));
+    counted = pts.length;
+  } else {
+    if (!viewer.loaded) throw new Error('nothing loaded');
+    const r = regionFrom(a.box, 'fit-box');
+    // a coarse count first, so a wall of ten million points is sampled rather than copied
+    const est = viewer.cells.countInside(r, 16);
+    sampledEvery = Math.max(1, Math.ceil(est / 500_000));
+    const reach = Math.hypot(r.half[0], r.half[1], r.half[2]);
+    const wanted = new THREE.Box3(
+      new THREE.Vector3(...r.center).addScalar(-reach),
+      new THREE.Vector3(...r.center).addScalar(reach));
+    const p = new THREE.Vector3(), lb = new THREE.Box3();
+    for (const leaf of viewer.cells.leavesForMask()) {
+      if (!viewer.cells.leafBox(leaf, lb).intersectsBox(wanted)) continue;
+      const recs = leaf.readback(viewer.cells.gl2);
+      const xyz = viewer.cells.transformRecordsInto(recs, leaf.count, leaf, new Float64Array(leaf.count * 3));
+      for (let i = 0; i < leaf.count; i += sampledEvery) {
+        p.set(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]);
+        if (!pointInRegion(p, r)) continue;
+        counted++;
+        pts.push([p.x, p.y, p.z]);
+      }
+    }
+  }
+  if (pts.length < 3) throw new Error(`need at least 3 points inside; found ${pts.length}`);
+  let mx = 0, my = 0, mz = 0;
+  for (const q of pts) { mx += q[0]; my += q[1]; mz += q[2]; }
+  const n = pts.length; mx /= n; my /= n; mz /= n;
+  const c = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (const q of pts) {
+    const d = [q[0] - mx, q[1] - my, q[2] - mz];
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) c[i][j] += d[i] * d[j];
+  }
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) c[i][j] /= n;
+  const nrm = leastEigenvector(c);
+  if (nrm.z < 0) nrm.negate();                      // report the upward-facing normal
+  let ss = 0, worst = 0;
+  for (const q of pts) {
+    const d = (q[0] - mx) * nrm.x + (q[1] - my) * nrm.y + (q[2] - mz) * nrm.z;
+    ss += d * d; worst = Math.max(worst, Math.abs(d));
+  }
+  const rms = Math.sqrt(ss / n);
+  const dip = Math.acos(Math.min(1, Math.abs(nrm.z))) * 180 / Math.PI;
+  // azimuth of the down-dip direction, clockwise from +Y
+  const dipDir = (Math.atan2(-nrm.x, -nrm.y) * 180 / Math.PI + 360) % 360;
+  return {
+    normal: arr6(nrm.toArray()),
+    centroid: arr6([mx, my, mz]), centroidGlobal: toGlobal([mx, my, mz]),
+    rms: r6(rms), worst: r6(worst),
+    dipDeg: r6(dip), dipDirectionDeg: r6(dip < 0.01 ? 0 : dipDir),
+    orientation: dip < 5 ? 'horizontal' : dip > 85 ? 'vertical' : 'inclined',
+    points: n, pointsInside: counted, sampledEvery,
+    plane: `(p - centroid) · normal = 0`,
+  };
+}
+
 // ------------------------------------------------------------------ agent link
 const agent = new AgentLink({
-  state: () => ({
-    file: currentFile?.name ?? null, points: viewer.loaded, cells: viewer.cells.leafCount, cropped, fromCache,
-    history: hist.steps, dirty: isDirty(), unsaved: dirtyList(),
-    view: viewer.getView(), knobs, regions: allRegions(), measurements: viewer.measureList.map(m => ({ a: m.a.toArray(), b: m.b.toArray(), dist: m.dist })),
-    stations: viewer.stations.length, bubble: viewer.bubble?.index ?? null, cached: cachedItems.map(c => ({ key: c.key, name: c.name, points: c.points })),
-    translation: meta?.scans?.[0]?.translation ?? null, bounds: viewer.bounds().isEmpty() ? null : { min: viewer.bounds().min.toArray(), max: viewer.bounds().max.toArray() },
+  state: () => stateRecord(),
+  screenshot: (a) => ({ png: viewer.snapshot(a.width ?? 1280).split(',')[1], view: viewer.getView(), size: [innerWidth, innerHeight], camera: viewer.cameraRecord() }),
+  /** A calibrated image: orthographic by default, so the mapping it comes with is exact. */
+  view: (a) => runView(a, (map) => {
+    const label = String(a.preset ?? 'current').toLowerCase();
+    lastRender = { label, run: (fn) => runView(a, fn) };
+    const px = map ? Math.max(map.width, map.height) : clampPx(a.width);
+    const b64 = viewer.snapshot(px, 'jpeg').split(',')[1] ?? '';
+    return {
+      preset: label, ortho: !!map, mapping: map, camera: viewer.cameraRecord(),
+      bounds: boundsRecord(), translation: globalShift(),
+      colorMode: knobs.colorMode, recommendedSource: recommendedSource(),
+      image: image('view:' + label, b64, 'image/jpeg', Math.round(Number(a.part) || 0)),
+    };
   }),
-  screenshot: (a) => ({ png: viewer.snapshot(a.width ?? 1280).split(',')[1], view: viewer.getView(), size: [innerWidth, innerHeight] }),
+  /** A plan or an elevation: only one slab, orthographic, with the same mapping record. */
+  section: (a) => runSection(a, (map, info) => {
+    lastRender = { label: `section ${info.axis}=${info.at}`, run: (fn) => runSection(a, fn) };
+    const px = map ? Math.max(map.width, map.height) : clampPx(a.width);
+    const b64 = viewer.snapshot(px, 'jpeg').split(',')[1] ?? '';
+    return {
+      ...info, mapping: map, camera: viewer.cameraRecord(), translation: globalShift(),
+      points: viewer.loaded,
+      image: image('section', b64, 'image/jpeg', Math.round(Number(a.part) || 0)),
+    };
+  }),
+  /** World points under pixels of the last view or section, re-rendering that exact camera. */
+  probe: (a) => {
+    const pixels = a.pixels as any[];
+    if (!Array.isArray(pixels) || !pixels.length) throw new Error('pixels: [[x,y], …] of the most recent view or section');
+    if (!lastRender) throw new Error('take a view or a section first — probe works on its pixels');
+    const r = lastRender;
+    return r.run((map) => ({
+      of: r.label, mapping: map, translation: globalShift(),
+      points: pixels.map((q: any) => {
+        const x = Number(q?.[0]), y = Number(q?.[1]);
+        const w = isFinite(x) && isFinite(y) ? viewer.pickWorld(x, y) : null;
+        return w ? { pixel: [x, y], local: arr6(w.toArray()), global: toGlobal(w.toArray()) } : null;
+      }),
+    }));
+  },
+  heightmap: (a) => heightmapCmd(a),
+  contour: (a) => contourCmd(a),
+  fitplane: (a) => fitPlaneCmd(a),
+  distance: (a) => {
+    const A = (a.a ?? []).map(Number), B = (a.b ?? []).map(Number);
+    if (A.length !== 3 || B.length !== 3 || [...A, ...B].some((v: number) => !isFinite(v))) throw new Error('a and b: [x,y,z] in local metres');
+    const d = Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]);
+    return {
+      a: arr6(A), b: arr6(B), aGlobal: toGlobal(A), bGlobal: toGlobal(B),
+      distance: r6(d), dz: r6(B[2] - A[2]),
+      horizontal: r6(Math.hypot(B[0] - A[0], B[1] - A[1])), units: 'm',
+    };
+  },
+  inside: (a) => {
+    if (!viewer.loaded) throw new Error('nothing loaded');
+    const r = regionFrom(a.box, 'inside-box');
+    const res = viewer.cells.insideExact(r);
+    return {
+      box: { center: arr6(r.center), half: arr6(r.half), quat: r.quat },
+      count: res.count, of: viewer.loaded,
+      bounds: res.min ? { local: { min: arr6(res.min), max: arr6(res.max!) }, global: { min: toGlobal(res.min), max: toGlobal(res.max!) } } : null,
+      exact: true,
+    };
+  },
   set_view: (a) => { if (a.preset === 'fit') viewer.fit(); else if (a.preset === 'top') viewer.topDown(); else if (a.pose) viewer.setView(a.pose); else if (a.orbit) viewer.setOrbit(a.orbit.azimuthDeg, a.orbit.elevationDeg, a.orbit.distance); viewer.render(); return viewer.getView(); },
   set: (s) => {
     const map: Record<string, (v: any) => void> = { colorMode: v => setColorMode(+v), pointSize: v => knobs.size = +v, maxPx: v => knobs.maxPx = +v, edl: v => knobs.edl = !!v,
@@ -1646,12 +2178,30 @@ const agent = new AgentLink({
     return { points: viewer.loaded };
   },
   surface: async (a) => {
-    if (a.op === 'clear') { meshData = null; dirtyMark.surface = 0; viewer.setMesh(null); document.body.classList.remove('has-mesh'); setDisplay('points'); viewer.render(); return { triangles: 0 }; }
+    if (a.op === 'clear') { meshData = null; meshInfo = null; dirtyMark.surface = 0; viewer.setMesh(null); document.body.classList.remove('has-mesh'); setDisplay('points'); viewer.render(); return { triangles: 0 }; }
     if (a.op === 'show') { setDisplay(a.mode === 'mesh' || a.mode === 'both' ? a.mode : 'points'); viewer.render(); return { display: viewer.display, triangles: viewer.mesh.triangles }; }
     if (a.op === 'build') {
       const st = await buildMesh({ voxel: a.voxelCm, smooth: a.smooth, trunc: a.fillGaps, confirm: false });
       viewer.render();
-      return st ? { triangles: st.triangles, vertices: st.vertices, display: viewer.display } : { triangles: 0 };
+      return st ? { triangles: st.triangles, vertices: st.vertices, display: viewer.display, surface: surfaceRecord(), recommendedSource: recommendedSource() } : { triangles: 0 };
+    }
+    if (a.op === 'export') {
+      if (!meshData) throw new Error('no surface: run surface build first');
+      const fmtSel = a.format === 'obj' ? 'obj' : 'ply';
+      const part = Math.round(Number(a.part) || 0);
+      const key = `surface:${fmtSel}:${meshInfo?.triangles ?? 0}`;
+      const hit = pagedHit(key, part);
+      if (hit) return { format: fmtSel, ...hit, ...surfaceRecord() };
+      const t = globalShift() as [number, number, number];
+      const blob = fmtSel === 'ply' ? viewer.mesh.toPly(meshData, t) : viewer.mesh.toObj(meshData, t);
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      let raw = '';
+      for (let i = 0; i < buf.length; i += 0x8000) raw += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      const out = pagedSet(key, btoa(raw), part);
+      return {
+        format: fmtSel, bytes: buf.length, ...out, ...surfaceRecord(),
+        note: 'base64 of the file; the cloud transform and the global shift are already baked into the coordinates. Concatenate the parts in order, then decode.',
+      };
     }
     throw new Error('bad op');
   },
@@ -1722,6 +2272,11 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
  *  Undo records carry typed arrays and live GL handles; they would blow the 1 MiB limit
  *  and be rejected, leaving the caller with an error for work that actually succeeded. */
 const HEAVY = new Set(['undo', 'recs', 'mask', 'leaf']);
+/** Commands that answer with their own image, or with a payload no screenshot should share. */
+const OWN_IMAGE = new Set(['view', 'section', 'heightmap']);
+const NO_SHOT = new Set(['state', 'pick', 'probe', 'fitplane', 'contour', 'distance', 'inside']);
+/** A Firestore document holds one reply and is capped at 1 MiB. */
+const RESULT_CAP = 700_000;
 function slim(v: any): any {
   return JSON.parse(JSON.stringify(v, (k, x) => {
     if (HEAVY.has(k) || ArrayBuffer.isView(x)) return undefined;
@@ -1731,16 +2286,28 @@ function slim(v: any): any {
 async function dispatchAgent(cmd: string, args: any = {}) {
   if (agentNeedsEdit(cmd, args) && !$<HTMLInputElement>('k-agentedits').checked)
     throw new Error(`"${cmd}" changes the scan or spends credit. This session is read-only: tick "Allow edits" in the Agent panel of the viewer tab.`);
-  const wantShot = cmd === 'screenshot' || args?.shot === true || (args?.shot !== false && cmd !== 'state' && cmd !== 'pick');
+  const noShot = NO_SHOT.has(cmd) || OWN_IMAGE.has(cmd) || (cmd === 'surface' && args?.op === 'export');
+  const wantShot = cmd === 'screenshot' || args?.shot === true || (args?.shot !== false && !noShot);
   const raw = await agent.run(cmd, args);
   if (raw && typeof raw === 'object' && wantShot) delete (raw as any).png;   // don't ship the same frame twice
   let result = slim(raw);
+  // A command that answers with its own single-part image rides the existing shot channel, so
+  // the result JSON stays small and every transport looks the same.
+  let lifted: string | null = null, liftedMime = 'image/jpeg';
+  if (result?.image?.parts === 1 && typeof result.image.data === 'string') {
+    lifted = raw.image.data; liftedMime = raw.image.mime ?? 'image/jpeg';
+    // drop the key rather than setting it undefined: the relay writes this into Firestore,
+    // which rejects an undefined field outright
+    const { data: _drop, ...rest } = result.image;
+    result = { ...result, image: { ...rest, inShot: true } };
+  }
   const size = JSON.stringify(result ?? null).length;
-  if (size > 150_000) result = { note: `result omitted, ${size} characters is too large to return`, keys: Object.keys(raw ?? {}) };
+  if (size > RESULT_CAP) result = { note: `result omitted, ${size} characters is over the ${RESULT_CAP} a relayed reply can carry. Ask for it in parts (part: 0, 1, …) or with a smaller width/resolution.`, keys: Object.keys(raw ?? {}) };
   const out: any = { result };
-  if (wantShot) {
+  if (lifted) { out.shot = lifted; out.mime = liftedMime; }
+  else if (wantShot) {
     const b64 = viewer.snapshot(Math.min(1280, Number(args?.width) || 1024), 'jpeg').split(',')[1] || '';
-    if (b64.length < 600_000) { out.shot = b64; out.mime = 'image/jpeg'; }
+    if (b64.length < PAGE) { out.shot = b64; out.mime = 'image/jpeg'; }
   }
   return out;
 }
@@ -1905,4 +2472,5 @@ refreshCachedList();
 (window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist,
   commitTransform, transformState, levelCloud, rowMajor, fromRowMajor, runExport, updateTransformUI,
   dirtyList, isDirty, openAnother, confirmReplace,
+  stateRecord, recommendedSource, surfaceRecord, heightmapCmd, contourCmd, fitPlaneCmd, dispatchAgent,
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; } };

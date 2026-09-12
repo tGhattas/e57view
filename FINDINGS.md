@@ -654,3 +654,75 @@ normals · a scalar field (Planarity) · a 5,832-triangle surface · a transform
 exactly what they are about to throw away, and the same list is what `state.unsaved` hands an
 agent. *Save as… first* runs the save and then continues to the picker **only if the scan
 came out clean**, so a cancelled save cannot quietly discard the work it was meant to protect.
+
+## What an agent actually needs to model from a scan
+
+The instinct is to give an agent more pictures. It does not need more pictures. Everything it
+can do with a screenshot it can already do, and none of it is measurable: a perspective frame
+has no scale, so "that wall looks about three metres" is the best answer available, and the
+model comes out approximately wrong in a way nothing downstream can detect.
+
+What it needs is calibration and vectors.
+
+**Calibration** means the image arrives with the arithmetic that inverts it. A perspective
+render cannot carry that — one metre is a different number of pixels at every depth — so the
+preset views use a genuinely orthographic projection. That took a real change rather than the
+existing trick: `renderTopDown` already approximated ortho with a 10° field of view at a long
+distance, and the scale still varies by the depth of the scene over the camera distance, which
+is a few per cent, which is 20 cm across a room. So the projection matrix on the perspective
+camera is swapped for an orthographic one for the duration of the render. Three things had to
+learn about it: the point-size shader (`projFactor` is a constant, `1/metresPerPixel`, instead
+of falling off with depth), the level-of-detail estimate (a leaf's projected radius no longer
+depends on its distance), and the picker (an orthographic ray through a pixel is parallel to
+the view axis, so the depth buffer says only how far along it the point sits). The camera
+object itself stays a `PerspectiveCamera`, so the controls, the overlay and the EDL pass never
+find out.
+
+The mapping is reported twice: `topLeft` plus `perPixelRight`/`perPixelDown`, which is exact
+for any orientation including the isometric view, and `originX/originY/extentX/extentY`, which
+is the form a person writes on a drawing and is null when the view is not axis aligned.
+`drive-agent-model.mjs` checks the two against each other and against a `probe`: **100 pixels
+across the image measured 0.7651 m against 0.7651 m predicted.**
+
+**Vectors** are the other half, and the more important one. `contour` is the primitive that
+matters: marching squares over the occupancy of a horizontal slab, returning closed polylines
+in metres. An agent drawing a floor plan from a picture is tracing pixels; an agent given four
+closed rings and a bounding box that matches the room to **3 cm** is doing geometry. Likewise
+`fitplane` returns a normal *and* an RMS, because the RMS is what says whether the thing is a
+plane at all — and it caught the test's own mistake: a fitting box tall enough to include the
+floor and the ceiling strips either side of a wall reported a 24 mm RMS for a wall that is
+exactly flat. Tightened to the wall alone: **0 mm over 2,720 points**.
+
+Three things bit.
+
+**A uniform sample of the cloud is a sparse sample of a slab.** The first `contour`
+implementation reused `cells.sample` — right for the heightmap, which covers everything —
+and a 0.3 m slab holds about 5% of a room's points, so a 20% sample of the cloud left the wall
+lines full of gaps and marching squares returned 221 tiny closed loops, one per isolated cell.
+Contour now reads every point of the cells the slab touches and skips the rest by their
+transformed bounding box, which is both complete and cheaper on a real scan, where a thin slab
+misses most cells entirely. The raster cell also has a floor of two and a half point spacings,
+because a cell finer than the point spacing cannot be traced through whatever resolution was
+asked for.
+
+**Ramer-Douglas-Peucker collapses a closed ring.** It keeps the two endpoints and measures
+everything else against the line between them; on a ring those endpoints are the same point,
+that line has no length, and the entire outline simplifies to a single vertex. The room's
+footprint came back as one two-point polyline with a degenerate bounding box. The ring is now
+cut at the vertex furthest from the start and the halves simplified separately.
+
+**Firestore refuses an array directly inside an array** — which is the shape of every
+genuinely two-dimensional thing here: pixel pairs to probe, polylines from a contour. The
+relay wrote command arguments straight into a document field, so `probe` with
+`pixels: [[400,267],[500,267]]` failed the write, the function's promise rejected, and the
+agent got **HTTP 500 with an empty body**: no error, no hint, nothing to act on. Arguments and
+answers now cross the mailbox as JSON strings, which have no such rules, and the HTTP shape
+the caller sees is unchanged. Large answers are split into ≤ 560,000-character parts rather
+than dropped, so a 1.9 MB surface export arrives in five and reassembles to a byte-exact PLY.
+
+And one that was already there: **`OrbitControls.update()` ends in `lookAt(target)`.** Setting
+the camera's position and calling `lookAt` is not enough, because the next render re-aims it at
+the stale orbit target — so the first orthographic top view was quietly swung off axis and the
+mapping described a frame that had never been rendered. The probe caught it immediately: 100
+pixels apart measured 1.0108 m against 0.8744 m predicted. `renderTopDown` had the same latent
+bug and is fixed with it.

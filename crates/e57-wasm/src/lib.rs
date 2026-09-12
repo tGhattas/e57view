@@ -490,8 +490,8 @@ mod wasm_mesh {
         pub fn build(&mut self, smooth: u32, density_iso: f32) -> String {
             let (mesh, st) = self.inner.extract(smooth, density_iso);
             let json = format!(
-                "{{\"points\":{},\"voxels\":{},\"vertices\":{},\"triangles\":{},\"oriented\":{},\"unoriented\":{}}}",
-                st.points_used, st.voxels, st.vertices, st.triangles, st.oriented, st.unoriented
+                "{{\"points\":{},\"voxels\":{},\"vertices\":{},\"triangles\":{},\"oriented\":{},\"unoriented\":{},\"boundaryEdges\":{}}}",
+                st.points_used, st.voxels, st.vertices, st.triangles, st.oriented, st.unoriented, st.boundary_edges
             );
             self.out = Some(mesh);
             json

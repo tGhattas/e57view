@@ -119,6 +119,26 @@ void main(){
   gl_FragColor = vec4(texture2D(uTex, vec2(u, v)).rgb, uOpacity);
 }`;
 
+export interface CameraRecord {
+  projection: 'orthographic' | 'perspective';
+  position: number[]; target: number[]; up: number[];
+  fovDeg: number | null; aspect: number;
+  width: number; height: number; devicePixelRatio: number;
+  near: number; far: number; distanceToTarget: number;
+  metresPerPixel: number; metresPerPixelNote: string;
+  viewProjection: number[];
+}
+/** The pixel-to-metre mapping of an orthographic render. `topLeft` plus the two per-pixel
+ *  world steps is exact for any orientation; originX/originY/extentX/extentY are the plan
+ *  and elevation form, and are null when the view is not axis aligned. */
+export interface OrthoMap {
+  width: number; height: number; metresPerPixel: number;
+  topLeft: number[]; perPixelRight: number[]; perPixelDown: number[];
+  rightAxis: string | null; upAxis: string | null; viewAxis: string | null;
+  originX: number | null; originY: number | null; extentX: number; extentY: number;
+  centre: number[]; depthRange: number[]; note: string;
+}
+
 export interface Station { image: number; t: [number, number, number]; q: [number, number, number, number]; w: number; h: number; bytes: number; name: string | null }
 
 export class Viewer {
@@ -144,6 +164,10 @@ export class Viewer {
   overlay = new THREE.Scene();
   private panoScene = new THREE.Scene();
   knobs!: Knobs;
+  /** Set while an orthographic projection is swapped in: its half extents in metres. */
+  private ortho: { halfW: number; halfH: number } | null = null;
+  /** World box the surface is clipped to while a section is rendered. */
+  meshClip: { min: THREE.Vector3; max: THREE.Vector3 } | null = null;
   zRange: [number, number] = [0, 1];
   robust: THREE.Box3 | null = null;
   private cw = innerWidth; private ch = innerHeight;
@@ -549,8 +573,13 @@ export class Viewer {
     if (!(logD > 0)) return null;
     const viewZ = -Math.pow(2, logD);
     const ndcX = (x / this.rt.width) * 2 - 1, ndcY = (y / this.rt.height) * 2 - 1;
-    const P = this.camera.projectionMatrix.elements;
     this.camera.updateMatrixWorld();
+    // Orthographic: the ray through a pixel is parallel to the view axis, so the depth only
+    // says how far along it the point sits. Perspective: the ray spreads with depth.
+    if (this.ortho) {
+      return new THREE.Vector3(ndcX * this.ortho.halfW, ndcY * this.ortho.halfH, viewZ).applyMatrix4(this.camera.matrixWorld);
+    }
+    const P = this.camera.projectionMatrix.elements;
     return new THREE.Vector3(ndcX / P[0] * -viewZ, ndcY / P[5] * -viewZ, viewZ).applyMatrix4(this.camera.matrixWorld);
   }
   pickTarget(cx: number, cy: number) {
@@ -777,12 +806,15 @@ export class Viewer {
     c.getContext('2d')!.drawImage(this.canvas, 0, 0, c.width, c.height);
     return c.toDataURL(mime, q);
   }
-  /** Run `fn` with overlays hidden and a denser, brighter point pass — what an AI should look at. */
+  /** Run `fn` with overlays hidden and a denser, brighter point pass — what an agent should
+   *  look at: no station markers, no gizmo, no labels, and the full point budget. */
   cleanRender<T>(fn: () => T): T {
     const k = this.knobs; const saved = { ...k };
     const ov = this.overlay.visible, lb = this.labelsEl.style.display, pa = this.panoScene.visible, pAlpha = this.edlMat.uniforms.uPointAlpha.value;
     this.overlay.visible = false; this.labelsEl.style.display = 'none'; this.panoScene.visible = false; this.edlMat.uniforms.uPointAlpha.value = 1;
-    Object.assign(k, { budget: Math.max(k.budget, 24_000_000), density: Math.max(k.density, 3), size: Math.max(k.size, 2.5), maxPx: Math.max(k.maxPx, 9), colorMode: 0, bright: Math.min(Math.max(k.bright, 1.0), 1.1), edlStrength: Math.min(k.edlStrength, 0.25), clipZMin: -1e9, clipZMax: 1e9 });
+    // The colour mode is deliberately left alone: a scalar field is often the thing worth
+    // photographing, and forcing RGB threw that away.
+    Object.assign(k, { budget: Math.max(k.budget, 24_000_000), density: Math.max(k.density, 3), size: Math.max(k.size, 2.5), maxPx: Math.max(k.maxPx, 9), bright: Math.min(Math.max(k.bright, 1.0), 1.1), edlStrength: Math.min(k.edlStrength, 0.25), clipZMin: -1e9, clipZMax: 1e9 });
     this.moving = false;
     try { return fn(); }
     finally { Object.assign(k, saved); this.overlay.visible = ov; this.labelsEl.style.display = lb; this.panoScene.visible = pa; this.edlMat.uniforms.uPointAlpha.value = pAlpha; this.dirty = true; }
@@ -803,6 +835,7 @@ export class Viewer {
     const fov = 10, tanH = Math.tan(fov / 2 * Math.PI / 180);
     const H = Math.max(ex / (w / h), ey) / (2 * tanH);
     this.camera.fov = fov; this.camera.up.set(0, 1, 0);
+    this.controls.target.copy(c);               // controls.update() re-aims at it during render
     this.camera.position.set(c.x, c.y, c.z + H); this.camera.lookAt(c);
     this.camera.near = Math.max(0.1, H - size.z); this.camera.far = H + size.z + 10; this.camera.updateProjectionMatrix();
     const dataUrl = this.cleanRender(() => this.snapshot(px));
@@ -831,6 +864,112 @@ export class Viewer {
     this.restoreCam(s); if (wasFly) this.fly.enter();
     return d;
   }
+
+  // ------------------------------------------------------- calibrated views for an agent
+  /** Everything needed to turn a pixel of the last frame back into a ray. */
+  cameraRecord(): CameraRecord {
+    const c = this.camera;
+    const dpr = this.renderer.getPixelRatio();
+    const dist = c.position.distanceTo(this.controls.target);
+    const vp = new THREE.Matrix4().multiplyMatrices(c.projectionMatrix, c.matrixWorldInverse);
+    const e = vp.elements;
+    const mpp = this.ortho
+      ? (2 * this.ortho.halfH) / (this.ch * dpr)
+      : (2 * dist * Math.tan((c.fov * Math.PI / 180) / 2)) / (this.ch * dpr);
+    return {
+      projection: this.ortho ? 'orthographic' : 'perspective',
+      position: c.position.toArray(), target: this.controls.target.toArray(), up: c.up.toArray(),
+      fovDeg: this.ortho ? null : c.fov, aspect: c.aspect,
+      width: Math.round(this.cw * dpr), height: Math.round(this.ch * dpr), devicePixelRatio: dpr,
+      near: c.near, far: c.far, distanceToTarget: dist,
+      metresPerPixel: mpp,
+      metresPerPixelNote: this.ortho
+        ? 'exact everywhere: the projection is orthographic'
+        : 'at the orbit target only; a perspective pixel covers more ground further away',
+      // row-major, so a caller can project a world point itself: ndc = VP * [x,y,z,1]
+      viewProjection: [e[0], e[4], e[8], e[12], e[1], e[5], e[9], e[13], e[2], e[6], e[10], e[14], e[3], e[7], e[11], e[15]],
+    };
+  }
+
+  /** Run `fn` with an orthographic camera looking along `forward` and framing `bb`, then put
+   *  the camera back. The projection is genuinely orthographic — a swapped projection matrix
+   *  on the same camera object, so the controls, the shaders and the picker are untouched —
+   *  which is what makes one metre the same number of pixels everywhere in the image. */
+  withOrtho<T>(o: { forward: THREE.Vector3; upHint?: THREE.Vector3; bb: THREE.Box3; px?: number; pad?: number },
+               fn: (m: OrthoMap) => T): T {
+    const saved = this.saveCam(); const wasFly = this.fly.enabled; if (wasFly) this.fly.exit();
+    const savedDpr = this.renderer.getPixelRatio();
+    this.renderer.setPixelRatio(1);                 // one image pixel is one render pixel
+    try {
+      const f = o.forward.clone().normalize();
+      const hint = (o.upHint ?? (Math.abs(f.z) > 0.99 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1))).clone().normalize();
+      const back = f.clone().negate();
+      const right = new THREE.Vector3().crossVectors(hint, back).normalize();
+      const up = new THREE.Vector3().crossVectors(back, right).normalize();
+      const bb = o.bb, c = bb.getCenter(new THREE.Vector3());
+      let ex = 1e-3, ey = 1e-3, ez = 1e-3;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < 8; i++) {
+        v.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z).sub(c);
+        ex = Math.max(ex, Math.abs(v.dot(right))); ey = Math.max(ey, Math.abs(v.dot(up))); ez = Math.max(ez, Math.abs(v.dot(back)));
+      }
+      const pad = o.pad ?? 1.02;
+      ex *= pad; ey *= pad;
+      const px = Math.max(64, Math.min(2048, Math.round(o.px ?? 1024)));
+      const w = ex >= ey ? px : Math.max(64, Math.round(px * ex / ey));
+      const h = ex >= ey ? Math.max(64, Math.round(px * ey / ex)) : px;
+      this.resizeTo(w, h);
+      // square pixels: whichever half extent is short for the image aspect is stretched
+      const halfH = Math.max(ey, ex * h / w), halfW = halfH * w / h;
+      const dist = ez + 1;
+      this.camera.up.copy(up);
+      // The orbit target has to move as well. render() calls controls.update(), which ends in
+      // lookAt(target) — so with a stale target the camera is quietly swung off axis and the
+      // mapping this function returns describes a frame that was never rendered.
+      this.controls.target.copy(c);
+      this.camera.position.copy(c).addScaledVector(back, dist);
+      this.camera.lookAt(c);
+      this.camera.near = 0.01; this.camera.far = dist + ez + 10;
+      this.camera.updateMatrixWorld();
+      this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
+      this.camera.projectionMatrix.makeOrthographic(-halfW, halfW, halfH, -halfH, this.camera.near, this.camera.far);
+      this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
+      this.ortho = { halfW, halfH };
+      const mpp = (2 * halfW) / w;
+      // world position of the centre of pixel (0,0), and the world step per pixel
+      const topLeft = c.clone()
+        .addScaledVector(right, -halfW + mpp / 2)
+        .addScaledVector(up, halfH - mpp / 2);
+      const axisName = (a: THREE.Vector3) => {
+        const n: [string, number][] = [['x', a.x], ['y', a.y], ['z', a.z]];
+        n.sort((p, q) => Math.abs(q[1]) - Math.abs(p[1]));
+        return Math.abs(n[0][1]) > 0.999 ? `${n[0][1] > 0 ? '+' : '-'}${n[0][0]}` : null;
+      };
+      const axes = [axisName(right), axisName(up), axisName(f)];
+      const map: OrthoMap = {
+        width: w, height: h, metresPerPixel: mpp,
+        topLeft: topLeft.toArray(),
+        perPixelRight: right.clone().multiplyScalar(mpp).toArray(),
+        perPixelDown: up.clone().multiplyScalar(-mpp).toArray(),
+        rightAxis: axes[0], upAxis: axes[1], viewAxis: axes[2],
+        // the friendly form, only meaningful when the view is axis aligned
+        originX: axes[0] ? topLeft.dot(right) - mpp / 2 : null,
+        originY: axes[1] ? topLeft.dot(up) - (h - 0.5) * mpp : null,
+        extentX: 2 * halfW, extentY: 2 * halfH,
+        centre: c.toArray(), depthRange: [c.dot(f) - ez, c.dot(f) + ez],
+        note: 'world = topLeft + x * perPixelRight + y * perPixelDown, for the centre of pixel (x, y). When rightAxis and upAxis are set the same thing reads: world[rightAxis] = originX + (x + 0.5) * metresPerPixel, world[upAxis] = originY + (height - 0.5 - y) * metresPerPixel.',
+      };
+      return fn(map);
+    } finally {
+      this.ortho = null;
+      this.renderer.setPixelRatio(savedDpr);
+      this.restoreCam(saved);
+      if (wasFly) this.fly.enter();
+    }
+  }
+
+  /** One clean frame into the render target, ready to be read back or picked from. */
+  renderClean() { this.cleanRender(() => { this.dirty = true; this.render(); }); }
 
   benchmark(frames = 30): number {
     const gl = this.renderer.getContext(); this.moving = false;
@@ -872,6 +1011,7 @@ export class Viewer {
       colorMode: k2.colorMode, zMin: this.zRange[0], zMax: this.zRange[1],
       clipZMin: k2.clipZMin, clipZMax: k2.clipZMax, bright: k2.bright, gamma: k2.gamma,
       flat: this.meshFlat, shade: this.meshShade,
+      clipMin: this.meshClip?.min, clipMax: this.meshClip?.max,
     });
     if (this.display === 'mesh') {
       this.stats = { leavesVisible: 0, leavesDrawn: 0, pointsDrawn: 0, pointsTotal: this.cells.total };
@@ -882,6 +1022,7 @@ export class Viewer {
       clipZMin: k.clipZMin, clipZMax: k.clipZMax, round: k.round, normalShade: k.normalShade, bright: k.bright, gamma: k.gamma,
       screenH: this.rt.height, fovDeg: this.camera.fov, regions: this.regions.filter(r => this.regionOverlayVisible(r)), regionHide: this.regionHide,
       sfMin: this.sf.min, sfMax: this.sf.max, sfLo: this.sf.lo, sfHi: this.sf.hi, sfHide: this.sf.hide,
+      orthoMpp: this.ortho ? (2 * this.ortho.halfH) / Math.max(1, this.rt.height) : 0,
     });
     this.renderer.resetState();
 

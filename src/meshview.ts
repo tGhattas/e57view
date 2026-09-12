@@ -14,6 +14,7 @@ layout(location=1) in vec3 aNrm;
 layout(location=2) in vec4 aCol;
 uniform mat4 uVP, uView, uModel;
 uniform float uColorMode, uZMin, uZMax, uClipZMin, uClipZMax;
+uniform vec3 uClipMin, uClipMax;      // a section clips the surface as well as the points
 out vec3 vCol; out vec3 vNrm; out float vLogDepth; out vec3 vPosV; flat out float vDrop;
 
 vec3 ramp(float t){
@@ -28,7 +29,8 @@ void main(){
   // Same uModel as the points: a surface built in the cloud's local space stays glued to
   // the points it came from when the cloud is moved, rotated or levelled.
   vec3 p = (uModel * vec4(aPos, 1.0)).xyz;
-  vDrop = (p.z < uClipZMin || p.z > uClipZMax) ? 1.0 : 0.0;
+  vDrop = (p.z < uClipZMin || p.z > uClipZMax
+        || any(lessThan(p, uClipMin)) || any(greaterThan(p, uClipMax))) ? 1.0 : 0.0;
   vCol = uColorMode > 1.5 ? vec3(0.72, 0.74, 0.76)
        : uColorMode > 0.5 ? ramp((p.z - uZMin) / max(uZMax - uZMin, 1e-6))
        : aCol.rgb;
@@ -59,6 +61,7 @@ void main(){
 }`;
 
 const _t = new THREE.Vector3(), _n3 = new THREE.Matrix3();
+const _bigMax = new THREE.Vector3(1e12, 1e12, 1e12), _bigMin = new THREE.Vector3(-1e12, -1e12, -1e12);
 
 function compile(gl: WebGL2RenderingContext, src: string, kind: number): WebGLShader {
   const s = gl.createShader(kind)!;
@@ -71,6 +74,8 @@ export interface MeshDrawParams {
   colorMode: number; zMin: number; zMax: number;
   clipZMin: number; clipZMax: number;
   bright: number; gamma: number; flat: boolean; shade: boolean;
+  /** World box the surface is clipped to. Omit for no box clipping. */
+  clipMin?: THREE.Vector3; clipMax?: THREE.Vector3;
 }
 
 export interface MeshData {
@@ -98,7 +103,7 @@ export class MeshView {
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('mesh link: ' + gl.getProgramInfoLog(p));
     this.prog = p;
-    for (const n of ['uVP', 'uView', 'uModel', 'uColorMode', 'uZMin', 'uZMax', 'uClipZMin', 'uClipZMax', 'uBright', 'uGamma', 'uFlat', 'uShade']) {
+    for (const n of ['uVP', 'uView', 'uModel', 'uClipMin', 'uClipMax', 'uColorMode', 'uZMin', 'uZMax', 'uClipZMin', 'uClipZMax', 'uBright', 'uGamma', 'uFlat', 'uShade']) {
       this.u[n] = gl.getUniformLocation(p, n);
     }
   }
@@ -167,6 +172,9 @@ export class MeshView {
     gl.uniform1f(this.u.uColorMode!, p.colorMode);
     gl.uniform1f(this.u.uZMin!, p.zMin); gl.uniform1f(this.u.uZMax!, p.zMax);
     gl.uniform1f(this.u.uClipZMin!, p.clipZMin); gl.uniform1f(this.u.uClipZMax!, p.clipZMax);
+    const cmn = p.clipMin ?? _bigMin, cmx = p.clipMax ?? _bigMax;
+    gl.uniform3f(this.u.uClipMin!, cmn.x, cmn.y, cmn.z);
+    gl.uniform3f(this.u.uClipMax!, cmx.x, cmx.y, cmx.z);
     gl.uniform1f(this.u.uBright!, p.bright); gl.uniform1f(this.u.uGamma!, p.gamma);
     gl.uniform1f(this.u.uFlat!, p.flat ? 1 : 0);
     gl.uniform1f(this.u.uShade!, p.shade ? 1 : 0);
