@@ -141,7 +141,10 @@ pub fn decode<R: Read + Seek>(
             let nrm = if m.nx != NONE {
                 let (mut nx, mut ny, mut nz) = (fr.fields[m.nx].col.get(k), fr.fields[m.ny].col.get(k), fr.fields[m.nz].col.get(k));
                 if !identity { let p = rot(q, nx, ny, nz); nx = p[0]; ny = p[1]; nz = p[2]; }
-                [(nx.clamp(-1.0, 1.0) * 127.0) as i8, (ny.clamp(-1.0, 1.0) * 127.0) as i8, (nz.clamp(-1.0, 1.0) * 127.0) as i8]
+                let q = [(nx.clamp(-1.0, 1.0) * 127.0) as i8, (ny.clamp(-1.0, 1.0) * 127.0) as i8, (nz.clamp(-1.0, 1.0) * 127.0) as i8];
+                // (0,0,127) is the "no normal" marker, so a real straight-up normal has to
+                // give way by one step — 0.45 degrees, well under the quantisation error.
+                if q == [0, 0, 127] { [0, 0, 126] } else { q }
             } else { [0, 0, 127] };
 
             tree.insert([x, y, z], rgb, inten, nrm);

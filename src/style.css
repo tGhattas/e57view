@@ -242,3 +242,13 @@ input.txt{background:#0a1216;color:var(--ink);border:1px solid var(--line);borde
 .mesh-have{display:none}
 body.has-mesh .mesh-have{display:flex}
 body.has-mesh button.mesh-have{display:block}
+
+/* analysis + scalar field */
+.lab.mono{font-size:10px;letter-spacing:.14em;color:var(--dim);margin:12px 0 6px}
+.grp .lab.mono:first-of-type{margin-top:4px}
+.sf-have{display:none}
+body.has-sf .sf-have{display:block}
+.sf-filtering{display:none}
+body.sf-filtering .sf-filtering{display:flex}
+body.sf-filtering button.sf-filtering{display:block}
+#sf-hist{width:100%;height:52px;display:block;background:#0a1216;border:1px solid var(--line);border-radius:4px;margin-bottom:8px}

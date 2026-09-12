@@ -1,10 +1,30 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const __wbg_cloudanalysis_free: (a: number, b: number) => void;
 export const __wbg_e57export_free: (a: number, b: number) => void;
 export const __wbg_e57handle_free: (a: number, b: number) => void;
 export const __wbg_meshbuilder_free: (a: number, b: number) => void;
 export const __wbg_pointsink_free: (a: number, b: number) => void;
+export const cloudanalysis_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+export const cloudanalysis_build: (a: number) => void;
+export const cloudanalysis_component_count: (a: number) => number;
+export const cloudanalysis_components: (a: number, b: number, c: number, d: number) => [number, number];
+export const cloudanalysis_compute_normals: (a: number, b: number, c: number) => void;
+export const cloudanalysis_cut_distance: (a: number) => number;
+export const cloudanalysis_duplicates: (a: number, b: number) => [number, number];
+export const cloudanalysis_feature: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+export const cloudanalysis_invert_normals: (a: number) => void;
+export const cloudanalysis_len: (a: number) => number;
+export const cloudanalysis_mean_distance: (a: number) => number;
+export const cloudanalysis_new: (a: number) => number;
+export const cloudanalysis_noise: (a: number, b: number, c: number, d: number) => [number, number];
+export const cloudanalysis_normals_bytes: (a: number) => [number, number];
+export const cloudanalysis_orient_normals: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+export const cloudanalysis_rewind: (a: number) => void;
+export const cloudanalysis_sor: (a: number, b: number, c: number, d: number) => [number, number];
+export const cloudanalysis_subsample: (a: number, b: number) => [number, number];
+export const cloudanalysis_write_normals: (a: number, b: number, c: number, d: any) => void;
 export const e57export_add_points: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
 export const e57export_finish: (a: number) => [number, number, number];
 export const e57export_new: (a: any, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];

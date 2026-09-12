@@ -495,3 +495,37 @@ rather than premultiplied colour — the depth in the alpha channel was scaling 
 saturating it. And the build hung forever the first time because the worker was asked for a
 result that was never requested: the message that starts extraction was missing, so both
 sides waited politely for each other.
+
+## Neighbourhood analysis
+
+Normals, geometric features, outlier removal, duplicate detection and connected components
+are one question asked five ways, so they share a single spatial index: a uniform voxel hash
+rather than a kd-tree, because scan data is close to uniform along surfaces and a grid builds
+in one counting pass with no recursion or rebalancing. `cargo run --bin anatest` checks the
+maths against shapes with known answers: a plane reads planarity 0.92 and linearity 0.08, a
+line reads linearity 1.00, a wall reads verticality 1.00 and a floor 0.00, sphere normals come
+back radial and 100% outward after orientation, and statistical outlier removal drops all 150
+planted specks while losing none of the 14,400 surface points.
+
+On the real scan at 7.4M points: normals with orientation **53 s**, a geometric feature
+**34 s**, heap 252 MB.
+
+Three bugs worth recording, none of which a screenshot would have caught.
+
+**A normal pointing straight up was indistinguishable from no normal at all.** The record
+format marks "no normal" with (0,0,127), which is exactly what a real +Z normal quantises to,
+so every horizontal upward surface lost its normals — and the surface reconstruction silently
+fell back to density mode on ground and roofs. Real normals now step down to 126, an error of
+0.45 degrees, well inside the quantisation noise.
+
+**The field rendered flat grey because a leftover preview leaf was drawn over it.** The
+low-resolution preview uploaded during loading has no correspondence to the analysed points,
+so it never receives a field, and its points fall back to the "no value" colour — painting the
+whole cloud grey on top of a perfectly correct result. Previews are now dropped when a field
+is attached. Finding it needed the attribute state read from inside the draw call itself:
+every check outside the frame said the buffer was bound and full of the right numbers.
+
+**NaN is not a dependable sentinel on the GPU.** Marking "no value" with NaN and testing it
+with `isnan` fails under a driver's fast maths. The CPU copy keeps NaN, which JavaScript
+handles correctly for statistics, and the GPU copy swaps it for a finite sentinel compared
+with an ordinary less-than.

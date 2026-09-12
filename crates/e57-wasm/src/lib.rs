@@ -2,6 +2,7 @@ pub mod fast;
 pub mod octree;
 pub mod core;
 pub mod mesh;
+pub mod analysis;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
@@ -497,5 +498,100 @@ mod wasm_mesh {
         pub fn normals(&mut self) -> Vec<f32> { self.out.as_mut().map(|m| std::mem::take(&mut m.nrm)).unwrap_or_default() }
         pub fn colors(&mut self) -> Vec<u8> { self.out.as_mut().map(|m| std::mem::take(&mut m.col)).unwrap_or_default() }
         pub fn indices(&mut self) -> Vec<u32> { self.out.as_mut().map(|m| std::mem::take(&mut m.idx)).unwrap_or_default() }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_analysis {
+    use crate::analysis::{Analyzer, Feature};
+    use wasm_bindgen::prelude::*;
+
+    /// Neighbourhood analysis driven from a worker. The caller streams in the viewer's own
+    /// leaf records, runs one analysis, then pulls back either a per-point number (a scalar
+    /// field), a per-point keep mask, or rewritten normals.
+    #[wasm_bindgen]
+    pub struct CloudAnalysis {
+        inner: Analyzer,
+        cursor: usize,
+        last_count: u32,
+        last_mean: f32,
+        last_cut: f32,
+    }
+
+    #[inline]
+    fn tick(cb: &Option<js_sys::Function>, i: usize) {
+        if let Some(f) = cb {
+            let _ = f.call1(&JsValue::NULL, &JsValue::from_f64(i as f64));
+        }
+    }
+
+    #[wasm_bindgen]
+    impl CloudAnalysis {
+        #[wasm_bindgen(constructor)]
+        pub fn new(cell: f32) -> CloudAnalysis {
+            CloudAnalysis { inner: Analyzer::new(cell), cursor: 0, last_count: 0, last_mean: 0.0, last_cut: 0.0 }
+        }
+        pub fn add_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8]) {
+            self.inner.add_records([ox, oy, oz], size, recs);
+        }
+        pub fn len(&self) -> u32 { self.inner.len() as u32 }
+        pub fn build(&mut self) { self.inner.build(); }
+
+        pub fn compute_normals(&mut self, k: u32, progress: Option<js_sys::Function>) {
+            self.inner.compute_normals(k as usize, |i| tick(&progress, i));
+        }
+        pub fn orient_normals(&mut self, k: u32, vx: f32, vy: f32, vz: f32, use_viewpoint: bool, progress: Option<js_sys::Function>) {
+            let vp = if use_viewpoint { Some([vx, vy, vz]) } else { None };
+            self.inner.orient_normals(k as usize, vp, |i| tick(&progress, i));
+        }
+        pub fn invert_normals(&mut self) { self.inner.invert_normals(); }
+
+        /// Normals interleaved as x,y,z signed bytes, for the viewer to patch into its records.
+        pub fn normals_bytes(&self) -> Vec<i8> {
+            let n = self.inner.len();
+            let mut out = vec![0i8; n * 3];
+            for i in 0..n {
+                out[i * 3] = self.inner.nx[i];
+                out[i * 3 + 1] = self.inner.ny[i];
+                out[i * 3 + 2] = self.inner.nz[i];
+            }
+            out
+        }
+
+        /// Rewrite the normal bytes of the next leaf, in the order the leaves were added.
+        pub fn write_normals(&mut self, recs: &mut [u8]) {
+            self.cursor = self.inner.write_normals(self.cursor, recs);
+        }
+        pub fn rewind(&mut self) { self.cursor = 0; }
+
+        pub fn feature(&mut self, name: &str, k: u32, radius: f32, progress: Option<js_sys::Function>) -> Vec<f32> {
+            match Feature::from_str(name) {
+                Some(f) => self.inner.feature(f, k as usize, radius, |i| tick(&progress, i)),
+                None => Vec::new(),
+            }
+        }
+        /// Returns the keep mask; the mean and cut-off used are reported separately.
+        pub fn sor(&mut self, k: u32, n_sigma: f32, progress: Option<js_sys::Function>) -> Vec<u8> {
+            let (keep, mu, cut) = self.inner.sor(k as usize, n_sigma, |i| tick(&progress, i));
+            self.last_mean = mu;
+            self.last_cut = cut;
+            keep
+        }
+        pub fn noise(&mut self, k: u32, n_sigma: f32, progress: Option<js_sys::Function>) -> Vec<u8> {
+            self.inner.noise_filter(k as usize, n_sigma, |i| tick(&progress, i))
+        }
+        pub fn duplicates(&mut self, tol: f32) -> Vec<u8> { self.inner.duplicates(tol) }
+        pub fn subsample(&mut self, spacing: f32) -> Vec<u8> { self.inner.spatial_subsample(spacing) }
+        pub fn components(&mut self, radius: f32, min_pts: u32, progress: Option<js_sys::Function>) -> Vec<f32> {
+            let (labels, n) = self.inner.connected_components(radius, min_pts as usize, |i| tick(&progress, i));
+            self.last_count = n;
+            labels
+        }
+        #[wasm_bindgen(getter)]
+        pub fn component_count(&self) -> u32 { self.last_count }
+        #[wasm_bindgen(getter)]
+        pub fn mean_distance(&self) -> f32 { self.last_mean }
+        #[wasm_bindgen(getter)]
+        pub fn cut_distance(&self) -> f32 { self.last_cut }
     }
 }

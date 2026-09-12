@@ -121,6 +121,8 @@ export class Viewer {
   cells: CellRenderer;
   mesh!: MeshView;
   meshTris = 0;
+  /** Display range and value filter for the active scalar field. hi <= lo disables the filter. */
+  sf = { min: 0, max: 1, lo: 0, hi: -1, hide: false };
   display: Display = 'points';
   meshFlat = false;
   meshShade = true;
@@ -687,6 +689,7 @@ export class Viewer {
       colorMode: k.colorMode, zMin: this.zRange[0], zMax: this.zRange[1], iMin: k.iMin, iMax: k.iMax,
       clipZMin: k.clipZMin, clipZMax: k.clipZMax, round: k.round, normalShade: k.normalShade, bright: k.bright, gamma: k.gamma,
       screenH: this.rt.height, fovDeg: this.camera.fov, regions: this.regions.filter(r => this.regionOverlayVisible(r)), regionHide: this.regionHide,
+      sfMin: this.sf.min, sfMax: this.sf.max, sfLo: this.sf.lo, sfHi: this.sf.hi, sfHide: this.sf.hide,
     });
     this.renderer.resetState();
 

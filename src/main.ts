@@ -135,7 +135,9 @@ function resetForLoad(name: string) {
   viewer.clear();
   histogram = new Uint32Array(256); axisHist = [new Uint32Array(NB), new Uint32Array(NB), new Uint32Array(NB)]; axisCube = null;
   sections.length = 0; deletes.length = 0; cropUI.on = false;
-  meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh'); $<HTMLInputElement>('k-cropon').checked = false;
+  meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
+  sfName = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
+  ($('k-color-sf') as HTMLOptionElement).disabled = true; $<HTMLInputElement>('k-cropon').checked = false;
   void hist.clear();
   syncRegions(); updateMeasureList(); setTool('none'); renderSectionList(); updateHistUI();
   worker?.terminate(); worker = null;
@@ -608,6 +610,270 @@ function renderSectionList() {
   }
 }
 
+// ------------------------------------------------------------------ neighbourhood analysis
+const anaWorker = new Worker(new URL('./analysis-worker.ts', import.meta.url), { type: 'module' });
+const anaWaiters = new Map<string, (m: any) => void>();
+let anaError: string | null = null;
+let anaAlive = true;
+let sfName = '';
+anaWorker.onmessage = (ev: MessageEvent) => {
+  const m = ev.data;
+  if (m.type === 'progress') {
+    busy(m.total ? `${m.phase}… ${fmt(m.done)} of ${fmt(m.total)}` : `${m.phase}… ${fmt(m.done)} points`,
+      m.total ? m.done / m.total : undefined);
+    return;
+  }
+  if (m.type === 'error') {
+    anaError = m.message ?? 'analysis failed';
+    anaAlive = false;
+    const rej = anaWaiters.get('error');
+    anaWaiters.clear();
+    rej?.(m);
+    return;
+  }
+  const w = anaWaiters.get(m.type);
+  if (w) { anaWaiters.delete(m.type); anaWaiters.delete('error'); w(m); }
+};
+function anaOnce(type: string): Promise<any> {
+  if (anaError) return Promise.reject(new Error(anaError));
+  return new Promise((res, rej) => {
+    anaWaiters.set(type, res);
+    anaWaiters.set('error', (m: any) => rej(new Error(m.message ?? 'analysis failed')));
+  });
+}
+
+/** Feed every leaf to the analyser, run one operation, and hand back the flat result. */
+async function runAnalysis(op: string, args: Record<string, any> = {}): Promise<any> {
+  if (!viewer.loaded) throw new Error('nothing loaded');
+  const counts: number[] = [];
+  busy('Starting the analyser…'); await tick();
+  anaAlive = true; anaError = null;
+  // one grid cell per few points keeps the neighbour search in the 27 cells around a point
+  const cell = Math.max(viewer.cells.medianSpacing * 2.5, 0.01);
+  anaWorker.postMessage({ type: 'start', cell, maxPoints: isTouch ? 8e6 : 30e6 });
+  await anaOnce('ready');
+  let n = 0;
+  const total = viewer.cells.leafCount;
+  for (const { leaf, recs } of viewer.cells.records()) {
+    if (!anaAlive) break;
+    counts.push(leaf.count);
+    const buf = recs.buffer as ArrayBuffer;
+    anaWorker.postMessage({ type: 'leaf', origin: leaf.origin.toArray(), size: leaf.size, recs: buf }, [buf]);
+    if (++n % 8 === 0) { busy(`Reading cells… ${n} of ${total}`, n / Math.max(total, 1)); await tick(); }
+  }
+  anaWorker.postMessage({ type: 'run', op, ...args });
+  const res = await anaOnce('result');
+  return { ...res, counts };
+}
+
+/** Split a flat per-point array back into one piece per leaf. */
+function perLeaf<T extends Float32Array | Uint8Array>(flat: T, counts: number[]): T[] {
+  const out: T[] = [];
+  let at = 0;
+  for (const c of counts) { out.push(flat.subarray(at, at + c) as T); at += c; }
+  return out;
+}
+
+function setScalarField(name: string, flat: Float32Array, counts: number[]) {
+  viewer.cells.setScalarField(perLeaf(flat, counts).map(a => new Float32Array(a)));
+  sfName = name;
+  document.body.classList.add('has-sf');
+  ($('k-color-sf') as HTMLOptionElement).disabled = false;
+  knobs.colorMode = 5;
+  $<HTMLSelectElement>('k-color').value = '5';
+  autoScalarRange();
+  refreshScalarUI();
+  viewer.touch();
+}
+function clearScalarField() {
+  viewer.cells.clearScalarField();
+  sfName = '';
+  document.body.classList.remove('has-sf', 'sf-filtering');
+  ($('k-color-sf') as HTMLOptionElement).disabled = true;
+  ($('k-sffilter') as HTMLInputElement).checked = false;
+  if (knobs.colorMode === 5) { knobs.colorMode = 0; $<HTMLSelectElement>('k-color').value = '0'; }
+  viewer.sf.hi = -1;
+  $('v-sfname').textContent = 'no field';
+  viewer.touch();
+}
+
+// The four sliders work in percent of the field's own range, so one control suits a
+// roughness in millimetres and a cluster label in the thousands.
+let sfStats: { min: number; max: number; hist: Uint32Array; n: number } | null = null;
+const sfPct = (id: string) => Number($<HTMLInputElement>(id).value) / 1000;
+const sfValue = (id: string) => sfStats ? sfStats.min + sfPct(id) * (sfStats.max - sfStats.min) : 0;
+const sfFmt = (v: number) => Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v !== 0) ? v.toExponential(2) : v.toFixed(3);
+
+function autoScalarRange() {
+  sfStats = viewer.cells.scalarStats();
+  if (!sfStats) return;
+  // 2nd to 98th percentile, so one wild value cannot flatten the ramp
+  const { hist, n } = sfStats;
+  let acc = 0, lo = 0, hi = hist.length - 1;
+  for (let i = 0; i < hist.length; i++) { acc += hist[i]; if (acc >= n * 0.02) { lo = i; break; } }
+  acc = 0;
+  for (let i = hist.length - 1; i >= 0; i--) { acc += hist[i]; if (acc >= n * 0.02) { hi = i; break; } }
+  $<HTMLInputElement>('k-sfmin').value = String(Math.round(lo / hist.length * 1000));
+  $<HTMLInputElement>('k-sfmax').value = String(Math.round((hi + 1) / hist.length * 1000));
+  $<HTMLInputElement>('k-sflo').value = $<HTMLInputElement>('k-sfmin').value;
+  $<HTMLInputElement>('k-sfhi').value = $<HTMLInputElement>('k-sfmax').value;
+}
+
+function drawScalarHistogram() {
+  const cv = $('sf-hist') as HTMLCanvasElement;
+  const w = cv.clientWidth || 260, h = 52;
+  cv.width = Math.round(w * devicePixelRatio); cv.height = Math.round(h * devicePixelRatio);
+  const g = cv.getContext('2d')!;
+  g.scale(devicePixelRatio, devicePixelRatio);
+  g.clearRect(0, 0, w, h);
+  if (!sfStats) return;
+  const { hist } = sfStats;
+  const peak = Math.max(1, ...Array.from(hist));
+  const lo = sfPct('k-sfmin'), hi = sfPct('k-sfmax');
+  for (let i = 0; i < hist.length; i++) {
+    const x = i / hist.length * w, bw = Math.max(1, w / hist.length);
+    const bh = Math.sqrt(hist[i] / peak) * (h - 6);
+    const t = i / hist.length;
+    g.fillStyle = t >= lo && t <= hi ? '#46c6d2' : '#2a3a40';
+    g.fillRect(x, h - bh, bw, bh);
+  }
+}
+
+function refreshScalarUI() {
+  if (!sfStats) sfStats = viewer.cells.scalarStats();
+  viewer.sf.min = sfValue('k-sfmin');
+  viewer.sf.max = sfValue('k-sfmax');
+  const filtering = $<HTMLInputElement>('k-sffilter').checked;
+  document.body.classList.toggle('sf-filtering', filtering);
+  viewer.sf.lo = filtering ? sfValue('k-sflo') : 0;
+  viewer.sf.hi = filtering ? sfValue('k-sfhi') : -1;
+  viewer.sf.hide = $<HTMLInputElement>('k-sfhide').checked;
+  $('v-sfmin').textContent = sfFmt(viewer.sf.min);
+  $('v-sfmax').textContent = sfFmt(viewer.sf.max);
+  $('v-sflo').textContent = sfFmt(sfValue('k-sflo'));
+  $('v-sfhi').textContent = sfFmt(sfValue('k-sfhi'));
+  if (sfStats) $('v-sfname').textContent = `${sfName} · ${fmt(sfStats.n)} values · ${sfFmt(sfStats.min)} to ${sfFmt(sfStats.max)}`;
+  drawScalarHistogram();
+  viewer.touch();
+}
+for (const id of ['k-sfmin', 'k-sfmax', 'k-sflo', 'k-sfhi']) $(id).addEventListener('input', refreshScalarUI);
+for (const id of ['k-sffilter', 'k-sfhide']) $(id).addEventListener('change', refreshScalarUI);
+$('k-sfauto').addEventListener('click', () => { autoScalarRange(); refreshScalarUI(); });
+$('k-sfclear').addEventListener('click', () => clearScalarField());
+
+/** A removal driven by a per-point mask, with the same confirmation and undo as a crop. */
+async function commitMask(label: string, masks: Uint8Array[], promptText: string) {
+  let drop = 0, keepN = 0;
+  for (const m of masks) for (let i = 0; i < m.length; i++) { if (m[i]) keepN++; else drop++; }
+  if (!drop) { $('v-analysis').textContent = 'nothing matched — no points removed'; return null; }
+  const ans = await modal(label, promptText.replace('{n}', fmt(drop)).replace('{k}', fmt(keepN)),
+    [{ label: 'Cancel', value: 'no' }, { label: `Remove ${fmt(drop)}`, value: 'yes', cls: 'danger' }]);
+  if (ans !== 'yes') return null;
+  const before = snapUi();
+  const robust = viewer.robust ? viewer.robust.clone() : viewer.cells.bounds.clone();
+  busy('Removing…'); await tick();
+  const res = viewer.cells.applyMask((_l, i) => masks[i] ?? null, true);
+  viewer.restoreBounds(robust);
+  cropped = true;
+  if (res.undo) await hist.push({ kind: 'clean', label, dropped: res.dropped, kept: res.kept, undo: res.undo, robust, before, after: snapUi() });
+  hideBusy();
+  sfStats = null;
+  if (viewer.cells.hasScalarField) refreshScalarUI();
+  $('v-loaded').textContent = `${fmt(res.kept)} points in memory · ${fmt(res.dropped)} dropped`;
+  $('tb-points').textContent = `${fmt(res.kept)} pts · cleaned`;
+  updateCacheUI(); updateHistUI(); viewer.touch();
+  return res;
+}
+
+const anaUi = { k: 16, sigma: 1.0, spacing: 0.1 };
+function syncAnaLabels() {
+  $('v-ank').textContent = String(anaUi.k);
+  $('v-ansigma').textContent = anaUi.sigma.toFixed(1) + ' σ';
+  $('v-anspace').textContent = anaUi.spacing.toFixed(2) + ' m';
+}
+$('k-ank').addEventListener('input', e => { anaUi.k = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
+$('k-ansigma').addEventListener('input', e => { anaUi.sigma = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
+$('k-anspace').addEventListener('input', e => { anaUi.spacing = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
+
+async function analysis(op: string, args: Record<string, any> = {}, note = '') {
+  const t0 = performance.now();
+  try {
+    const r = await runAnalysis(op, args);
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    if (r.kind === 'normals') {
+      // patch the new normals into each leaf's records, in the order they were fed
+      const nrm = r.data as Int8Array;
+      let at = 0;
+      viewer.cells.rewriteRecords((leaf) => {
+        const recs = leaf.readback(viewer.cells.gl2);
+        for (let i = 0; i < leaf.count; i++) {
+          recs[i * REC + 10] = nrm[(at + i) * 3] & 0xff;
+          recs[i * REC + 11] = nrm[(at + i) * 3 + 1] & 0xff;
+          recs[i * REC + 12] = nrm[(at + i) * 3 + 2] & 0xff;
+        }
+        at += leaf.count;
+        return recs;
+      });
+      $('v-analysis').textContent = `${note} · ${fmt(r.points)} points · ${secs}s`;
+      viewer.touch();
+    } else if (r.kind === 'field') {
+      setScalarField(note || op, r.data as Float32Array, r.counts);
+      const extra = r.components !== undefined ? ` · ${fmt(r.components)} clusters` : '';
+      $('v-analysis').textContent = `${note} · ${fmt(r.points)} points${extra} · ${secs}s`;
+    }
+    return r;
+  } catch (e: any) {
+    $('v-analysis').textContent = 'failed: ' + (e?.message ?? e);
+    throw e;
+  } finally { hideBusy(); }
+}
+
+$('k-annorm').addEventListener('click', () => analysis('normals', { k: anaUi.k, orient: false }, 'normals computed').catch(() => {}));
+$('k-anorient').addEventListener('click', () => analysis('normals', { k: anaUi.k, orient: true }, 'normals computed and oriented').catch(() => {}));
+$('k-aninvert').addEventListener('click', () => analysis('invert', {}, 'normals inverted').catch(() => {}));
+$('k-anfeatgo').addEventListener('click', () => {
+  const sel = $<HTMLSelectElement>('k-anfeat');
+  analysis('feature', { name: sel.value, k: anaUi.k, radius: anaUi.spacing }, sel.options[sel.selectedIndex].text).catch(() => {});
+});
+$('k-ancc').addEventListener('click', () =>
+  analysis('components', { radius: anaUi.spacing, minPts: 16 }, 'Connected components').catch(() => {}));
+
+async function maskTool(op: string, args: Record<string, any>, label: string, prompt: string) {
+  try {
+    const r = await runAnalysis(op, args);
+    hideBusy();
+    const masks = perLeaf(r.data as Uint8Array, r.counts);
+    const extra = r.mean !== undefined ? `<p class="mono">mean neighbour distance ${r.mean.toFixed(4)} m · cut-off ${r.cut.toFixed(4)} m</p>` : '';
+    await commitMask(label, masks, prompt + extra);
+  } catch (e: any) {
+    $('v-analysis').textContent = 'failed: ' + (e?.message ?? e);
+  } finally { hideBusy(); }
+}
+$('k-ansor').addEventListener('click', () => maskTool('sor', { k: anaUi.k, sigma: anaUi.sigma }, 'Remove outliers',
+  '<p>Points whose neighbours sit unusually far away are isolated specks. <b>{n}</b> of them will be dropped, leaving {k}.</p>'));
+$('k-annoise').addEventListener('click', () => maskTool('noise', { k: anaUi.k, sigma: anaUi.sigma }, 'Remove noise',
+  '<p>Points that sit too far off the local surface will be dropped: <b>{n}</b> of them, leaving {k}. Real edges are kept because they still fit a plane.</p>'));
+$('k-andup').addEventListener('click', () => maskTool('duplicates', { tol: 0.001 }, 'Remove duplicates',
+  '<p>Points within 1 mm of an earlier point add nothing. <b>{n}</b> will be dropped, leaving {k}.</p>'));
+$('k-ansub').addEventListener('click', () => maskTool('subsample', { spacing: anaUi.spacing }, 'Thin the cloud',
+  '<p>Keeps one point per cube of the chosen spacing, spreading the survivors evenly. <b>{n}</b> points will be dropped, leaving {k}.</p>'));
+
+$('k-sfapply').addEventListener('click', async () => {
+  if (!viewer.cells.hasScalarField) return;
+  const lo = sfValue('k-sflo'), hi = sfValue('k-sfhi');
+  const masks: Uint8Array[] = [];
+  for (const l of viewer.cells.leavesForMask()) {
+    const m = new Uint8Array(l.count);
+    for (let i = 0; i < l.count; i++) {
+      const v = l.sf ? l.sf[i] : NaN;
+      m[i] = Number.isFinite(v) && v >= lo && v <= hi ? 1 : 0;
+    }
+    masks.push(m);
+  }
+  await commitMask('Keep only this range',
+    masks, `<p>Keeps points whose <b>${sfName}</b> is between ${sfFmt(lo)} and ${sfFmt(hi)}. <b>{n}</b> points will be dropped, leaving {k}.</p>`);
+});
+
 // ------------------------------------------------------------------ surface reconstruction
 const meshWorker = new Worker(new URL('./mesh-worker.ts', import.meta.url), { type: 'module' });
 const meshWaiters = new Map<string, (m: any) => void>();
@@ -724,6 +990,8 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
 $('k-mbuild').addEventListener('click', () => buildMesh().catch(e => { $('v-mesh').textContent = 'failed: ' + (e?.message ?? e); }));
 $('k-mclear').addEventListener('click', () => {
   meshData = null; viewer.setMesh(null); document.body.classList.remove('has-mesh');
+  sfName = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
+  ($('k-color-sf') as HTMLOptionElement).disabled = true;
   setDisplay('points'); $('v-mesh').textContent = '—';
 });
 $('k-msave').addEventListener('click', async () => {
@@ -1154,7 +1422,7 @@ addEventListener('orientationchange', () => setTimeout(() => { viewer.resize(); 
 document.querySelectorAll<HTMLElement>('#panel .grp').forEach((g, i) => {
   const h = g.querySelector('h3'); if (!h) return;
   const name = g.dataset.grp ?? h.textContent ?? String(i); const key = 'grp:' + name;
-  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface'].includes(name);
+  const defaultClosed = ['Tone', 'Clipping', 'measure', 'export', 'cache', 'sections', 'agent', 'surface', 'analysis', 'field'].includes(name);
   const stored = localStorage.getItem(key); g.classList.toggle('closed', stored ? stored === '1' : defaultClosed);
   h.addEventListener('click', () => { g.classList.toggle('closed'); localStorage.setItem(key, g.classList.contains('closed') ? '1' : '0'); });
 });
@@ -1168,4 +1436,4 @@ push();
 refreshCachedList();
 (function loop() { viewer.render(); requestAnimationFrame(loop); })();
 (window as any).__viewer = viewer;
-(window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, get meshData() { return meshData; } };
+(window as any).__app = { openFile, openCached, writeCache, applyKeep, addSection, undoEdit, redoEdit, saveCurrent, hist, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; } };

@@ -90,7 +90,8 @@
           <option value="2">RGB × Intensity</option>
           <option value="3">Elevation</option>
           <option value="4">Normals</option>
-          <option value="5">Flat</option>
+          <option value="5" id="k-color-sf" disabled>Scalar field</option>
+          <option value="6">Flat</option>
         </select>
       </label>
       <label class="row"><span>Point size</span><input type="range" id="k-size" min="0.5" max="8" step="0.1" value="2.0"><b class="mono" id="v-size">2.0</b></label>
@@ -195,6 +196,74 @@
       <button id="k-secadd" class="ghost wide">Add section at orbit point</button>
       <ul id="sec-list" class="mlist"></ul>
       <p class="hint mono" id="v-sections">—</p>
+    </div>
+
+    <div class="grp" data-grp="analysis">
+      <h3>Analysis</h3>
+      <label class="row"><span title="How many nearest points each measurement looks at. Larger is smoother and slower.">Neighbours</span><input type="range" id="k-ank" min="6" max="64" step="1" value="16"><b class="mono" id="v-ank">16</b></label>
+
+      <p class="lab mono">NORMALS</p>
+      <div class="seg">
+        <button id="k-annorm" class="ghost">Compute</button>
+        <button id="k-anorient" class="ghost">Orient</button>
+        <button id="k-aninvert" class="ghost">Invert</button>
+      </div>
+      <p class="hint">Surface reconstruction and shading both need normals. <b>Compute</b> fits a plane to each neighbourhood; <b>Orient</b> makes neighbours agree and turns them outward.</p>
+
+      <p class="lab mono">MEASURE</p>
+      <label class="row"><span>Feature</span>
+        <select id="k-anfeat">
+          <option value="roughness">Roughness</option>
+          <option value="curvature">Curvature</option>
+          <option value="planarity">Planarity</option>
+          <option value="linearity">Linearity</option>
+          <option value="sphericity">Sphericity</option>
+          <option value="anisotropy">Anisotropy</option>
+          <option value="omnivariance">Omnivariance</option>
+          <option value="eigenentropy">Eigenentropy</option>
+          <option value="verticality">Verticality</option>
+          <option value="volume_density">Volume density</option>
+          <option value="surface_density">Surface density</option>
+          <option value="neighbours">Neighbour count</option>
+          <option value="eig1">1st eigenvalue</option>
+          <option value="eig2">2nd eigenvalue</option>
+          <option value="eig3">3rd eigenvalue</option>
+        </select>
+      </label>
+      <button id="k-anfeatgo" class="ghost wide">Compute feature</button>
+
+      <p class="lab mono">CLEAN</p>
+      <label class="row"><span title="How many standard deviations above the mean a point must be before it is called an outlier.">Strictness</span><input type="range" id="k-ansigma" min="0.5" max="4" step="0.1" value="1.0"><b class="mono" id="v-ansigma">1.0 σ</b></label>
+      <div class="seg">
+        <button id="k-ansor" class="ghost">Outliers…</button>
+        <button id="k-annoise" class="ghost">Noise…</button>
+        <button id="k-andup" class="ghost">Duplicates…</button>
+      </div>
+
+      <p class="lab mono">CLUSTER AND THIN</p>
+      <label class="row"><span>Spacing</span><input type="range" id="k-anspace" min="0.01" max="2" step="0.01" value="0.1"><b class="mono" id="v-anspace">0.10 m</b></label>
+      <div class="seg">
+        <button id="k-ancc" class="ghost">Components</button>
+        <button id="k-ansub" class="ghost">Thin…</button>
+      </div>
+      <p class="hint"><b>Components</b> labels groups of points that touch within the spacing. <b>Thin</b> keeps one point per cube of that size.</p>
+      <p class="hint mono" id="v-analysis">—</p>
+    </div>
+
+    <div class="grp sf-have" data-grp="field">
+      <h3>Scalar field</h3>
+      <p class="hint mono" id="v-sfname">no field</p>
+      <canvas id="sf-hist" height="52"></canvas>
+      <label class="row"><span>Display from</span><input type="range" id="k-sfmin" min="0" max="1000" step="1" value="0"><b class="mono" id="v-sfmin">—</b></label>
+      <label class="row"><span>to</span><input type="range" id="k-sfmax" min="0" max="1000" step="1" value="1000"><b class="mono" id="v-sfmax">—</b></label>
+      <button id="k-sfauto" class="ghost wide">Auto range (2–98%)</button>
+      <label class="row"><span>Filter points</span><input type="checkbox" id="k-sffilter"></label>
+      <label class="row sf-filtering"><span>Keep from</span><input type="range" id="k-sflo" min="0" max="1000" step="1" value="0"><b class="mono" id="v-sflo">—</b></label>
+      <label class="row sf-filtering"><span>to</span><input type="range" id="k-sfhi" min="0" max="1000" step="1" value="1000"><b class="mono" id="v-sfhi">—</b></label>
+      <label class="row sf-filtering"><span>Hide the rest</span><input type="checkbox" id="k-sfhide"></label>
+      <button id="k-sfapply" class="primary wide sf-filtering">Delete points outside…</button>
+      <button id="k-sfclear" class="ghost wide">Clear field</button>
+      <p class="hint">A field is one number per point. Colour by it with <b>Colour → Scalar field</b>, narrow the display range to see detail, or filter to keep only part of the cloud.</p>
     </div>
 
     <div class="grp" data-grp="surface">

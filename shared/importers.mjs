@@ -125,7 +125,11 @@ export function parsePly(readRange, size, name, onMeta, onBatch, onProgress) {
     if (h.r && h.g && h.b) { rgb[j * 3] = get(h.r) * colorScale; rgb[j * 3 + 1] = get(h.g) * colorScale; rgb[j * 3 + 2] = get(h.b) * colorScale; }
     else { rgb[j * 3] = rgb[j * 3 + 1] = rgb[j * 3 + 2] = 180; }
     inten[j] = h.i ? Math.max(0, Math.min(255, get(h.i) * iScale)) : 128;
-    if (h.nx && h.ny && h.nz) { nrm[j * 3] = get(h.nx) * 127; nrm[j * 3 + 1] = get(h.ny) * 127; nrm[j * 3 + 2] = get(h.nz) * 127; }
+    if (h.nx && h.ny && h.nz) {
+      nrm[j * 3] = get(h.nx) * 127; nrm[j * 3 + 1] = get(h.ny) * 127; nrm[j * 3 + 2] = get(h.nz) * 127;
+      // (0,0,127) marks "no normal", so a real up-normal steps down one to stay distinct
+      if (nrm[j * 3] === 0 && nrm[j * 3 + 1] === 0 && nrm[j * 3 + 2] >= 127) nrm[j * 3 + 2] = 126;
+    }
     else { nrm[j * 3] = 0; nrm[j * 3 + 1] = 0; nrm[j * 3 + 2] = 127; }
     j++; read++;
     if (j >= B) { flush(); onProgress?.(read, h.count); }

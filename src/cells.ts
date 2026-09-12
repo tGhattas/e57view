@@ -13,16 +13,22 @@
 import * as THREE from 'three';
 
 export const REC = 14;
+/** Stands in for "this point has no value" on the GPU.
+ *  NaN is not dependable through a driver's fast maths, and a near-FLT_MAX sentinel is
+ *  outside the float range GLSL ES guarantees a vertex shader, so use a modest magnitude. */
+export const SF_NONE = -1.0e18;
 
 const VS = `#version 300 es
 precision highp float;
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec4 aColI;
 layout(location=2) in vec4 aNrm;
+layout(location=3) in float aSF;
 uniform mat4 uVP, uView;
 uniform vec3 uOrigin; uniform float uSize, uSpacing;
 uniform float uPtSize, uSizeMode, uColorMode, uZMin, uZMax, uIMin, uIMax;
 uniform float uScreenH, uSlope, uMinPx, uMaxPx, uClipZMin, uClipZMax;
+uniform float uSFMin, uSFMax, uSFLo, uSFHi, uSFHide;
 // Regions: up to 16, each a box (1), sphere (2) or slab (3) with its own frame.
 // role 0 = keep (a point must be inside at least one keep region),
 // role 1 = delete-pending (inside is tinted), role 2 = delete (inside is dimmed / hidden)
@@ -72,7 +78,14 @@ void main(){
   else if (uColorMode < 2.5) vCol = aColI.rgb * (0.35 + 0.9 * inten);
   else if (uColorMode < 3.5) vCol = ramp(elev);
   else if (uColorMode < 4.5) vCol = aNrm.xyz * 0.5 + 0.5;
+  else if (uColorMode < 5.5) vCol = aSF < -1.0e17 ? vec3(0.32, 0.34, 0.36)
+                                  : ramp((aSF - uSFMin) / max(uSFMax - uSFMin, 1e-9));
   else                       vCol = vec3(0.72, 0.75, 0.76);
+  // value filter: points outside the kept range dim, or vanish when hiding
+  if (uSFHi > uSFLo) {
+    bool inRange = aSF > -1.0e17 && aSF >= uSFLo && aSF <= uSFHi;
+    if (!inRange) { if (uSFHide > 0.5) vDrop = 1.0; else vOut = 1.0; }
+  }
 
   float projFactor = (0.5 * uScreenH) / (uSlope * max(-mv.z, 0.001));
   float px = (uSizeMode > 0.5) ? uPtSize * uSpacing * projFactor : uPtSize * 2.0;
@@ -98,7 +111,7 @@ void main(){
   frag = vec4(c, vLogDepth);
 }`;
 
-export interface UndoLeaf { leaf: Leaf; recs: Uint8Array; mask: Uint8Array | null; count: number; capacity: number; bmin: THREE.Vector3; bmax: THREE.Vector3; spacing: number; index: number }
+export interface UndoLeaf { leaf: Leaf; recs: Uint8Array; sf: Float32Array | null; mask: Uint8Array | null; count: number; capacity: number; bmin: THREE.Vector3; bmax: THREE.Vector3; spacing: number; index: number }
 export interface UndoRecord { leaves: UndoLeaf[]; bytes: number; prevTotal: number; regions: Region[] }
 
 export interface LeafMeta {
@@ -115,6 +128,9 @@ export class Leaf {
   center: THREE.Vector3; radius: number;
   bmin: THREE.Vector3; bmax: THREE.Vector3;
   spacing: number;
+  // an optional per-point number, uploaded alongside the records
+  sf: Float32Array | null = null;
+  sfVbo: WebGLBuffer | null = null;
   // per-frame scratch
   desired = 0; draw = 0; dist = 0;
   tag = -1;
@@ -143,11 +159,44 @@ export class Leaf {
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.UNSIGNED_SHORT, false, REC, 0);
     gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.UNSIGNED_BYTE, true, REC, 6);
     gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.BYTE, true, REC, 10);
+    gl.disableVertexAttribArray(3); gl.vertexAttrib1f(3, SF_NONE);
     gl.bindVertexArray(null);
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
     return { vbo, vao };
   }
-  dispose(gl: WebGL2RenderingContext) { gl.deleteVertexArray(this.vao); gl.deleteBuffer(this.vbo); this.disposed = true; }
+  dispose(gl: WebGL2RenderingContext) {
+    gl.deleteVertexArray(this.vao); gl.deleteBuffer(this.vbo);
+    if (this.sfVbo) { gl.deleteBuffer(this.sfVbo); this.sfVbo = null; }
+    this.sf = null; this.disposed = true;
+  }
+
+  /** Attach (or replace) this leaf's scalar values. Missing entries read as NaN and draw grey. */
+  setScalar(gl: WebGL2RenderingContext, v: Float32Array | null) {
+    if (!v) {
+      if (this.sfVbo) { gl.deleteBuffer(this.sfVbo); this.sfVbo = null; }
+      this.sf = null;
+      gl.bindVertexArray(this.vao); gl.disableVertexAttribArray(3); gl.vertexAttrib1f(3, SF_NONE); gl.bindVertexArray(null);
+      return;
+    }
+    this.sf = v;
+    // the CPU copy keeps NaN for statistics; the GPU copy swaps it for a finite sentinel
+    const gpu = new Float32Array(v.length);
+    for (let i = 0; i < v.length; i++) gpu[i] = Number.isFinite(v[i]) ? v[i] : SF_NONE;
+    if (!this.sfVbo) this.sfVbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.sfVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, gpu, gl.STATIC_DRAW);
+    gl.bindVertexArray(this.vao);
+    gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 1, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  /** Overwrite the record bytes in place, keeping count, bounds and any scalar values. */
+  rewrite(gl: WebGL2RenderingContext, recs: Uint8Array) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, recs.subarray(0, this.count * REC));
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
   disposed = false;
 
   /** Put a leaf back the way it was (undo): fresh buffers if it was disposed, original capacity, bounds and spacing. */
@@ -213,6 +262,7 @@ export interface DrawParams {
   clipZMin: number; clipZMax: number;
   round: boolean; normalShade: boolean; bright: number; gamma: number;
   screenH: number; fovDeg: number;
+  sfMin?: number; sfMax?: number; sfLo?: number; sfHi?: number; sfHide?: boolean;
   regions?: Region[]; regionHide?: boolean;
 }
 
@@ -295,7 +345,8 @@ export class CellRenderer {
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     this.prog = this.compile(VS, FS);
-    for (const n of ['uVP','uView','uOrigin','uSize','uSpacing','uPtSize','uSizeMode','uColorMode','uZMin','uZMax',
+    for (const n of ['uSFMin','uSFMax','uSFLo','uSFHi','uSFHide',
+      'uVP','uView','uOrigin','uSize','uSpacing','uPtSize','uSizeMode','uColorMode','uZMin','uZMax',
                      'uIMin','uIMax','uScreenH','uSlope','uMinPx','uMaxPx','uClipZMin','uClipZMax',
                      'uRound','uNormalShade','uBright','uGamma','uRegN','uRegHide']) {
       this.u[n] = gl.getUniformLocation(this.prog, n);
@@ -390,6 +441,116 @@ export class CellRenderer {
    *  when `record` is set, everything needed to put the points back: per changed leaf the dropped
    *  records in their original order plus a bit mask (1 = dropped) over the original record order,
    *  so undo re-interleaves exactly and the shuffled LOD prefix stays uniform. */
+  /** Attach one scalar per point, leaf by leaf in the order `records()` yields them.
+   *  The low-resolution preview leaves are dropped first: they are a loading aid with no
+   *  correspondence to the analysed points, and drawing them over the result would paint
+   *  the whole cloud in the "no value" grey. */
+  setScalarField(per: (Float32Array | null)[]) {
+    this.dropPreview();
+    let i = 0;
+    for (const l of this.leaves) {
+      if (l.preview) continue;
+      l.setScalar(this.gl, per[i] ?? null);
+      i++;
+    }
+  }
+  clearScalarField() {
+    for (const l of this.leaves) if (!l.preview) l.setScalar(this.gl, null);
+  }
+  get hasScalarField() { return this.leaves.some(l => !l.preview && !!l.sf); }
+  /** The leaves a mask must line up with, in the same order as `records()`. */
+  leavesForMask(): Leaf[] { return this.leaves.filter(l => !l.preview); }
+  get gl2() { return this.gl; }
+
+  /** Range and distribution of the current field, for the ramp and the histogram. */
+  scalarStats(bins = 128): { min: number; max: number; hist: Uint32Array; n: number } | null {
+    let min = Infinity, max = -Infinity, n = 0;
+    for (const l of this.leaves) {
+      if (l.preview || !l.sf) continue;
+      for (let i = 0; i < l.count; i++) {
+        const v = l.sf[i];
+        if (!Number.isFinite(v)) continue;
+        if (v < min) min = v; if (v > max) max = v; n++;
+      }
+    }
+    if (!n) return null;
+    const hist = new Uint32Array(bins);
+    const span = Math.max(max - min, 1e-12);
+    for (const l of this.leaves) {
+      if (l.preview || !l.sf) continue;
+      for (let i = 0; i < l.count; i++) {
+        const v = l.sf[i];
+        if (!Number.isFinite(v)) continue;
+        hist[Math.min(bins - 1, Math.max(0, Math.floor((v - min) / span * bins)))]++;
+      }
+    }
+    return { min, max, hist, n };
+  }
+
+  /** Overwrite record bytes leaf by leaf, for analyses that rewrite normals in place. */
+  rewriteRecords(next: (leaf: Leaf, i: number) => Uint8Array | null) {
+    let i = 0;
+    for (const l of this.leaves) {
+      if (l.preview) continue;
+      const r = next(l, i++);
+      if (r) l.rewrite(this.gl, r);
+    }
+  }
+
+  /** Drop points by an explicit per-leaf keep mask (1 keep, 0 drop), undoably.
+   *  Same bookkeeping as applyRegions, but the decision comes from outside. */
+  applyMask(maskFor: (leaf: Leaf, i: number) => Uint8Array | null, record = false): { kept: number; dropped: number; undo: UndoRecord | null } {
+    const gl = this.gl;
+    const keep: Leaf[] = [];
+    const undo: UndoRecord | null = record ? { leaves: [], bytes: 0, prevTotal: this.total, regions: [] } : null;
+    let kept = 0, dropped = 0, li = 0;
+    this.leaves.forEach((lf, index) => {
+      if (lf.preview) { lf.dispose(gl); return; }
+      const m = maskFor(lf, li++);
+      if (!m) { keep.push(lf); kept += lf.count; return; }
+      let n = 0;
+      for (let i = 0; i < lf.count; i++) if (m[i]) n++;
+      if (n === lf.count) { keep.push(lf); kept += lf.count; return; }
+      const src = lf.readback(gl);
+      const bits = new Uint8Array((lf.count + 7) >> 3);
+      const dst = new Uint8Array(src.length);
+      const gone = lf.count - n;
+      const out = new Uint8Array(gone * REC);
+      let a = 0, b = 0;
+      const keptSf = lf.sf ? new Float32Array(n) : null;
+      const goneSf = lf.sf ? new Float32Array(gone) : null;
+      for (let i = 0; i < lf.count; i++) {
+        if (m[i]) {
+          dst.set(src.subarray(i * REC, i * REC + REC), a * REC);
+          if (keptSf) keptSf[a] = lf.sf![i];
+          a++;
+        } else {
+          bits[i >> 3] |= 1 << (i & 7);
+          out.set(src.subarray(i * REC, i * REC + REC), b * REC);
+          if (goneSf) goneSf[b] = lf.sf![i];
+          b++;
+        }
+      }
+      dropped += gone;
+      if (undo) {
+        undo.leaves.push({
+          leaf: lf, recs: n === 0 ? src : out, sf: n === 0 ? (lf.sf ? lf.sf.slice(0, lf.count) : null) : goneSf,
+          mask: n === 0 ? null : bits, count: lf.count, capacity: lf.capacity,
+          bmin: lf.bmin.clone(), bmax: lf.bmax.clone(), spacing: lf.spacing, index,
+        });
+        undo.bytes += (n === 0 ? src.byteLength : out.byteLength) + bits.byteLength + (goneSf?.byteLength ?? 0);
+      }
+      if (n === 0) { lf.dispose(gl); return; }
+      lf.replace(gl, dst, n);
+      if (keptSf) lf.setScalar(gl, keptSf);
+      keep.push(lf); kept += n;
+    });
+    this.leaves = keep;
+    this.total = kept;
+    this.recomputeBounds();
+    return { kept, dropped, undo };
+  }
+
   applyRegions(regions: Region[], record = false): { kept: number; dropped: number; undo: UndoRecord | null } {
     const gl = this.gl;
     const sets = this.sets(regions);
@@ -401,10 +562,10 @@ export class CellRenderer {
     } : null;
     let kept = 0, dropped = 0;
     const p = new THREE.Vector3(), l = new THREE.Vector3();
-    const snap = (lf: Leaf, index: number, recs: Uint8Array, mask: Uint8Array | null) => {
+    const snap = (lf: Leaf, index: number, recs: Uint8Array, mask: Uint8Array | null, sf: Float32Array | null = null) => {
       if (!undo) return;
-      undo.leaves.push({ leaf: lf, recs, mask, count: lf.count, capacity: lf.capacity, bmin: lf.bmin.clone(), bmax: lf.bmax.clone(), spacing: lf.spacing, index });
-      undo.bytes += recs.byteLength + (mask?.byteLength ?? 0);
+      undo.leaves.push({ leaf: lf, recs, sf, mask, count: lf.count, capacity: lf.capacity, bmin: lf.bmin.clone(), bmax: lf.bmax.clone(), spacing: lf.spacing, index });
+      undo.bytes += recs.byteLength + (mask?.byteLength ?? 0) + (sf?.byteLength ?? 0);
     };
     this.leaves.forEach((lf, index) => {
       if (lf.preview) { lf.dispose(gl); return; }
@@ -412,7 +573,7 @@ export class CellRenderer {
       for (const k of sets.keep) { const c = classifyRegion(lf.bmin, lf.bmax, k.r, k.inv); if (c === true) { keepCls = true; break; } if (c === null) keepCls = null; }
       let delCls: boolean | null = false;
       for (const d of sets.del) { const c = classifyRegion(lf.bmin, lf.bmax, d.r, d.inv); if (c === true) { delCls = true; break; } if (c === null) delCls = null; }
-      if (keepCls === false || delCls === true) { dropped += lf.count; if (undo) snap(lf, index, lf.readback(gl), null); lf.dispose(gl); return; }
+      if (keepCls === false || delCls === true) { dropped += lf.count; if (undo) snap(lf, index, lf.readback(gl), null, lf.sf ? lf.sf.slice(0, lf.count) : null); lf.dispose(gl); return; }
       if (keepCls === true && delCls === false) { keep.push(lf); kept += lf.count; return; }
       const src = lf.readback(gl);
       const u16 = new Uint16Array(src.buffer, 0, (lf.count * REC) >> 1);
@@ -428,15 +589,28 @@ export class CellRenderer {
       }
       const gone = lf.count - n;
       dropped += gone;
+      // a scalar field rides along: the kept values keep their points, the dropped ones
+      // are stored so undo can put both back together in the original order
+      let keptSf: Float32Array | null = null, goneSf: Float32Array | null = null;
+      if (lf.sf) {
+        keptSf = new Float32Array(n); goneSf = new Float32Array(gone);
+        let a = 0, b = 0;
+        for (let i = 0; i < lf.count; i++) {
+          if (mask && (mask[i >> 3] & (1 << (i & 7)))) goneSf[b++] = lf.sf[i];
+          else keptSf[a++] = lf.sf[i];
+        }
+      }
       if (undo && gone) {
         // dropped records in original order, compacted into their own buffer
         const out = new Uint8Array(gone * REC); let o = 0;
         for (let i = 0; i < lf.count; i++) if (mask![i >> 3] & (1 << (i & 7))) { out.set(src.subarray(i * REC, i * REC + REC), o); o += REC; }
-        snap(lf, index, out, n === 0 ? null : mask);
+        snap(lf, index, out, n === 0 ? null : mask, n === 0 ? (lf.sf ? lf.sf.slice(0, lf.count) : null) : goneSf);
         if (n === 0) undo.leaves[undo.leaves.length - 1].recs = src;   // whole leaf went: keep it verbatim
       }
       if (n === 0) { lf.dispose(gl); return; }
-      lf.replace(gl, dst, n); keep.push(lf); kept += n;
+      lf.replace(gl, dst, n);
+      if (keptSf) lf.setScalar(gl, keptSf);
+      keep.push(lf); kept += n;
     });
     this.leaves = keep;
     this.total = kept;
@@ -466,7 +640,21 @@ export class CellRenderer {
           else { full.set(cur.subarray(a, a + REC), j * REC); a += REC; }
         }
       }
+      let fullSf: Float32Array | null = null;
+      if (e.sf) {
+        if (!e.mask) fullSf = e.sf;
+        else {
+          const cur = e.leaf.sf;
+          fullSf = new Float32Array(e.count);
+          let a = 0, b = 0;
+          for (let j = 0; j < e.count; j++) {
+            if (e.mask[j >> 3] & (1 << (j & 7))) fullSf[j] = e.sf[b++];
+            else fullSf[j] = cur ? cur[a++] : NaN;
+          }
+        }
+      }
       e.leaf.restore(gl, full, e.count, e.capacity, e.bmin, e.bmax, e.spacing);
+      e.leaf.setScalar(gl, fullSf);
       if (!this.leaves.includes(e.leaf)) this.leaves.splice(Math.min(e.index, this.leaves.length), 0, e.leaf);
     }
     this.total = this.leaves.reduce((n, l) => n + (l.preview ? 0 : l.count), 0);
@@ -484,7 +672,7 @@ export class CellRenderer {
     for (const e of rec.leaves) {
       const src = e.leaf.readback(gl);
       if (e.leaf.count === e.count) {
-        if (!e.mask) { e.recs = src; dropped += e.leaf.count; e.leaf.dispose(gl); const i = this.leaves.indexOf(e.leaf); if (i >= 0) this.leaves.splice(i, 1); }
+        if (!e.mask) { e.recs = src; e.sf = e.leaf.sf ? e.leaf.sf.slice(0, e.leaf.count) : null; dropped += e.leaf.count; e.leaf.dispose(gl); const i = this.leaves.indexOf(e.leaf); if (i >= 0) this.leaves.splice(i, 1); }
         else {
           const dst = new Uint8Array(src.length); let n = 0, gone = 0;
           for (let j = 0; j < e.count; j++) if (e.mask[j >> 3] & (1 << (j & 7))) gone++;
@@ -658,6 +846,9 @@ export class CellRenderer {
     gl.uniformMatrix4fv(this.u.uView, false, camera.matrixWorldInverse.elements);
     gl.uniform1f(this.u.uPtSize, p.ptSize); gl.uniform1f(this.u.uSizeMode, p.sizeMode);
     gl.uniform1f(this.u.uColorMode, p.colorMode);
+    gl.uniform1f(this.u.uSFMin, p.sfMin ?? 0); gl.uniform1f(this.u.uSFMax, p.sfMax ?? 1);
+    gl.uniform1f(this.u.uSFLo, p.sfLo ?? 0); gl.uniform1f(this.u.uSFHi, p.sfHi ?? -1);
+    gl.uniform1f(this.u.uSFHide, p.sfHide ? 1 : 0);
     gl.uniform1f(this.u.uZMin, p.zMin); gl.uniform1f(this.u.uZMax, p.zMax);
     gl.uniform1f(this.u.uIMin, p.iMin); gl.uniform1f(this.u.uIMax, p.iMax);
     gl.uniform1f(this.u.uScreenH, p.screenH); gl.uniform1f(this.u.uSlope, slope);

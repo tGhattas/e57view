@@ -2,6 +2,44 @@
 /* eslint-disable */
 
 /**
+ * Neighbourhood analysis driven from a worker. The caller streams in the viewer's own
+ * leaf records, runs one analysis, then pulls back either a per-point number (a scalar
+ * field), a per-point keep mask, or rewritten normals.
+ */
+export class CloudAnalysis {
+    free(): void;
+    [Symbol.dispose](): void;
+    add_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array): void;
+    build(): void;
+    components(radius: number, min_pts: number, progress?: Function | null): Float32Array;
+    compute_normals(k: number, progress?: Function | null): void;
+    duplicates(tol: number): Uint8Array;
+    feature(name: string, k: number, radius: number, progress?: Function | null): Float32Array;
+    invert_normals(): void;
+    len(): number;
+    constructor(cell: number);
+    noise(k: number, n_sigma: number, progress?: Function | null): Uint8Array;
+    /**
+     * Normals interleaved as x,y,z signed bytes, for the viewer to patch into its records.
+     */
+    normals_bytes(): Int8Array;
+    orient_normals(k: number, vx: number, vy: number, vz: number, use_viewpoint: boolean, progress?: Function | null): void;
+    rewind(): void;
+    /**
+     * Returns the keep mask; the mean and cut-off used are reported separately.
+     */
+    sor(k: number, n_sigma: number, progress?: Function | null): Uint8Array;
+    subsample(spacing: number): Uint8Array;
+    /**
+     * Rewrite the normal bytes of the next leaf, in the order the leaves were added.
+     */
+    write_normals(recs: Uint8Array): void;
+    readonly component_count: number;
+    readonly cut_distance: number;
+    readonly mean_distance: number;
+}
+
+/**
  * Streams points into a new E57 file. Field order: xyz f64 (relative to
  * the pose translation), rgb u8, intensity u8, normal i8.
  */
@@ -85,10 +123,30 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly __wbg_cloudanalysis_free: (a: number, b: number) => void;
     readonly __wbg_e57export_free: (a: number, b: number) => void;
     readonly __wbg_e57handle_free: (a: number, b: number) => void;
     readonly __wbg_meshbuilder_free: (a: number, b: number) => void;
     readonly __wbg_pointsink_free: (a: number, b: number) => void;
+    readonly cloudanalysis_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly cloudanalysis_build: (a: number) => void;
+    readonly cloudanalysis_component_count: (a: number) => number;
+    readonly cloudanalysis_components: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly cloudanalysis_compute_normals: (a: number, b: number, c: number) => void;
+    readonly cloudanalysis_cut_distance: (a: number) => number;
+    readonly cloudanalysis_duplicates: (a: number, b: number) => [number, number];
+    readonly cloudanalysis_feature: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly cloudanalysis_invert_normals: (a: number) => void;
+    readonly cloudanalysis_len: (a: number) => number;
+    readonly cloudanalysis_mean_distance: (a: number) => number;
+    readonly cloudanalysis_new: (a: number) => number;
+    readonly cloudanalysis_noise: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly cloudanalysis_normals_bytes: (a: number) => [number, number];
+    readonly cloudanalysis_orient_normals: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly cloudanalysis_rewind: (a: number) => void;
+    readonly cloudanalysis_sor: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly cloudanalysis_subsample: (a: number, b: number) => [number, number];
+    readonly cloudanalysis_write_normals: (a: number, b: number, c: number, d: any) => void;
     readonly e57export_add_points: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly e57export_finish: (a: number) => [number, number, number];
     readonly e57export_new: (a: any, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => [number, number, number];

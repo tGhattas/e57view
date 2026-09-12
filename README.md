@@ -72,6 +72,19 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
   scan was already cached, and history is cleared after a warning. Large undo steps spill
   to the origin-private file system so a multi-million-point crop does not pin hundreds of
   megabytes in RAM.
+- **Analysis** — one neighbourhood search, reused five ways. *Compute normals* fits a plane
+  to each point's neighbours and *Orient* makes neighbours agree then turns them outward,
+  which matters because surface reconstruction is only as good as the normals feeding it.
+  *Measure* writes a geometric feature into a scalar field: roughness, curvature, planarity,
+  linearity, sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume and
+  surface density, neighbour count, or any of the three eigenvalues. *Clean* removes
+  statistical outliers, off-surface noise or duplicates. *Components* labels groups of points
+  that touch, and *Thin* keeps one point per cube. Every removal is confirmed, counted and
+  undoable like a crop.
+- **Scalar fields** — one number per point, displayed through a colour ramp with a histogram,
+  an adjustable display range, and a value filter that can dim, hide or delete the points
+  outside it. A field survives cropping and undo, staying aligned with the points it belongs
+  to.
 - **Surface reconstruction** — builds a triangle mesh from the points and their normals.
   Each point is a small piece of oriented plane, so a truncated signed distance field can be
   splatted directly instead of solved for: the field averages every point that reaches a
