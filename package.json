@@ -10,6 +10,8 @@
     "build:mcp": "esbuild mcp/server.mjs --bundle --platform=node --format=esm --target=node20 --outfile=public/mcp.mjs --external:bufferutil --external:utf-8-validate --log-level=warning --banner:js=\"import{createRequire as __e57cr}from'node:module';const require=__e57cr(import.meta.url);\""
   },
   "devDependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/three": "^0.169.0",
     "playwright": "^1.55.0",
     "typescript": "^5.6.0",
