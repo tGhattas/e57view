@@ -282,6 +282,7 @@ function onDone(stats: any, how: string) {
   worker?.terminate(); worker = null;
   if (currentHandle) idbPut(cacheKey, currentHandle);
   updateCacheUI(); updateHistUI();
+  renderLayers(); updateNames();          // the row's point count is only final now
   if (!fromCache && localStorage.getItem('nocache:' + cacheKey) !== '1') setTimeout(offerCache, 600);
 }
 function revealViewport() {
