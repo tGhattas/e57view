@@ -72,6 +72,11 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
   scan was already cached, and history is cleared after a warning. Large undo steps spill
   to the origin-private file system so a multi-million-point crop does not pin hundreds of
   megabytes in RAM.
+- **Freehand selection** — press <b>S</b>, trace a shape over the view, then keep what is
+  inside or outside it. The test runs in screen space, so what you draw is exactly what you
+  get from whatever angle you are looking, and the result undoes like any other edit. Half a
+  second over 18.4 million points, because each leaf's quantisation is folded into the
+  view-projection matrix and a leaf whose projected box misses the shape is never read back.
 - **Analysis** — one neighbourhood search, reused five ways. *Compute normals* fits a plane
   to each point's neighbours and *Orient* makes neighbours agree then turns them outward,
   which matters because surface reconstruction is only as good as the normals feeding it.

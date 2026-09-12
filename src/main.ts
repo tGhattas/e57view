@@ -300,8 +300,19 @@ function setMode(fly: boolean) {
   updatePill(); syncToolbar();
 }
 $('k-fly').addEventListener('click', () => setMode(true)); $('k-orbit').addEventListener('click', () => setMode(false));
-function setTool(t: 'none' | 'measure') { viewer.setTool(t); $('k-measure').classList.toggle('on', t === 'measure'); $('gl').classList.toggle('measure', t === 'measure'); updatePill(); syncToolbar(); }
-function updatePill() { const p = $('tb-tool'); const txt = viewer.bubble ? 'photo' : viewer.tool === 'measure' ? 'measure' : viewer.fly.enabled ? 'fly' : ''; p.textContent = txt; p.classList.toggle('hidden', !txt); }
+function setTool(t: 'none' | 'measure' | 'segment') {
+  if (viewer.tool === 'segment' && t !== 'segment') endSegment();
+  viewer.setTool(t);
+  $('k-measure').classList.toggle('on', t === 'measure');
+  $('k-segment').classList.toggle('on', t === 'segment');
+  $('gl').classList.toggle('measure', t === 'measure');
+  $('gl').classList.toggle('segment', t === 'segment');
+  $('segbar').classList.toggle('hidden', t !== 'segment');
+  $('seg').classList.toggle('hidden', t !== 'segment');
+  if (t === 'segment') resetSegment();
+  updatePill(); syncToolbar();
+}
+function updatePill() { const p = $('tb-tool'); const txt = viewer.bubble ? 'photo' : viewer.tool === 'measure' ? 'measure' : viewer.tool === 'segment' ? 'select' : viewer.fly.enabled ? 'fly' : ''; p.textContent = txt; p.classList.toggle('hidden', !txt); }
 $('k-measure').addEventListener('click', () => setTool(viewer.tool === 'measure' ? 'none' : 'measure'));
 $('k-measureclear').addEventListener('click', () => { viewer.clearMeasures(); updateMeasureList(); });
 function updateMeasureList() {
@@ -325,6 +336,7 @@ document.querySelectorAll<HTMLButtonElement>('#toolbar button').forEach(b => b.a
   if (t === 'orbit') { setTool('none'); setMode(false); }
   else if (t === 'fly') { setTool('none'); setMode(true); }
   else if (t === 'measure') { setMode(false); setTool('measure'); }
+  else if (t === 'segment') { setMode(false); setTool('segment'); }
   else if (t === 'crop') { setMode(false); setTool('none'); document.querySelector('[data-grp="crop"]')?.classList.remove('closed'); toggleSheet(true); cropUI.on = true; $<HTMLInputElement>('k-cropon').checked = true; updateCropUI(); }
   else if (t === 'photo') viewer.exitBubble();
 }));
@@ -352,6 +364,8 @@ addEventListener('keydown', (e: KeyboardEvent) => {
   }
   else if (e.key === 'f' || e.key === 'F') setMode(!viewer.fly.enabled);
   else if (e.key === 'm' || e.key === 'M') setTool(viewer.tool === 'measure' ? 'none' : 'measure');
+  else if (e.key === 's' || e.key === 'S') setTool(viewer.tool === 'segment' ? 'none' : 'segment');
+  else if (e.key === 'Enter' && viewer.tool === 'segment') { segHover = null; drawSegment(); }
   else if (e.key === 'Escape') cancelStarted();
   else if (e.key === 'Home') viewer.fit();
 });
@@ -410,6 +424,7 @@ function cancelCrop() {
   updateCropUI();
 }
 function cancelStarted() {
+  if (viewer.tool === 'segment') { if (segPts.length) { resetSegment(); return; } setTool('none'); return; }
   if (viewer.bubble) { viewer.exitBubble(); return; }
   if (viewer.tool !== 'none') { setTool('none'); return; }
   if (cropUI.on) { cancelCrop(); return; }
@@ -610,6 +625,64 @@ function renderSectionList() {
   }
 }
 
+// ------------------------------------------------------------------ freehand selection
+// A polygon traced on screen, then kept or cut. The points are tested in screen space, so
+// what you draw is exactly what you get, from whatever angle you are looking.
+let segPts: [number, number][] = [];
+let segHover: [number, number] | null = null;
+function resetSegment() { segPts = []; segHover = null; drawSegment(); }
+function endSegment() { segPts = []; segHover = null; drawSegment(); $('segbar').classList.add('hidden'); $('seg').classList.add('hidden'); }
+function drawSegment() {
+  const line = $('seg-line') as unknown as SVGPolylineElement;
+  const fill = $('seg-fill') as unknown as SVGPolygonElement;
+  const pts = segHover ? [...segPts, segHover] : segPts;
+  line.setAttribute('points', pts.map(p => p.join(',')).join(' ') + (segPts.length > 1 ? ' ' + segPts[0].join(',') : ''));
+  fill.setAttribute('points', segPts.length > 2 ? segPts.map(p => p.join(',')).join(' ') : '');
+  const ready = segPts.length >= 3;
+  ($('seg-in') as HTMLButtonElement).disabled = !ready;
+  ($('seg-out') as HTMLButtonElement).disabled = !ready;
+  $('seg-hint').textContent = segPts.length === 0
+    ? 'Click to trace a shape · Esc to cancel'
+    : ready ? `${segPts.length} points · keep what is inside or outside` : `${segPts.length} of 3 points`;
+}
+{
+  const gl = $('gl');
+  gl.addEventListener('pointerdown', e => {
+    if (viewer.tool !== 'segment' || (e as PointerEvent).button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = gl.getBoundingClientRect();
+    segPts.push([(e as PointerEvent).clientX - r.left, (e as PointerEvent).clientY - r.top]);
+    drawSegment();
+  }, true);
+  gl.addEventListener('pointermove', e => {
+    if (viewer.tool !== 'segment' || !segPts.length) return;
+    const r = gl.getBoundingClientRect();
+    segHover = [(e as PointerEvent).clientX - r.left, (e as PointerEvent).clientY - r.top];
+    drawSegment();
+  });
+  gl.addEventListener('dblclick', e => {
+    if (viewer.tool !== 'segment') return;
+    e.preventDefault(); e.stopPropagation();
+    segHover = null; drawSegment();
+  }, true);
+}
+async function applySegment(inside: boolean) {
+  if (segPts.length < 3) return;
+  const r = $('gl').getBoundingClientRect();
+  const poly = segPts.slice();
+  busy('Testing points against the shape…'); await tick();
+  let masks: Uint8Array[];
+  try { masks = viewer.polygonMask(poly, inside, r.width, r.height); }
+  finally { hideBusy(); }
+  endSegment();
+  setTool('none');
+  await commitMask(inside ? 'Keep inside the shape' : 'Keep outside the shape', masks, '', false);
+}
+$('seg-in').addEventListener('click', () => applySegment(true));
+$('seg-out').addEventListener('click', () => applySegment(false));
+$('seg-cancel').addEventListener('click', () => setTool('none'));
+$('k-segment').addEventListener('click', () => setTool(viewer.tool === 'segment' ? 'none' : 'segment'));
+
 // ------------------------------------------------------------------ neighbourhood analysis
 const anaWorker = new Worker(new URL('./analysis-worker.ts', import.meta.url), { type: 'module' });
 const anaWaiters = new Map<string, (m: any) => void>();
@@ -762,13 +835,15 @@ $('k-sfauto').addEventListener('click', () => { autoScalarRange(); refreshScalar
 $('k-sfclear').addEventListener('click', () => clearScalarField());
 
 /** A removal driven by a per-point mask, with the same confirmation and undo as a crop. */
-async function commitMask(label: string, masks: Uint8Array[], promptText: string) {
+async function commitMask(label: string, masks: Uint8Array[], promptText: string, confirm = true) {
   let drop = 0, keepN = 0;
   for (const m of masks) for (let i = 0; i < m.length; i++) { if (m[i]) keepN++; else drop++; }
   if (!drop) { $('v-analysis').textContent = 'nothing matched — no points removed'; return null; }
-  const ans = await modal(label, promptText.replace('{n}', fmt(drop)).replace('{k}', fmt(keepN)),
-    [{ label: 'Cancel', value: 'no' }, { label: `Remove ${fmt(drop)}`, value: 'yes', cls: 'danger' }]);
-  if (ans !== 'yes') return null;
+  if (confirm) {
+    const ans = await modal(label, promptText.replace('{n}', fmt(drop)).replace('{k}', fmt(keepN)),
+      [{ label: 'Cancel', value: 'no' }, { label: `Remove ${fmt(drop)}`, value: 'yes', cls: 'danger' }]);
+    if (ans !== 'yes') return null;
+  }
   const before = snapUi();
   const robust = viewer.robust ? viewer.robust.clone() : viewer.cells.bounds.clone();
   busy('Removing…'); await tick();

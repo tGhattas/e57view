@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { EDL_FS, QUAD_VS } from './shaders';
-import { CellRenderer, pointInRegion, type DrawStats, type LeafMeta, type Region, type UndoRecord } from './cells';
+import { CellRenderer, pointInRegion, REC, type DrawStats, type LeafMeta, type Region, type UndoRecord } from './cells';
 import { MeshView, type MeshData } from './meshview';
 
 const BG = new THREE.Color(0x05090b);
@@ -23,7 +23,7 @@ export type Knobs = {
   budget: number; density: number; movingQuality: number;
   flySpeed: number;
 };
-export type Tool = 'none' | 'measure';
+export type Tool = 'none' | 'measure' | 'segment';
 export type Display = 'points' | 'mesh' | 'both';
 export type GizmoMode = 'translate' | 'rotate' | 'scale';
 
@@ -481,7 +481,11 @@ export class Viewer {
   measureBetween(a: THREE.Vector3, b: THREE.Vector3) { this.pending = null; if (this.pendingMark) { this.overlay.remove(this.pendingMark); this.pendingMark = null; } this.addMeasurePoint(a); this.addMeasurePoint(b); return a.distanceTo(b); }
   clearMeasures() { for (const m of this.measures) { this.overlay.remove(m.line); m.label.remove(); } this.measures = []; this.pending = null; if (this.pendingMark) { this.overlay.remove(this.pendingMark); this.pendingMark = null; } this.dirty = true; }
   get measureList() { return this.measures.map(m => ({ a: m.a, b: m.b, dist: m.dist })); }
-  setTool(t: Tool) { this.tool = t; if (t !== 'measure') { this.pending = null; if (this.pendingMark) { this.overlay.remove(this.pendingMark); this.pendingMark = null; } } this.dirty = true; }
+  setTool(t: Tool) {
+    this.tool = t;
+    // a lasso needs the pointer for drawing, so orbiting stands down while it is armed
+    this.controls.enabled = t !== 'segment' && !this.fly.enabled && !this.bubble;
+    if (t !== 'measure') { this.pending = null; if (this.pendingMark) { this.overlay.remove(this.pendingMark); this.pendingMark = null; } } this.dirty = true; }
 
   // ------------------------------------------------------------ stations / bubbles
   setStations(list: Station[], translation: [number, number, number] = [0, 0, 0]) {
@@ -572,6 +576,67 @@ export class Viewer {
   }
   getView() { return { p: this.camera.position.toArray(), t: this.controls.target.toArray(), fly: this.fly.enabled }; }
   setView(v: { p: number[]; t: number[] }) { this.setFly(false); this.exitBubble(); this.camera.position.fromArray(v.p); this.controls.target.fromArray(v.t); this.controls.update(); this.touch(); }
+
+  /** Per-leaf keep mask for a screen-space polygon. `inside` picks which side survives.
+   *
+   *  Folds each leaf's quantisation into the view-projection matrix, so a point costs three
+   *  multiply-adds rather than a full matrix product, and skips a leaf outright when its
+   *  projected box misses the polygon.
+   */
+  polygonMask(poly: [number, number][], inside: boolean, w: number, h: number): Uint8Array[] {
+    const vp = new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    const e = vp.elements;
+    let px0 = Infinity, py0 = Infinity, px1 = -Infinity, py1 = -Infinity;
+    for (const [x, y] of poly) { px0 = Math.min(px0, x); py0 = Math.min(py0, y); px1 = Math.max(px1, x); py1 = Math.max(py1, y); }
+    const hit = (x: number, y: number) => {
+      if (x < px0 || x > px1 || y < py0 || y > py1) return false;
+      let c = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+        if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+      }
+      return c;
+    };
+    const out: Uint8Array[] = [];
+    const corner = new THREE.Vector3();
+    for (const l of this.cells.leavesForMask()) {
+      const m = new Uint8Array(l.count);
+      // cheap rejection: does this leaf's box project anywhere near the polygon?
+      let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity, anyFront = false;
+      for (let c = 0; c < 8; c++) {
+        corner.set(c & 1 ? l.bmax.x : l.bmin.x, c & 2 ? l.bmax.y : l.bmin.y, c & 4 ? l.bmax.z : l.bmin.z);
+        const cw = e[3] * corner.x + e[7] * corner.y + e[11] * corner.z + e[15];
+        if (cw <= 0) continue;
+        anyFront = true;
+        const cx = (e[0] * corner.x + e[4] * corner.y + e[8] * corner.z + e[12]) / cw;
+        const cy = (e[1] * corner.x + e[5] * corner.y + e[9] * corner.z + e[13]) / cw;
+        const sx = (cx + 1) * 0.5 * w, sy = (1 - cy) * 0.5 * h;
+        bx0 = Math.min(bx0, sx); by0 = Math.min(by0, sy); bx1 = Math.max(bx1, sx); by1 = Math.max(by1, sy);
+      }
+      if (!anyFront || bx1 < px0 || bx0 > px1 || by1 < py0 || by0 > py1) {
+        m.fill(inside ? 0 : 1); out.push(m); continue;
+      }
+      const recs = l.readback(this.cells.gl2);
+      const u16 = new Uint16Array(recs.buffer, recs.byteOffset, (l.count * REC) >> 1);
+      const k = l.size / 65536, o = l.origin;
+      const b0 = e[0] * o.x + e[4] * o.y + e[8] * o.z + e[12];
+      const b1 = e[1] * o.x + e[5] * o.y + e[9] * o.z + e[13];
+      const b3 = e[3] * o.x + e[7] * o.y + e[11] * o.z + e[15];
+      const ax0 = e[0] * k, ay0 = e[4] * k, az0 = e[8] * k;
+      const ax1 = e[1] * k, ay1 = e[5] * k, az1 = e[9] * k;
+      const ax3 = e[3] * k, ay3 = e[7] * k, az3 = e[11] * k;
+      for (let i = 0; i < l.count; i++) {
+        const q = i * 7, qx = u16[q], qy = u16[q + 1], qz = u16[q + 2];
+        const cw = b3 + qx * ax3 + qy * ay3 + qz * az3;
+        if (cw <= 0) { m[i] = inside ? 0 : 1; continue; }
+        const sx = ((b0 + qx * ax0 + qy * ay0 + qz * az0) / cw + 1) * 0.5 * w;
+        const sy = (1 - (b1 + qx * ax1 + qy * ay1 + qz * az1) / cw) * 0.5 * h;
+        m[i] = (hit(sx, sy) === inside) ? 1 : 0;
+      }
+      out.push(m);
+    }
+    return out;
+  }
 
   // ------------------------------------------------------------ snapshots
   snapshot(maxWidth = 1280, type: 'png' | 'jpeg' = 'png'): string {

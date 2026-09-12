@@ -252,3 +252,17 @@ body.has-sf .sf-have{display:block}
 body.sf-filtering .sf-filtering{display:flex}
 body.sf-filtering button.sf-filtering{display:block}
 #sf-hist{width:100%;height:52px;display:block;background:#0a1216;border:1px solid var(--line);border-radius:4px;margin-bottom:8px}
+
+/* freehand selection */
+#seg{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:6}
+#seg-fill{fill:rgba(70,198,210,.13);stroke:none}
+#seg-line{fill:none;stroke:var(--teal);stroke-width:1.6;stroke-dasharray:6 4;
+  stroke-linejoin:round;stroke-linecap:round}
+#gl.segment{cursor:crosshair}
+#segbar{position:fixed;left:50%;transform:translateX(-50%);bottom:max(20px,env(safe-area-inset-bottom));
+  z-index:7;display:flex;gap:8px;align-items:center;background:#0d1619f2;border:1px solid var(--line);
+  border-radius:9px;padding:9px 12px;backdrop-filter:blur(8px);box-shadow:0 8px 26px #0009;max-width:94vw;flex-wrap:wrap}
+#segbar .mono{font-size:11px;color:var(--dim);margin-right:4px}
+#segbar button{padding:7px 13px}
+#segbar button:disabled{opacity:.4;pointer-events:none}
+@media (pointer: coarse){ #segbar{flex-direction:column;align-items:stretch} #segbar button{width:100%} }

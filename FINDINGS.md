@@ -529,3 +529,14 @@ every check outside the frame said the buffer was bound and full of the right nu
 with `isnan` fails under a driver's fast maths. The CPU copy keeps NaN, which JavaScript
 handles correctly for statistics, and the GPU copy swaps it for a finite sentinel compared
 with an ordinary less-than.
+
+## Freehand selection
+
+Screen-space rather than world-space, because that is what the user is actually pointing at.
+Each leaf's quantisation folds into the view-projection matrix, so a point costs three
+multiply-adds instead of a full matrix product, and a leaf whose projected bounding box misses
+the polygon is never read back from the GPU at all. **498 ms over 18,439,323 points.**
+
+The overlay is an SVG, which cost one bug worth remembering: `position: fixed; inset: 0` does
+not stretch a replaced element, so the lasso was drawing correctly into a 300x150 box in the
+corner while every count came out right. The maths was never wrong, only invisible.

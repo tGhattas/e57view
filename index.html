@@ -182,6 +182,7 @@
       <label class="row box-only"><span>Depth</span><input type="range" id="k-cropsy" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsy">—</b></label>
       <label class="row box-only"><span>Height</span><input type="range" id="k-cropsz" min="0" max="1" step="0.002" value="0.35"><b class="mono" id="v-cropsz">—</b></label>
       <button id="k-cropcentre" class="ghost wide">Centre on orbit point</button>
+      <button id="k-segment" class="ghost wide">Draw a selection (S)</button>
       <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. Points outside every keep region are dimmed in preview. <b>Escape</b> cancels the region.</p>
       <div class="seg">
         <button id="k-cropcancel" class="ghost">Cancel region</button>
@@ -375,6 +376,7 @@ claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"</pre>
     <button data-tool="orbit" class="on">Orbit</button>
     <button data-tool="fly">Fly</button>
     <button data-tool="measure">Measure</button>
+    <button data-tool="segment">Select</button>
     <button data-tool="crop">Crop</button>
     <button data-tool="photo" class="hidden">Leave photo</button>
   </div>
@@ -386,6 +388,13 @@ claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"</pre>
       <button data-key="s" class="down">▼</button>
     </div>
     <div class="vert"><button data-key="e">up</button><button data-key="q">down</button></div>
+  </div>
+  <svg id="seg" class="hidden"><polygon id="seg-fill"></polygon><polyline id="seg-line"></polyline></svg>
+  <div id="segbar" class="hidden">
+    <span class="mono" id="seg-hint">Click to trace a shape · double-click or Enter to close · Esc to cancel</span>
+    <button id="seg-in" class="primary" disabled>Keep inside</button>
+    <button id="seg-out" class="ghost" disabled>Keep outside</button>
+    <button id="seg-cancel" class="ghost">Cancel</button>
   </div>
   <div id="coord" class="mono hidden"></div>
   <div id="labels"></div>
