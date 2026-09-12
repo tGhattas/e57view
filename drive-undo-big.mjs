@@ -40,15 +40,15 @@ t0 = Date.now(); await p.keyboard.press('Meta+z'); await idle();
 s = await st(); console.log(`⌘Z    ${s.n.toLocaleString()} pts in ${t(t0)}`);
 if (s.n !== N) throw new Error('second undo failed');
 
-// AI clean: heuristic, approve all, apply, undo, redo
+// A second kind of undoable edit: statistical outlier removal through the analysis worker
 t0 = Date.now();
-await p.evaluate(() => { const sel = document.getElementById('k-aiprov'); sel.value = 'heuristic'; sel.dispatchEvent(new Event('change')); });
-await p.click('#k-aianalyse'); await idle();
-const nSug = await p.evaluate(() => window.__app.suggestions.length);
-await p.click('#k-aiacceptall'); await p.click('#k-aiapply'); await modalClick('Remove'); await idle();
-s = await st(); console.log(`CLEAN ${nSug} boxes → ${s.n.toLocaleString()} pts in ${t(t0)} · spilled ${JSON.stringify(s.spilled)} · ram ${(s.ram/1e6).toFixed(0)} MB`);
+const sorRun = p.evaluate(() => window.__app.maskTool('sor', { k: 16, sigma: 1.0 }, 'Remove outliers', '<p>{n} of {k}</p>'));
+await p.waitForSelector('#modal:not(.hidden)', { timeout: 600000 });
+await p.click('#modal-btns button.danger'); await sorRun; await idle();
+s = await st(); console.log(`SOR   ${s.n.toLocaleString()} pts in ${t(t0)} · spilled ${JSON.stringify(s.spilled)} · ram ${(s.ram/1e6).toFixed(0)} MB`);
 const cleanN = s.n;
-t0 = Date.now(); await p.click('#tb-undo'); await idle(); s = await st(); console.log(`UNDO  ${s.n.toLocaleString()} pts in ${t(t0)} · suggestions back: ${await p.evaluate(() => window.__app.suggestions.length)}`);
+if (cleanN >= N) throw new Error('outlier removal dropped nothing');
+t0 = Date.now(); await p.click('#tb-undo'); await idle(); s = await st(); console.log(`UNDO  ${s.n.toLocaleString()} pts in ${t(t0)}`);
 if (s.n !== N) throw new Error('undo of clean failed');
 t0 = Date.now(); await p.click('#tb-redo'); await idle(); s = await st(); console.log(`REDO  ${s.n.toLocaleString()} pts in ${t(t0)}`);
 if (s.n !== cleanN) throw new Error('redo of clean failed');
