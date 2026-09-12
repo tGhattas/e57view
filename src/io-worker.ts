@@ -3,7 +3,7 @@
 //  - export  : PLY / LAS written in JS, E57 via the Rust writer, into an OPFS scratch file
 //  - cache   : write the in-memory cells to OPFS, list / read / delete cached scans
 //  - image   : pull a panorama JPEG out of the source E57
-import init, { E57Handle, E57Export, set_window_size } from './wasm/e57_wasm.js';
+import init, { E57Handle, E57Export, LazWriter, laz_vlr, set_window_size } from './wasm/e57_wasm.js';
 import wasmUrl from './wasm/e57_wasm_bg.wasm?url';
 
 const post = (m: any, t?: Transferable[]) => (self as any).postMessage(m, t ?? []);
@@ -23,10 +23,11 @@ async function dir(name: string, create = true) {
 // ------------------------------------------------------------------ export
 type Sink = FileSystemSyncAccessHandle;
 let exp: {
-  format: 'ply' | 'las' | 'e57'; sink: Sink; pos: number; name: string;
+  format: 'ply' | 'las' | 'laz' | 'e57'; sink: Sink; pos: number; name: string;
   count: number; total: number; tx: number; ty: number; tz: number;
   hasC: boolean; hasI: boolean; hasN: boolean;
   e57?: E57Export;
+  laz?: LazWriter; lazVlr?: Uint8Array; pointOffset?: number;
   // LAS bookkeeping
   min: number[]; max: number[];
 } | null = null;
@@ -48,6 +49,20 @@ async function exportStart(m: any) {
     writeAt(sink, 0, plyHeader(m.total));
   } else if (m.format === 'las') {
     exp.pos = 227;                    // LAS 1.2 header; filled in at finish
+  } else if (m.format === 'laz') {
+    await ensureWasm();
+    // the offset to point data depends on the laszip VLR's own length, so build it first
+    const vlr = laz_vlr(2, 0);
+    exp.lazVlr = vlr;
+    exp.pointOffset = 227 + 54 + vlr.length;
+    exp.pos = exp.pointOffset;
+    const s = exp.sink;
+    const sinkObj = {
+      read: (at: number, len: number) => { const b = new Uint8Array(len); const n = s.read(b, { at }); return b.subarray(0, n); },
+      write: (at: number, data: Uint8Array) => { s.write(data, { at }); },
+      size: () => s.getSize(),
+    };
+    exp.laz = new LazWriter(sinkObj as any, exp.pointOffset, 2, 0);
   } else {
     await ensureWasm();
     const s = exp.sink;
@@ -93,7 +108,8 @@ function exportChunk(m: any) {
     }
     writeAt(e.sink, e.pos, new Uint8Array(buf)); e.pos += buf.byteLength;
   } else {
-    // LAS 1.2, point format 2 (xyz, intensity, rgb), 26 bytes, scale 0.001, offset = translation
+    // LAS 1.2, point format 2 (xyz, intensity, rgb), 26 bytes, scale 0.001, offset = translation.
+    // LAZ is the same records, handed to the laszip compressor instead of written straight out.
     const buf = new ArrayBuffer(n * 26); const dv = new DataView(buf);
     for (let i = 0; i < n; i++) {
       const o = i * 26;
@@ -108,7 +124,8 @@ function exportChunk(m: any) {
       if (y + e.ty < e.min[1]) e.min[1] = y + e.ty; if (y + e.ty > e.max[1]) e.max[1] = y + e.ty;
       if (z + e.tz < e.min[2]) e.min[2] = z + e.tz; if (z + e.tz > e.max[2]) e.max[2] = z + e.tz;
     }
-    writeAt(e.sink, e.pos, new Uint8Array(buf)); e.pos += buf.byteLength;
+    if (e.format === 'laz') e.laz!.add_points(new Uint8Array(buf));
+    else { writeAt(e.sink, e.pos, new Uint8Array(buf)); e.pos += buf.byteLength; }
   }
   e.count += n;
   post({ type: 'export-progress', written: e.count });
@@ -133,15 +150,18 @@ function exportFinish() {
     } else writeAt(e.sink, 0, h);
     bytes = e.pos;
   } else {
+    if (e.format === 'laz') { e.pos = e.laz!.finish(); e.laz = undefined; }
     const h = new ArrayBuffer(227); const dv = new DataView(h); const b = new Uint8Array(h);
     b.set(u8('LASF'), 0);
     dv.setUint8(24, 1); dv.setUint8(25, 2);                 // version 1.2
     b.set(u8('e57view'.padEnd(32, '\0')), 26);              // system id
     b.set(u8('e57view'.padEnd(32, '\0')), 58);              // generating software
+    const laz = e.format === 'laz';
     dv.setUint16(94, 227, true);                            // header size
-    dv.setUint32(96, 227, true);                            // offset to point data
-    dv.setUint32(100, 0, true);                             // VLRs
-    dv.setUint8(104, 2); dv.setUint16(105, 26, true);       // point format 2, 26 bytes
+    dv.setUint32(96, laz ? e.pointOffset! : 227, true);     // offset to point data
+    dv.setUint32(100, laz ? 1 : 0, true);                   // VLRs (the laszip record)
+    // bit 7 of the point format is what says "these points are compressed"
+    dv.setUint8(104, laz ? (2 | 0x80) : 2); dv.setUint16(105, 26, true);
     dv.setUint32(107, e.count, true);
     dv.setUint32(111, e.count, true);                       // returns by number [0]
     dv.setFloat64(131, 0.001, true); dv.setFloat64(139, 0.001, true); dv.setFloat64(147, 0.001, true);
@@ -150,6 +170,16 @@ function exportFinish() {
     dv.setFloat64(195, e.max[1], true); dv.setFloat64(203, e.min[1], true);
     dv.setFloat64(211, e.max[2], true); dv.setFloat64(219, e.min[2], true);
     writeAt(e.sink, 0, b);
+    if (e.format === 'laz') {
+      // one VLR: 54-byte header then the record laz_vlr built
+      const v = e.lazVlr!;
+      const vh = new ArrayBuffer(54); const vd = new DataView(vh); const vb = new Uint8Array(vh);
+      vb.set(u8('laszip encoded'), 2);
+      vd.setUint16(18, 22204, true); vd.setUint16(20, v.length, true);
+      vb.set(u8('laszip encoded points'.slice(0, 31)), 22);
+      writeAt(e.sink, 227, vb);
+      writeAt(e.sink, 227 + 54, v);
+    }
     bytes = e.pos;
   }
   e.sink.flush(); e.sink.close();

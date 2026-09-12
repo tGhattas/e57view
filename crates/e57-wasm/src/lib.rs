@@ -26,7 +26,7 @@ mod wasm_api {
         win: Vec<u8>, win_len: usize, win_start: u64,
     }
     impl JsRangeSource {
-        fn new(read_range: js_sys::Function, len: u64) -> Self {
+        pub fn new(read_range: js_sys::Function, len: u64) -> Self {
             Self { read_range, len, pos: 0, win: Vec::new(), win_len: 0, win_start: 0 }
         }
         fn fill(&mut self, at: u64) -> IoResult<()> {
@@ -126,8 +126,10 @@ mod wasm_api {
         }
 
         /// Positions relative to whatever origin the caller chose (keep them small: f32 on the GPU).
-        pub fn push(&mut self, xyz: &[f64], rgb: &[u8], inten: &[u8], nrm: &[i8], n: usize, preview: &js_sys::Function) -> Result<(), JsValue> {
+        /// `cls` is optional: pass an empty slice when the source has no classification.
+        pub fn push(&mut self, xyz: &[f64], rgb: &[u8], inten: &[u8], nrm: &[i8], cls: &[u8], n: usize, preview: &js_sys::Function) -> Result<(), JsValue> {
             let has_c = rgb.len() >= n * 3; let has_i = inten.len() >= n; let has_n = nrm.len() >= n * 3;
+            let has_cl = cls.len() >= n;
             let (po, ps) = self.pcube;
             for i in 0..n {
                 let (x, y, z) = (xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]);
@@ -135,13 +137,13 @@ mod wasm_api {
                 let c = if has_c { [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]] } else { [180, 180, 180] };
                 let it = if has_i { inten[i] } else { 128 };
                 let nn = if has_n { [nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2]] } else { [0, 0, 127] };
-                self.tree.insert([x, y, z], c, it, nn);
+                self.tree.insert([x, y, z], c, it, nn, if has_cl { cls[i] } else { 0 });
                 self.kept += 1;
                 if self.every > 0 && self.kept % self.every as u64 == 0 {
                     let tx = (x - po[0]) / ps; let ty = (y - po[1]) / ps; let tz = (z - po[2]) / ps;
                     if (0.0..1.0).contains(&tx) && (0.0..1.0).contains(&ty) && (0.0..1.0).contains(&tz) {
                         let qx = ((tx * 65536.0) as u16).to_le_bytes(); let qy = ((ty * 65536.0) as u16).to_le_bytes(); let qz = ((tz * 65536.0) as u16).to_le_bytes();
-                        self.pbuf.extend_from_slice(&[qx[0], qx[1], qy[0], qy[1], qz[0], qz[1], c[0], c[1], c[2], it, nn[0] as u8, nn[1] as u8, nn[2] as u8, 0]);
+                        self.pbuf.extend_from_slice(&[qx[0], qx[1], qy[0], qy[1], qz[0], qz[1], c[0], c[1], c[2], it, nn[0] as u8, nn[1] as u8, nn[2] as u8, if has_cl { cls[i] } else { 0 }]);
                         self.pcount += 1;
                         if self.pcount >= 200_000 { self.flush_preview(preview)?; }
                     }
@@ -378,6 +380,103 @@ mod wasm_export {
         }
     }
     impl Drop for JsSink { fn drop(&mut self) { let _ = self.flush_buf(); } }
+
+    use crate::wasm_api::JsRangeSource;
+
+    // ---------------------------------------------------------------- LAZ
+    // laz-rs decompresses a chunk at a time out of the same ranged-read shim the E57 path
+    // uses, so a multi-gigabyte LAZ never enters wasm memory whole: the caller asks for a
+    // batch of points, gets the raw LAS records back, and the existing LAS decoder reads
+    // them. COPC files are ordinary LAZ with an extra VLR describing an octree, so they read
+    // here as plain LAZ — every point, in file order, ignoring the hierarchy.
+    #[wasm_bindgen]
+    pub struct LazReader {
+        dec: laz::LasZipDecompressor<'static, JsRangeSource>,
+        rec_len: usize,
+    }
+    #[wasm_bindgen]
+    impl LazReader {
+        /// `vlr` is the body of the "laszip encoded" VLR (user id "laszip encoded", record 22204);
+        /// `offset` is the file's offset to point data; `rec_len` the uncompressed record length.
+        #[wasm_bindgen(constructor)]
+        pub fn new(read_range: js_sys::Function, len: f64, vlr: &[u8], offset: f64, rec_len: u32) -> Result<LazReader, JsValue> {
+            console_error_panic_hook::set_once();
+            let mut src = JsRangeSource::new(read_range, len as u64);
+            src.seek(SeekFrom::Start(offset as u64)).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let v = laz::LazVlr::from_buffer(vlr).map_err(|e| JsValue::from_str(&format!("LAZ header: {e}")))?;
+            let dec = laz::LasZipDecompressor::new(src, v).map_err(|e| JsValue::from_str(&format!("LAZ: {e}")))?;
+            Ok(LazReader { dec, rec_len: rec_len as usize })
+        }
+        /// The next `n` points, as uncompressed LAS point records.
+        pub fn read(&mut self, n: u32) -> Result<Vec<u8>, JsValue> {
+            let mut out = vec![0u8; n as usize * self.rec_len];
+            self.dec.decompress_many(&mut out).map_err(|e| JsValue::from_str(&format!("LAZ: {e}")))?;
+            Ok(out)
+        }
+        pub fn seek_point(&mut self, index: f64) -> Result<(), JsValue> {
+            self.dec.seek(index as u64).map_err(|e| JsValue::from_str(&format!("LAZ: {e}")))
+        }
+    }
+
+    /// The laszip VLR body for a point format, so a caller can lay out the file's header
+    /// before it starts compressing: the offset to point data depends on this record's length.
+    #[wasm_bindgen]
+    pub fn laz_vlr(fmt: u8, extra: u16) -> Result<Vec<u8>, JsValue> {
+        let items = laz::LazItemRecordBuilder::default_for_point_format_id(fmt, extra)
+            .map_err(|e| JsValue::from_str(&format!("LAZ: point format {fmt} cannot be written ({e})")))?;
+        let vlr = laz::LazVlr::from_laz_items(items);
+        let mut out = Vec::new();
+        vlr.write_to(&mut out).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(out)
+    }
+
+    /// Compresses LAS point records into a LAZ file through the same sink the E57 writer uses.
+    #[wasm_bindgen]
+    pub struct LazWriter {
+        comp: Option<laz::LasZipCompressor<'static, JsSink>>,
+        rec_len: usize,
+        written: u64,
+    }
+    #[wasm_bindgen]
+    impl LazWriter {
+        /// `fmt` is the LAS point format and `extra` the number of extra bytes per record.
+        #[wasm_bindgen(constructor)]
+        pub fn new(sink: js_sys::Object, at: f64, fmt: u8, extra: u16) -> Result<LazWriter, JsValue> {
+            console_error_panic_hook::set_once();
+            let mut s = JsSink::new(&sink)?;
+            s.seek(SeekFrom::Start(at as u64)).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let items = laz::LazItemRecordBuilder::default_for_point_format_id(fmt, extra)
+                .map_err(|e| JsValue::from_str(&format!("LAZ: point format {fmt} is not supported for writing ({e})")))?;
+            let vlr = laz::LazVlr::from_laz_items(items);
+            let comp = laz::LasZipCompressor::new(s, vlr).map_err(|e| JsValue::from_str(&format!("LAZ: {e}")))?;
+            let rec_len = 20usize + match fmt { 0 => 0, 1 => 8, 2 => 6, 3 => 14, _ => 0 } + extra as usize;
+            Ok(LazWriter { comp: Some(comp), rec_len, written: 0 })
+        }
+        /// The VLR body that has to go in the file's header, describing how it was compressed.
+        pub fn vlr(&self) -> Result<Vec<u8>, JsValue> {
+            let c = self.comp.as_ref().ok_or_else(|| JsValue::from_str("LAZ writer already finished"))?;
+            let mut out = Vec::new();
+            c.vlr().write_to(&mut out).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(out)
+        }
+        pub fn add_points(&mut self, recs: &[u8]) -> Result<(), JsValue> {
+            let c = self.comp.as_mut().ok_or_else(|| JsValue::from_str("LAZ writer already finished"))?;
+            c.compress_many(recs).map_err(|e| JsValue::from_str(&format!("LAZ: {e}")))?;
+            self.written += (recs.len() / self.rec_len.max(1)) as u64;
+            Ok(())
+        }
+        /// Flush the last chunk and write the chunk table. Returns where the data ends.
+        pub fn finish(&mut self) -> Result<f64, JsValue> {
+            let mut c = self.comp.take().ok_or_else(|| JsValue::from_str("LAZ writer already finished"))?;
+            c.done().map_err(|e| JsValue::from_str(&format!("LAZ: {e}")))?;
+            let mut sink = c.into_inner();
+            let end = sink.seek(SeekFrom::Current(0)).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            sink.flush().map_err(|e| JsValue::from_str(&e.to_string()))?;
+            Ok(end as f64)
+        }
+        #[wasm_bindgen(getter)]
+        pub fn count(&self) -> f64 { self.written as f64 }
+    }
 
     /// Streams points into a new E57 file. Field order: xyz f64 (relative to
     /// the pose translation), rgb u8, intensity u8, normal i8.

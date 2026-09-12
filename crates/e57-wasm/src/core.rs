@@ -147,7 +147,7 @@ pub fn decode<R: Read + Seek>(
                 if q == [0, 0, 127] { [0, 0, 126] } else { q }
             } else { [0, 0, 127] };
 
-            tree.insert([x, y, z], rgb, inten, nrm);
+            tree.insert([x, y, z], rgb, inten, nrm, 0);
             kept += 1;
 
             if preview_every > 0 && kept % preview_every as u64 == 0 {

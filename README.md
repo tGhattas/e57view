@@ -105,8 +105,17 @@ of the same room register to **0.000 mm** and their distance field reads **0.00 
   the preview dims whichever half is going so what you see is what Apply will leave. The
   confirmation counts both sides — *"roughly 6,050 points removed, 6,050 kept"*. The file on
   disk is never touched; *Undo* puts the points back and *Reload* brings everything back.
+- **Formats in** — **E57**, **PLY**, **LAS**, **LAZ**, **PTX** and plain text
+  (`.txt .xyz .pts .asc .csv .neu`). LAZ is decompressed a chunk at a time by laz-rs compiled
+  to WebAssembly, through the same ranged-read shim the E57 path uses, so a multi-gigabyte LAZ
+  never enters wasm memory whole; COPC files read as ordinary LAZ. A LAS or LAZ classification
+  becomes a scalar field named *Classification* — it rides in the record's spare byte, so it
+  survives the octree shuffle. Plain text is sniffed for its delimiter and columns and shown
+  as a mapping dialog over the first rows, with a guess that is right for a header row or the
+  PTS convention. A **PTX** becomes one cloud with each scan's own transform applied and each
+  scan a station.
 - **Export** — save what is in memory (the crop, if you applied one, optionally every Nth
-  point) as **E57**, **LAS 1.2** or binary **PLY**. E57 keeps colour, intensity and normals
+  point) as **E57**, **LAS 1.2**, **LAZ** or binary **PLY**. E57 keeps colour, intensity and normals
   (`nor` extension) with the original pose, so coordinates stay georeferenced. Written by
   the Rust E57 writer in a worker into private browser storage, then streamed to wherever
   you choose. Verified round-trip: the exported E57 re-parses bit-exact.

@@ -130,7 +130,10 @@ impl Octree {
     }
 
     #[inline]
-    pub fn insert(&mut self, p: [f64; 3], rgb: [u8; 3], inten: u8, nrm: [i8; 3]) {
+    /// `cls` rides in the record's spare byte. The format has always had one; a LAS or LAZ
+    /// classification is exactly the sort of per-point label that has nowhere else to go, and
+    /// it survives the shuffle because it travels with the point rather than beside it.
+    pub fn insert(&mut self, p: [f64; 3], rgb: [u8; 3], inten: u8, nrm: [i8; 3], cls: u8) {
         // grow root until the point is inside (rare after the first few points)
         loop {
             let (o, s) = (self.nodes[0].origin, self.nodes[0].size);
@@ -159,7 +162,7 @@ impl Octree {
         let qz = quant(p[2], o[2], size).to_le_bytes();
         let rec: [u8; REC] = [qx[0], qx[1], qy[0], qy[1], qz[0], qz[1],
                               rgb[0], rgb[1], rgb[2], inten,
-                              nrm[0] as u8, nrm[1] as u8, nrm[2] as u8, 0];
+                              nrm[0] as u8, nrm[1] as u8, nrm[2] as u8, cls];
         let leaf = self.nodes[idx].leaf.as_mut().unwrap();
         leaf.push(&rec);
         self.total += 1;

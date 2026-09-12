@@ -105,6 +105,43 @@ export class E57Handle {
     stream(idx: number, stride: number, preview_target: number, mem_limit: number, preview: Function, progress: Function, leaf: Function): object;
 }
 
+export class LazReader {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * `vlr` is the body of the "laszip encoded" VLR (user id "laszip encoded", record 22204);
+     * `offset` is the file's offset to point data; `rec_len` the uncompressed record length.
+     */
+    constructor(read_range: Function, len: number, vlr: Uint8Array, offset: number, rec_len: number);
+    /**
+     * The next `n` points, as uncompressed LAS point records.
+     */
+    read(n: number): Uint8Array;
+    seek_point(index: number): void;
+}
+
+/**
+ * Compresses LAS point records into a LAZ file through the same sink the E57 writer uses.
+ */
+export class LazWriter {
+    free(): void;
+    [Symbol.dispose](): void;
+    add_points(recs: Uint8Array): void;
+    /**
+     * Flush the last chunk and write the chunk table. Returns where the data ends.
+     */
+    finish(): number;
+    /**
+     * `fmt` is the LAS point format and `extra` the number of extra bytes per record.
+     */
+    constructor(sink: object, at: number, fmt: number, extra: number);
+    /**
+     * The VLR body that has to go in the file's header, describing how it was compressed.
+     */
+    vlr(): Uint8Array;
+    readonly count: number;
+}
+
 /**
  * Surface reconstruction, driven from a worker: feed it the viewer's own leaf records,
  * then pull the triangles back out. Buffers are moved, not copied, on the way out.
@@ -143,9 +180,16 @@ export class PointSink {
     constructor(bounds: Float64Array, expected: number, mem_limit: number, preview_target: number);
     /**
      * Positions relative to whatever origin the caller chose (keep them small: f32 on the GPU).
+     * `cls` is optional: pass an empty slice when the source has no classification.
      */
-    push(xyz: Float64Array, rgb: Uint8Array, inten: Uint8Array, nrm: Int8Array, n: number, preview: Function): void;
+    push(xyz: Float64Array, rgb: Uint8Array, inten: Uint8Array, nrm: Int8Array, cls: Uint8Array, n: number, preview: Function): void;
 }
+
+/**
+ * The laszip VLR body for a point format, so a caller can lay out the file's header
+ * before it starts compressing: the offset to point data depends on this record's length.
+ */
+export function laz_vlr(fmt: number, extra: number): Uint8Array;
 
 export function set_window_size(n: number): void;
 
@@ -156,6 +200,8 @@ export interface InitOutput {
     readonly __wbg_cloudanalysis_free: (a: number, b: number) => void;
     readonly __wbg_e57export_free: (a: number, b: number) => void;
     readonly __wbg_e57handle_free: (a: number, b: number) => void;
+    readonly __wbg_lazreader_free: (a: number, b: number) => void;
+    readonly __wbg_lazwriter_free: (a: number, b: number) => void;
     readonly __wbg_meshbuilder_free: (a: number, b: number) => void;
     readonly __wbg_pointsink_free: (a: number, b: number) => void;
     readonly cloudanalysis_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
@@ -193,6 +239,15 @@ export interface InitOutput {
     readonly e57handle_meta: (a: number) => [number, number];
     readonly e57handle_new: (a: any, b: number) => [number, number, number];
     readonly e57handle_stream: (a: number, b: number, c: number, d: number, e: number, f: any, g: any, h: any) => [number, number, number];
+    readonly laz_vlr: (a: number, b: number) => [number, number, number, number];
+    readonly lazreader_new: (a: any, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly lazreader_read: (a: number, b: number) => [number, number, number, number];
+    readonly lazreader_seek_point: (a: number, b: number) => [number, number];
+    readonly lazwriter_add_points: (a: number, b: number, c: number) => [number, number];
+    readonly lazwriter_count: (a: number) => number;
+    readonly lazwriter_finish: (a: number) => [number, number, number];
+    readonly lazwriter_new: (a: any, b: number, c: number, d: number) => [number, number, number];
+    readonly lazwriter_vlr: (a: number) => [number, number, number, number];
     readonly meshbuilder_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
     readonly meshbuilder_bricks: (a: number) => number;
     readonly meshbuilder_build: (a: number, b: number, c: number) => [number, number];
@@ -203,7 +258,7 @@ export interface InitOutput {
     readonly meshbuilder_positions: (a: number) => [number, number];
     readonly pointsink_finish: (a: number, b: any, c: any, d: any) => [number, number, number];
     readonly pointsink_new: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
-    readonly pointsink_push: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: any) => [number, number];
+    readonly pointsink_push: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: any) => [number, number];
     readonly set_window_size: (a: number) => void;
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;

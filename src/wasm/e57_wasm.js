@@ -438,6 +438,138 @@ export class E57Handle {
 }
 if (Symbol.dispose) E57Handle.prototype[Symbol.dispose] = E57Handle.prototype.free;
 
+export class LazReader {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        LazReaderFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_lazreader_free(ptr, 0);
+    }
+    /**
+     * `vlr` is the body of the "laszip encoded" VLR (user id "laszip encoded", record 22204);
+     * `offset` is the file's offset to point data; `rec_len` the uncompressed record length.
+     * @param {Function} read_range
+     * @param {number} len
+     * @param {Uint8Array} vlr
+     * @param {number} offset
+     * @param {number} rec_len
+     */
+    constructor(read_range, len, vlr, offset, rec_len) {
+        const ptr0 = passArray8ToWasm0(vlr, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lazreader_new(read_range, len, ptr0, len0, offset, rec_len);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        LazReaderFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * The next `n` points, as uncompressed LAS point records.
+     * @param {number} n
+     * @returns {Uint8Array}
+     */
+    read(n) {
+        const ret = wasm.lazreader_read(this.__wbg_ptr, n);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @param {number} index
+     */
+    seek_point(index) {
+        const ret = wasm.lazreader_seek_point(this.__wbg_ptr, index);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+}
+if (Symbol.dispose) LazReader.prototype[Symbol.dispose] = LazReader.prototype.free;
+
+/**
+ * Compresses LAS point records into a LAZ file through the same sink the E57 writer uses.
+ */
+export class LazWriter {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        LazWriterFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_lazwriter_free(ptr, 0);
+    }
+    /**
+     * @param {Uint8Array} recs
+     */
+    add_points(recs) {
+        const ptr0 = passArray8ToWasm0(recs, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.lazwriter_add_points(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @returns {number}
+     */
+    get count() {
+        const ret = wasm.lazwriter_count(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Flush the last chunk and write the chunk table. Returns where the data ends.
+     * @returns {number}
+     */
+    finish() {
+        const ret = wasm.lazwriter_finish(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0];
+    }
+    /**
+     * `fmt` is the LAS point format and `extra` the number of extra bytes per record.
+     * @param {object} sink
+     * @param {number} at
+     * @param {number} fmt
+     * @param {number} extra
+     */
+    constructor(sink, at, fmt, extra) {
+        const ret = wasm.lazwriter_new(sink, at, fmt, extra);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        LazWriterFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * The VLR body that has to go in the file's header, describing how it was compressed.
+     * @returns {Uint8Array}
+     */
+    vlr() {
+        const ret = wasm.lazwriter_vlr(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+}
+if (Symbol.dispose) LazWriter.prototype[Symbol.dispose] = LazWriter.prototype.free;
+
 /**
  * Surface reconstruction, driven from a worker: feed it the viewer's own leaf records,
  * then pull the triangles back out. Buffers are moved, not copied, on the way out.
@@ -594,14 +726,16 @@ export class PointSink {
     }
     /**
      * Positions relative to whatever origin the caller chose (keep them small: f32 on the GPU).
+     * `cls` is optional: pass an empty slice when the source has no classification.
      * @param {Float64Array} xyz
      * @param {Uint8Array} rgb
      * @param {Uint8Array} inten
      * @param {Int8Array} nrm
+     * @param {Uint8Array} cls
      * @param {number} n
      * @param {Function} preview
      */
-    push(xyz, rgb, inten, nrm, n, preview) {
+    push(xyz, rgb, inten, nrm, cls, n, preview) {
         const ptr0 = passArrayF64ToWasm0(xyz, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passArray8ToWasm0(rgb, wasm.__wbindgen_malloc);
@@ -610,13 +744,32 @@ export class PointSink {
         const len2 = WASM_VECTOR_LEN;
         const ptr3 = passArray8ToWasm0(nrm, wasm.__wbindgen_malloc);
         const len3 = WASM_VECTOR_LEN;
-        const ret = wasm.pointsink_push(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, n, preview);
+        const ptr4 = passArray8ToWasm0(cls, wasm.__wbindgen_malloc);
+        const len4 = WASM_VECTOR_LEN;
+        const ret = wasm.pointsink_push(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, n, preview);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
     }
 }
 if (Symbol.dispose) PointSink.prototype[Symbol.dispose] = PointSink.prototype.free;
+
+/**
+ * The laszip VLR body for a point format, so a caller can lay out the file's header
+ * before it starts compressing: the offset to point data depends on this record's length.
+ * @param {number} fmt
+ * @param {number} extra
+ * @returns {Uint8Array}
+ */
+export function laz_vlr(fmt, extra) {
+    const ret = wasm.laz_vlr(fmt, extra);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v1;
+}
 
 /**
  * @param {number} n
@@ -753,6 +906,12 @@ const E57ExportFinalization = (typeof FinalizationRegistry === 'undefined')
 const E57HandleFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_e57handle_free(ptr, 1));
+const LazReaderFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_lazreader_free(ptr, 1));
+const LazWriterFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_lazwriter_free(ptr, 1));
 const MeshBuilderFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_meshbuilder_free(ptr, 1));

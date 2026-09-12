@@ -2,9 +2,9 @@
 // Imports PLY and LAS files into the same cell format the E57 path produces,
 // so the rest of the app cannot tell the difference. Also the landing spot for
 // scans exported by phone LiDAR apps.
-import init, { PointSink } from './wasm/e57_wasm.js';
+import init, { PointSink, LazReader } from './wasm/e57_wasm.js';
 import wasmUrl from './wasm/e57_wasm_bg.wasm?url';
-import { sniff, parsePly, parseLas } from '../shared/importers.mjs';
+import { sniff, parsePly, parseLas, parseAscii, parsePtx } from '../shared/importers.mjs';
 
 const post = (m: any, t?: Transferable[]) => (self as any).postMessage(m, t ?? []);
 let ready: Promise<unknown> | null = null;
@@ -19,8 +19,8 @@ self.onmessage = async (ev: MessageEvent) => {
     const fr = new FileReaderSync();
     const readRange = (offset: number, length: number) =>
       new Uint8Array(fr.readAsArrayBuffer(file.slice(offset, Math.min(offset + length, file.size))));
-    const kind = sniff(file.name, readRange);
-    if (kind !== 'ply' && kind !== 'las') throw new Error(kind === 'laz' ? 'LAZ is not supported yet — decompress to LAS first.' : `Unrecognised file type: ${file.name}`);
+    const kind = m.kind ?? sniff(file.name, readRange);
+    if (!['ply', 'las', 'laz', 'ascii', 'ptx'].includes(kind)) throw new Error(`Unrecognised file type: ${file.name}`);
 
     const stride = Math.max(1, m.stride | 0);
     const t0 = performance.now();
@@ -32,10 +32,11 @@ self.onmessage = async (ev: MessageEvent) => {
     const onMeta = (im: any) => {
       total = im.points;
       const meta = {
-        guid: null, library: `import:${im.format}`, images: 0, stations: [],
+        guid: null, library: `import:${im.format}`, images: 0, stations: im.stations ?? [],
         scans: [{ name: im.name, points: im.points, bounds: im.bounds, translation: im.translation,
                   sensorVendor: im.format.toUpperCase() + (im.version ? ' ' + im.version : ''), sensorModel: im.pointFormat !== undefined ? `point format ${im.pointFormat}` : null,
-                  hasColor: im.hasColor, hasIntensity: im.hasIntensity, hasNormals: im.hasNormals, cartesian: true, spherical: false, fields: 0 }],
+                  hasColor: im.hasColor, hasIntensity: im.hasIntensity, hasNormals: im.hasNormals, hasClassification: !!im.hasClassification,
+                  cartesian: true, spherical: false, fields: 0 }],
       };
       post({ type: 'meta', meta, openMs: performance.now() - t0, bytesPulled: 0 });
       post({ type: 'plan', stride, willKeep: Math.floor(im.points / stride) });
@@ -54,15 +55,29 @@ self.onmessage = async (ev: MessageEvent) => {
           rgb[j * 3] = bt.rgb[i * 3]; rgb[j * 3 + 1] = bt.rgb[i * 3 + 1]; rgb[j * 3 + 2] = bt.rgb[i * 3 + 2];
           inten[j] = bt.inten[i]; nrm[j * 3] = bt.nrm[i * 3]; nrm[j * 3 + 1] = bt.nrm[i * 3 + 1]; nrm[j * 3 + 2] = bt.nrm[i * 3 + 2];
         }
-        sink.push(xyz, rgb, inten, nrm, j, preview);
-      } else sink.push(bt.xyz, bt.rgb, bt.inten, bt.nrm, bt.n, preview);
+        const cls = bt.cls ? new Uint8Array(n) : new Uint8Array(0);
+        if (bt.cls) for (let i = 0, k = 0; i < bt.n; i += stride, k++) cls[k] = bt.cls[i];
+        sink.push(xyz, rgb, inten, nrm, cls, j, preview);
+      } else sink.push(bt.xyz, bt.rgb, bt.inten, bt.nrm, bt.cls ?? new Uint8Array(0), bt.n, preview);
     };
     const onProgress = (read: number, count: number) => {
       const now = performance.now();
       if (now - lastProgress > 80) { lastProgress = now; post({ type: 'progress', phase: 0, done: read, total: count, elapsed: now - t0, bytesPulled: 0 }); }
     };
     if (kind === 'ply') parsePly(readRange, file.size, file.name, onMeta, onBatch, onProgress);
-    else parseLas(readRange, file.size, file.name, onMeta, onBatch, onProgress);
+    else if (kind === 'ptx') parsePtx(readRange, file.size, file.name, onMeta, onBatch, onProgress);
+    else if (kind === 'ascii') parseAscii(readRange, file.size, file.name, m.map, m.delim, m.skip ?? 0, onMeta, onBatch, onProgress);
+    else {
+      // The laszip decompressor reads through the same ranged shim, a chunk at a time, so a
+      // multi-gigabyte LAZ never enters wasm memory whole.
+      let laz: LazReader | null = null;
+      const makeLaz = (vlr: Uint8Array, offset: number, recLen: number) => {
+        laz = new LazReader(readRange as any, file.size, vlr, offset, recLen);
+        return { read: (n: number) => laz!.read(n) };
+      };
+      try { parseLas(readRange, file.size, file.name, onMeta, onBatch, onProgress, { makeLaz }); }
+      finally { try { (laz as LazReader | null)?.free(); } catch {} }
+    }
     if (!sink) throw new Error('nothing to import');
 
     const s = sink as PointSink;

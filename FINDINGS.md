@@ -902,3 +902,43 @@ now the smaller of one spacing and 2% of the fitted extent.
 
 The outline tool stays, on ⇧S and a secondary button, because for an awkwardly shaped thing it
 is still the right answer.
+
+## LAZ, and a spare byte that had been waiting
+
+`laz` 0.13 (laz-rs) compiles to wasm32 unchanged, which settles the hard part: LAZ is an
+arithmetic coder with per-field predictors, and writing one would have been a month. It reads
+through the same `JsRangeSource` the E57 path uses, so a LAZ is decompressed a chunk at a time
+out of the file on disk and a multi-gigabyte one never enters wasm memory whole. The
+decompressed records are ordinary LAS point records, so the existing LAS decoder reads them
+and the two formats share one loop.
+
+Measured natively on 5,000,000 generated terrain points (`laztest`): **130.0 MB of raw records
+compress to 3.3 MB — 2.5% — in 0.40 s, and decompress in 0.88 s: 5.7 M points/s, 148 MB/s of
+output**, byte-exact, with a seek to an arbitrary point index landing correctly. In the browser
+the round trip through the viewer's own export is 30.5% of the LAS it came from (a small file,
+where the chunk table and header are a real fraction).
+
+COPC is LAZ with an extra VLR describing an octree; ignoring that VLR reads every point in
+file order, which is what this viewer wants anyway since it builds its own octree.
+
+**Classification needed somewhere to live.** A per-point label cannot be carried beside the
+points, because the octree shuffles them — that is what makes drawing a prefix of a leaf a
+uniform subsample. But the 14-byte record has always had a spare byte at index 13, and a LAS
+classification is exactly one byte. It travels with the point through the shuffle, through a
+crop, through undo, and the field is built from it after the leaves land. That last part cost
+one debugging round: uploads are deferred a frame at a time, so anything that reads leaves
+back has to wait for the queue to drain — the same lesson as the cached-transform framing box,
+now a shared `afterUploads` helper.
+
+**Plain text has no header to trust.** The delimiter is guessed by which separator splits the
+first line into the most fields, a header row is one whose fields are not all numbers, and the
+columns are guessed by name when there is a header and by shape when there is not (seven
+columns is the PTS convention, x y z intensity r g b). Then the first rows are shown in a table
+with a select per field, because the guess is going to be wrong sometimes and the alternative
+is loading nonsense. Colours are recognised as 0-255 or 0-1 from the first row that has them.
+
+**PTX is structured, and the structure is the point.** Each scan carries rows, columns, a
+scanner position and a 4×4 pose; points are in the scanner's own frame and a shot that returned
+nothing is written as `0 0 0`. Applying each pose puts every scan in one frame, skipping the
+zeros drops the misses, and each scan's translation becomes a station — so the station markers
+and "view from here" work on a Leica export with no panoramas in it at all.

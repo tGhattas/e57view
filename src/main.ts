@@ -5,6 +5,7 @@ import { REC, pointInRegion, simplifyRing, PRISM_MAX_V, type Region } from './ce
 import { AgentLink } from './agent';
 import { History, cloneRegions } from './history';
 import { blankState, type Entity } from './entities';
+import { sniff, asciiGuess, ASCII_EXT } from '../shared/importers.mjs';
 import type { MeshData } from './meshview';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -199,13 +200,57 @@ async function openFile(f: File, handle: any = null, add = false) {
   io.postMessage({ type: 'cache-has', key: cacheKey });
   const has = await ioOnce('cache-has');
   if (has.has) { fromCache = true; $('ld-stat').textContent = 'loading from cache…'; io.postMessage({ type: 'cache-read', key: cacheKey }); return; }
-  const ext = f.name.toLowerCase().split('.').pop();
-  const isImport = ext === 'ply' || ext === 'las' || ext === 'laz';
+  // what kind of file this is, decided from its first bytes rather than its name
+  let kind: string | null = null;
+  try {
+    const head = new Uint8Array(await f.slice(0, 256).arrayBuffer());
+    kind = sniff(f.name, () => head);
+  } catch { kind = null; }
+  if (!kind) { fail(`e57view does not recognise ${f.name}. It reads E57, PLY, LAS, LAZ, PTX and plain text (${ASCII_EXT.map(e => '.' + e).join(' ')}).`); return; }
+  let ascii: { map: any; delim: string; skip: number } | null = null;
+  if (kind === 'ascii') {
+    ascii = await askColumns(f);
+    if (!ascii) { $('loading').classList.add('hidden'); if (!revealed) $('drop').classList.remove('hidden'); return; }
+  }
+  const isImport = kind !== 'e57';
   worker = isImport ? new Worker(new URL('./import-worker.ts', import.meta.url), { type: 'module' })
                     : new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
   worker.onmessage = onWorker;
   worker.onerror = e => fail(`Decoder crashed: ${e.message || 'out of memory?'} — try a smaller "In memory" fraction.`);
-  worker.postMessage({ type: 'open', file: f, scanIndex: 0, stride, memLimit: MEM_LIMIT });
+  worker.postMessage({ type: 'open', file: f, scanIndex: 0, stride, memLimit: MEM_LIMIT, kind, ...(ascii ?? {}) });
+}
+
+/** Plain text says nothing about itself, so the first twenty lines are shown with a guess at
+ *  what each column is and the chance to correct it. The guess is right for the common
+ *  shapes — a header row, or the PTS convention of x y z intensity r g b — and the dialog is
+ *  there for everything else. */
+const ASCII_FIELDS: [string, string][] = [
+  ['x', 'X / Easting'], ['y', 'Y / Northing'], ['z', 'Z / Height'],
+  ['r', 'Red'], ['g', 'Green'], ['b', 'Blue'], ['i', 'Intensity'],
+  ['nx', 'Normal X'], ['ny', 'Normal Y'], ['nz', 'Normal Z'],
+];
+async function askColumns(f: File): Promise<{ map: any; delim: string; skip: number } | null> {
+  let g: ReturnType<typeof asciiGuess>;
+  try {
+    const head = new TextDecoder('latin1').decode(new Uint8Array(await f.slice(0, 96 * 1024).arrayBuffer()));
+    g = asciiGuess(head);
+  } catch (e: any) { fail('Could not read that text file: ' + (e?.message ?? e)); return null; }
+  const names = { ',': 'comma', ';': 'semicolon', '\t': 'tab', ' ': 'whitespace' } as Record<string, string>;
+  const rows = g.sample.slice(0, 20);
+  const head = (g.header ?? Array.from({ length: g.cols }, (_, i) => `column ${i + 1}`));
+  const table = `<div class="cols"><table><tr>${head.map((h, i) => `<th>${i}: ${h}</th>`).join('')}</tr>`
+    + rows.slice(0, 6).map(r => `<tr>${Array.from({ length: g.cols }, (_, i) => `<td>${r[i] ?? ''}</td>`).join('')}</tr>`).join('') + '</table></div>';
+  const opts = (sel: number) => `<option value="-1">—</option>` + Array.from({ length: g.cols }, (_, i) => `<option value="${i}"${i === sel ? ' selected' : ''}>${i}: ${(head[i] ?? '').slice(0, 14)}</option>`).join('');
+  const body = `<p>Separated by <b>${names[g.delim] ?? g.delim}</b>${g.header ? ', with a header row' : ''} · ${fmt(g.lines)} lines.</p>`
+    + table
+    + `<div class="colmap">${ASCII_FIELDS.map(([k, label]) => `<label><span>${label}</span><select id="cm-${k}">${opts((g.map as any)[k])}</select></label>`).join('')}</div>`
+    + `<p class="hint mono">X, Y and Z are required. Colours may be 0-255 or 0-1; either is recognised.</p>`;
+  const ans = await modal(`Columns in ${f.name}`, body, [{ label: 'Cancel', value: 'no' }, { label: 'Open', value: 'yes', cls: 'primary' }]);
+  if (ans !== 'yes') return null;
+  const map: any = {};
+  for (const [k] of ASCII_FIELDS) map[k] = Number(($(`cm-${k}`) as HTMLSelectElement | null)?.value ?? -1);
+  if ([map.x, map.y, map.z].some(v => !(v >= 0))) { fail('X, Y and Z are needed to read a text file.'); return null; }
+  return { map, delim: g.delim, skip: g.header ? 1 : 0 };
 }
 
 function onWorker(ev: MessageEvent) {
@@ -278,6 +323,10 @@ function onDone(stats: any, how: string) {
   $('tb-points').textContent = `${fmt(stats.kept)} pts · ${how} in ${secs.toFixed(1)}s`;
   $('v-loaded').textContent = `${fmt(stats.kept)} of ${fmt(total)} in memory (${((stats.kept/total)*100).toFixed(0)}%) · ${stats.leaves} cells` + (stats.droppedInvalid ? ` · ${fmt(stats.droppedInvalid)} invalid skipped` : '');
   $('loading').classList.add('hidden');
+  if (meta?.scans?.[0]?.hasClassification) afterUploads(() => {
+    const n = buildClassificationField();
+    if (n) $('v-analysis').textContent = `Classification read from the file · ${n} classes · colour by it with Colour → Scalar field`;
+  });
   drawHistogram(); viewer.fit(); applyPendingView(); applyUrlCommands(); updateCropUI(true);
   worker?.terminate(); worker = null;
   if (currentHandle) idbPut(cacheKey, currentHandle);
@@ -285,6 +334,29 @@ function onDone(stats: any, how: string) {
   renderLayers(); updateNames();          // the row's point count is only final now
   if (!fromCache && localStorage.getItem('nocache:' + cacheKey) !== '1') setTimeout(offerCache, 600);
 }
+/** LAS and LAZ carry a classification per point, which rides in the record's spare byte.
+ *  Turn it into a scalar field, but leave the colour mode alone: arriving at a scan painted
+ *  by class is a surprise, and the field is one click away in the panel. */
+function buildClassificationField(): number {
+  let distinct = new Set<number>();
+  const per: Float32Array[] = [];
+  for (const l of viewer.cells.leavesForMask()) {
+    const recs = l.readback(viewer.cells.gl2);
+    const a = new Float32Array(l.count);
+    for (let i = 0; i < l.count; i++) { const c = recs[i * REC + 13]; a[i] = c; if (distinct.size < 40) distinct.add(c); }
+    per.push(a);
+  }
+  if (distinct.size < 2) return 0;
+  const was = knobs.colorMode;
+  viewer.cells.setScalarField(per);
+  sfName = 'Classification'; dirtyMark.field = '';
+  document.body.classList.add('has-sf');
+  ($('k-color-sf') as HTMLOptionElement).disabled = false;
+  autoScalarRange(); refreshScalarUI();
+  setColorMode(was);
+  return distinct.size;
+}
+
 function revealViewport() {
   if (revealed) return; revealed = true; viewer.fit();
   $('topbar').classList.remove('hidden'); $('panel').classList.remove('hidden');
@@ -306,16 +378,20 @@ function robustLoHi(): { lo: number[]; hi: number[] } | null {
   return { lo, hi };
 }
 function robustBounds() { const r = robustLoHi(); if (r) viewer.setRobustBounds(r.lo as any, r.hi as any); }
+/** Leaves reach the GPU through an upload queue that drains a frame at a time, so anything
+ *  that has to read them back has to wait for it. */
+function afterUploads(fn: () => void, timeoutMs = 20000) {
+  const t = setInterval(() => {
+    if (viewer.pendingUploads) return;
+    clearInterval(t); fn();
+  }, 120);
+  setTimeout(() => clearInterval(t), timeoutMs);
+}
 /** A cached scan reopens with the transform it was cached with, and a percentile box carried
- *  through a rotation is inflated. The leaves arrive through the upload queue, so measuring a
- *  tight one has to wait for them. */
+ *  through a rotation is inflated; measure a tight one once the leaves are here. */
 function retightenSoon() {
   if (viewer.cells.model.equals(new THREE.Matrix4())) return;
-  const t = setInterval(() => {
-    if (viewer.cells.pendingCount) return;
-    clearInterval(t); viewer.retightenBounds(); syncZLabels(); viewer.fit();
-  }, 120);
-  setTimeout(() => clearInterval(t), 20000);
+  afterUploads(() => { viewer.retightenBounds(); syncZLabels(); viewer.fit(); });
 }
 function autoRangeIntensity() {
   const total = histogram.reduce((a, b) => a + b, 0); if (!total) return;
@@ -564,10 +640,10 @@ $('k-layeradd').addEventListener('click', () => addFile());
 async function addFile() {
   const anyWin = window as any;
   if (anyWin.showOpenFilePicker) {
-    try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las'] } }] }); openFile(await h.getFile(), h, true); } catch {}
+    try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las', '.laz', '.ptx', ...ASCII_EXT.map(e => '.' + e)] } }] }); openFile(await h.getFile(), h, true); } catch {}
     return;
   }
-  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = '.e57,.ply,.las';
+  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = ['.e57', '.ply', '.las', '.laz', '.ptx', ...ASCII_EXT.map(e => '.' + e)].join(',');
   inp.onchange = () => inp.files?.[0] && openFile(inp.files[0], null, true); inp.click();
 }
 $('k-layertint').addEventListener('change', e => {
@@ -1051,11 +1127,11 @@ async function redoEdit() {
     return e;
   } finally { hideBusy(); }
 }
-function exportFormat(): 'e57' | 'las' | 'ply' {
+function exportFormat(): 'e57' | 'las' | 'ply' | 'laz' {
   const fromFile = (currentFile?.name ?? meta?.scans?.[0]?.name ?? '').toLowerCase().split('.').pop();
-  if (fromFile === 'e57' || fromFile === 'las' || fromFile === 'ply') return fromFile;
+  if (fromFile === 'e57' || fromFile === 'las' || fromFile === 'ply' || fromFile === 'laz') return fromFile;
   const sel = $<HTMLSelectElement>('k-fmt')?.value;
-  if (sel === 'e57' || sel === 'las' || sel === 'ply') return sel;
+  if (sel === 'e57' || sel === 'las' || sel === 'ply' || sel === 'laz') return sel;
   return 'e57';
 }
 async function pickSaveHandle(name: string, fmtSel: string): Promise<any | null | undefined> {
@@ -1091,7 +1167,7 @@ async function saveCurrent() {
   ].filter(Boolean).join('');
   const ans = await modal('Save as…', parts, [{ label: 'Cancel', value: 'no' }, { label: 'Choose location…', value: 'yes', cls: 'primary' }]);
   if (ans !== 'yes') return;
-  const base = (currentFile?.name ?? meta?.scans?.[0]?.name ?? 'scan').replace(/\.(e57|ply|las)$/i, '');
+  const base = (currentFile?.name ?? meta?.scans?.[0]?.name ?? 'scan').replace(/\.(e57|ply|las|laz|ptx|txt|xyz|pts|asc|csv|neu)$/i, '');
   const suggested = `${base}${cropped ? '-crop' : ''}.${fmtSel}`;
   const handle = await pickSaveHandle(suggested, fmtSel);
   if (handle === null) return;
@@ -2116,8 +2192,8 @@ function* leafPoints(stride: number) {
     yield { xyz: xyz.subarray(0, j * 3), rgb: rgb.subarray(0, j * 3), inten: inten.subarray(0, j), nrm: nrm.subarray(0, j * 3), count: j };
   }
 }
-async function runExport(fmtSel: 'e57' | 'las' | 'ply', stride: number): Promise<{ file: File; name: string; count: number; bytes: number; scratch: string }> {
-  const base = (currentFile?.name ?? meta?.scans?.[0]?.name ?? 'scan').replace(/\.(e57|ply|las)$/i, '');
+async function runExport(fmtSel: 'e57' | 'las' | 'ply' | 'laz', stride: number): Promise<{ file: File; name: string; count: number; bytes: number; scratch: string }> {
+  const base = (currentFile?.name ?? meta?.scans?.[0]?.name ?? 'scan').replace(/\.(e57|ply|las|laz|ptx|txt|xyz|pts|asc|csv|neu)$/i, '');
   const outName = `${base}${cropped ? '-crop' : ''}${stride > 1 ? '-1in' + stride : ''}.${fmtSel}`;
   const s = meta.scans[0]; exportTotal = Math.ceil(viewer.loaded / stride);
   io.postMessage({ type: 'export', format: fmtSel, name: outName, translation: s.translation, total: exportTotal, hasColor: !!s.hasColor, hasIntensity: !!s.hasIntensity, hasNormals: !!s.hasNormals });
@@ -3153,10 +3229,10 @@ if (sessionParam) import('./session').then(m => { sessionMod = m; startRemoteSes
 async function pickFile() {
   const anyWin = window as any;
   if (anyWin.showOpenFilePicker) {
-    try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las'] } }] }); openFile(await h.getFile(), h); } catch {}
+    try { const [h] = await anyWin.showOpenFilePicker({ types: [{ description: 'Point cloud', accept: { 'application/octet-stream': ['.e57', '.ply', '.las', '.laz', '.ptx', ...ASCII_EXT.map(e => '.' + e)] } }] }); openFile(await h.getFile(), h); } catch {}
     return;
   }
-  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = '.e57,.ply,.las';
+  const inp = document.createElement('input'); inp.type = 'file'; if (!isIOS) inp.accept = ['.e57', '.ply', '.las', '.laz', '.ptx', ...ASCII_EXT.map(e => '.' + e)].join(',');
   inp.onchange = () => inp.files?.[0] && openFile(inp.files[0]); inp.click();
 }
 /** Open another scan: the same picker the start screen uses, behind the unsaved-work guard. */
@@ -3241,7 +3317,7 @@ refreshCachedList();
   commitTransform, transformState, levelCloud, rowMajor, fromRowMajor, runExport, updateTransformUI,
   dirtyList, isDirty, openAnother, confirmReplace,
   stateRecord, recommendedSource, surfaceRecord, heightmapCmd, contourCmd, fitPlaneCmd, dispatchAgent,
-  createPrismRegion, placeRegion, scaleRegion, fitToContents, activeRegion, startSize,
+  createPrismRegion, placeRegion, scaleRegion, fitToContents, activeRegion, startSize, buildClassificationField,
   get sections() { return sections; }, renderSectionList, regionCount, syncRegions,
   activateEntity, cloneActive, mergeIntoActive, renderLayers, entityList, setReference,
   matchCentres, matchScales, runIcp, distanceToReference, removeLayer, addFile,

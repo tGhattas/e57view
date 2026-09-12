@@ -296,3 +296,13 @@ body.has-region button.region-active{display:block}
 #segbar button{padding:7px 13px}
 #segbar button:disabled{opacity:.4;pointer-events:none}
 @media (pointer: coarse){ #segbar{flex-direction:column;align-items:stretch} #segbar button{width:100%} }
+
+/* ---- the ASCII column mapping dialog ---- */
+.cols{max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:5px;margin:8px 0}
+.cols table{border-collapse:collapse;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;width:100%}
+.cols th{position:sticky;top:0;background:#132027;color:var(--teal);text-align:left;padding:4px 7px;white-space:nowrap;font-weight:500}
+.cols td{padding:2px 7px;color:var(--dim);white-space:nowrap;border-top:1px solid #ffffff0a}
+.colmap{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;margin:10px 0 4px}
+.colmap label{display:flex;align-items:center;gap:8px;font-size:12px}
+.colmap label span{flex:1;color:var(--dim)}
+.colmap select{max-width:120px;font-size:11px;padding:3px 5px}
