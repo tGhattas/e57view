@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Surface reconstruction off the main thread. The viewer reads its octree leaves back from
 // the GPU and streams them here; the WebAssembly mesher splats each leaf into a sparse
 // signed-distance field and extracts the surface once every leaf has arrived.

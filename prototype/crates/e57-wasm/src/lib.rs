@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 use e57::{E57Reader, CartesianCoordinate};
 use std::io::{Read, Seek, SeekFrom, Result as IoResult, Error as IoError, ErrorKind};
 use wasm_bindgen::prelude::*;

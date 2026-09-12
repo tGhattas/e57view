@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: GPL-3.0-only
 // MCP server for e57view. Speaks MCP over stdio to the agent (Claude Code,
 // Claude Desktop, Cursor…) and forwards each tool call over a localhost
 // WebSocket to the running viewer tab. Screenshots come back as images so the

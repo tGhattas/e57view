@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // The built desktop app, driven the way an agent drives it: through its own MCP server.
 //
 // There is no Playwright here — the app is a WKWebView, not a browser this can attach to, and

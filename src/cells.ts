@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Raw WebGL2 point renderer for octree leaves.
 //
 // Each leaf is one VBO of 14-byte records (u16 xyz quantised to the leaf cube,

@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import { chromium } from 'playwright';
+import { requireTestFile } from './shared/testfile.mjs';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
 const b = await chromium.launch({ channel: 'chrome', headless: false });
 const p = await b.newPage({ viewport: { width: 1500, height: 940 } });
 p.on('pageerror', e => console.log('PAGEERROR', String(e).slice(0, 300)));
@@ -12,7 +16,7 @@ const state = () => p.evaluate(() => ({
 const loaded = () => p.waitForFunction(() => /(loaded|from cache) in/.test(document.getElementById('tb-points')?.textContent || ''), null, { timeout: 300000 });
 
 await p.evaluate(st => { document.getElementById('k-load').value = st; }, process.env.STRIDE || '10');
-await p.setInputFiles('#file-input', '/Users/tamer/Downloads/1973-registered.e57');
+await p.setInputFiles('#file-input', FILE);
 await loaded();
 await p.evaluate(() => document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed')));
 console.log('loaded:', (await state()).tb);

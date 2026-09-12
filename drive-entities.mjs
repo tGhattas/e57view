@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Two clouds open at once: what is drawn, what the tools act on, and what merging preserves.
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';

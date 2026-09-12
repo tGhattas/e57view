@@ -26,5 +26,11 @@
   "dependencies": {
     "firebase": "^11.10.0",
     "three": "^0.169.0"
+  },
+  "license": "GPL-3.0-only",
+  "description": "View, measure and edit multi-gigabyte point clouds in the browser or as a desktop app. Nothing is uploaded.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OWNER/e57view"
   }
 }

@@ -1,6 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Undo / redo / save on the real scan: spill to disk, timings, cache rules.
 import { chromium } from 'playwright';
-const FILE = process.env.FILE || '/Users/tamer/Downloads/1973-registered.e57';
+import { requireTestFile } from './shared/testfile.mjs';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
 const URL = process.env.URL || 'http://127.0.0.1:5180/';
 const b = await chromium.launch({ channel: 'chrome', headless: false, args: ['--ignore-gpu-blocklist', '--enable-gpu'] });
 const ctx = await b.newContext({ viewport: { width: 1400, height: 900 }, acceptDownloads: true });

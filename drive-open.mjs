@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Opening another scan, and the one guard in front of it. The point of the guard is that it
 // names what would be lost, so the checks are about the wording as much as the behaviour.
 import { chromium } from 'playwright';

@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+// SPDX-License-Identifier: GPL-3.0-only
 // Imports PLY and LAS files into the same cell format the E57 path produces,
 // so the rest of the app cannot tell the difference. Also the landing spot for
 // scans exported by phone LiDAR apps.

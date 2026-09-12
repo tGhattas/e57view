@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Native validation of the neighbourhood analyses against shapes with known answers.
 use e57_wasm::analysis::{Analyzer, Feature};
 use e57_wasm::shapes;

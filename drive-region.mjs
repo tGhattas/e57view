@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Placing a region and making it big enough: the gesture the tool is actually for.
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 export type Ranged = (offset: number, length: number) => Uint8Array;
 export type Batch = { xyz: Float64Array; rgb: Uint8Array; inten: Uint8Array; nrm: Int8Array; cls?: Uint8Array; n: number; read: number };
 export type ColumnMap = { x: number; y: number; z: number; r: number; g: number; b: number; i: number; nx: number; ny: number; nz: number; s?: number };

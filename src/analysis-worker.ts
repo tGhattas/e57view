@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Neighbourhood analysis off the main thread.
 //
 // The viewer streams its octree leaves in, the WebAssembly analyser builds one spatial

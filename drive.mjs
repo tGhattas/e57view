@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import { chromium } from 'playwright';
-const FILE = '/Users/tamer/Downloads/1973-registered.e57';
+import { requireTestFile } from './shared/testfile.mjs';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
 const URL = process.env.URL || 'http://127.0.0.1:5180/';
 const b = await chromium.launch({ channel: 'chrome', headless: false, args: ['--ignore-gpu-blocklist','--enable-gpu'] });
 const p = await b.newPage({ viewport: { width: 1500, height: 940 }, deviceScaleFactor: 1 });

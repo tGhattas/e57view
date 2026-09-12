@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Neighbourhood analysis in the browser, on a fixture whose right answers are known.
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';

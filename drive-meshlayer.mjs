@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Meshes as layers: import, measure, edit, sample, and measure a cloud against one.
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';

@@ -1,6 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import { chromium, devices } from 'playwright';
+import { requireTestFile } from './shared/testfile.mjs';
 
-const FILE = '/Users/tamer/Downloads/1973-registered.e57';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
 const targets = [
   ['iphone', devices['iPhone 15 Pro']],
   ['ipad',   devices['iPad Pro 11']],

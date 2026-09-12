@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Generated from firebase apps:sdkconfig. Public web config, not a secret.
 export const firebaseConfig = {
   "projectId": "opensketch",

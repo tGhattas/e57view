@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Entities: more than one cloud open at once.
 //
 // Registration, cloud-to-cloud distance and merging all need two clouds in memory, so the

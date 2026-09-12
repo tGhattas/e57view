@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // PLY and LAS importers over a synchronous ranged reader: readRange(offset, length) -> Uint8Array.
 // Used by the browser import worker (FileReaderSync) and by the cloud converter (fs.readSync).
 // Output batches are relative to `translation` so positions stay f32-safe on the GPU.

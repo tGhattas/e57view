@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Surface reconstruction from oriented points.
 //
 // The scans this viewer opens carry per-point normals (the libE57 `nor` extension), which

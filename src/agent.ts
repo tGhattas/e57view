@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Agent link: a localhost WebSocket bridge to the e57view MCP server, so an AI
 // agent can drive the viewer and see the result. Commands are plain JSON; the
 // handler map is supplied by main.ts so this file stays free of app internals.

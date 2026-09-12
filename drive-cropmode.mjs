@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // The crop region cuts both ways: keep what is inside it, or remove it. The two must be exact
 // complements of each other over the same box, and both must undo.
 import { chromium } from 'playwright';

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 export declare const MESH_EXT: string[];
 export declare function sniffMesh(name: string, head: Uint8Array): 'ply' | 'obj' | 'stl' | null;
 export declare function parseMesh(kind: string, buf: ArrayBuffer): {

@@ -1279,3 +1279,84 @@ Driving the app headlessly exposed a real gap in the agent surface: an agent cou
 cached scan but never *create* one, because caching was a modal the user answered. Since a
 scan that takes seventeen seconds to decode reopens in half a second, caching one you will come
 back to is among the most useful things an agent can do for the next session. It is a tool now.
+
+## Preparing to be read by strangers
+
+Publishing is not a step at the end; it is a set of small decisions that are each obvious once
+someone has made them. These are the ones that took thought.
+
+### GPL-3.0-only, and the direction Apache-2.0 runs
+
+The licence is **GPL-3.0-only**, not `-or-later`, and the reason is in the dependency tree.
+Apache-2.0 is compatible with GPLv3 in one direction: GPLv3 may absorb Apache-2.0 code, but not
+the reverse — and it is **not** compatible with GPLv2 at all. Half this project's dependency
+tree is `Apache-2.0 OR MIT`, and `wry`, `tao` and most of Tauri are in it. `-or-later` would
+offer a downstream recipient the option of GPLv2, under which that tree cannot legally be
+combined. `-only` is the honest statement of what is actually permitted.
+
+`THIRD_PARTY.md` is generated rather than written: `node tools/third-party.mjs` walks the npm
+lock files and `cargo license` for both crates, groups by licence expression, and **exits
+non-zero on anything not on its compatible list**. That makes an awkward new dependency a build
+failure on the pull request rather than a discovery years later. It runs in CI, and CI also
+checks the file is up to date with `git diff --exit-code`. The current count: **530 npm
+packages and 433 crates, all compatible.** Nothing had to be dropped.
+
+SPDX headers went on by script (`tools/spdx.mjs`), with `--check` in CI. Two details that only
+show up when you do it mechanically: a shebang, a doctype and a `/// <reference>` directive all
+have to stay on line one, so the header goes on line two for those; and generated code
+(`src/wasm/`) is skipped, because a licence header on generated output is a claim about
+authorship that is not true.
+
+### The scrub
+
+Twelve drivers had `/Users/tamer/Downloads/1973-registered.e57` in them, which is worse than
+untidy: it is a path that exists on exactly one machine, so every one of those drivers fails
+with `ENOENT` for anybody else and the failure says nothing useful. They read
+`E57VIEW_TEST_FILE` now and **skip with an explanation**, exiting 0 — a driver that cannot run
+is not a driver that failed, and CI has no 3 GB scan to give it. `tools/scrub-paths.mjs --check`
+keeps them that way.
+
+The rest of the scrub was smaller than expected: no personal names or addresses in code or
+docs, `functions/.env` already ignored with an `.env.example` beside it, and no scan data ever
+tracked. `.gitignore` now also refuses `*.e57`, `*.las`, `*.laz` and `*.ptx` outright, because
+the cost of a 3 GB accident is a rewritten history.
+
+`opensketch` is a Firebase project name, not a product name, and the README now says so. The
+config in `src/firebase-config.ts` is public web config rather than a secret, and the README
+says how to point it at your own project — or delete the whole thing, since the viewer, the
+local MCP bridge and the desktop app all work with no Firebase at all, and the desktop build
+does not even contain the client.
+
+### A README that is a front door
+
+The old README was an engineering log with a features list on top. The new one leads with what
+the program is, a picture of it running, and six claims that each carry a number an automated
+test asserts — 13.5 s for a 3.23 GB file, 9.8 ms for 8M points, 0.0000° on a cylinder axis.
+Claims with numbers are checkable; claims without them are marketing.
+
+The architecture diagram is Mermaid, which GitHub renders natively. Worth knowing: **parsing is
+not rendering.** A diagram can pass `mermaid.parse()` and still throw during layout, so
+`tools/check-markdown.mjs` does both, in the same renderer version GitHub uses, alongside
+checking that every internal link and image resolves and that every table's header row matches
+its separator.
+
+That table check had one false positive worth recording, because the fix is not obvious: a
+headerless two-column table starts `| | |`, which matches the obvious "separator row" regex
+`^\|[-: |]+\|$` — spaces are in the character class. Requiring at least one dash fixes it.
+Five perfectly good tables looked broken until then.
+
+### The gap analysis, a year later in project time
+
+`docs/cloudcompare-gap-analysis.md` is the September audit regenerated with every status
+brought up to date, and the shape of it changed completely. Five gaps were called structural at
+the time: one cloud at a time, no scalar fields, normals that could only be read, a cloud that
+could not be moved, and no freehand selection. **Four are closed.** The fifth turned into
+something deliberately different — an outline becomes a prism region you can orbit around,
+because a cut you cannot inspect from another angle was the thing people kept getting wrong.
+
+Of 190 capabilities compared: **64 covered, 48 partial, 78 missing**, against 29 / 24 / 137 at
+the start. What is left is four honest groups rather than a list: no project file (which most
+of the polyline and label rows wait behind), no headless batch mode, none of the research
+plugins, and a long tail of formats and conveniences. Keeping the statuses in the generator
+rather than the Markdown means the counts at the top cannot disagree with the tables — which
+they would have, within a week, otherwise.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // A script is a list of steps run in order on the live tab, with each step's result available
 // to the next. This runs one end to end and checks the chaining, the variables and the
 // stop-on-error rule — not merely that something came back.

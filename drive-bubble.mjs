@@ -1,11 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Panorama alignment: photo-only vs points-only from the same station must show the same scene.
 import { chromium } from 'playwright';
+import { requireTestFile } from './shared/testfile.mjs';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
 const b = await chromium.launch({ channel: 'chrome', headless: false });
 const p = await b.newPage({ viewport: { width: 1500, height: 940 } });
 p.on('pageerror', e => console.log('PAGEERROR', String(e).slice(0, 300)));
 await p.goto(process.env.URL || 'http://127.0.0.1:5180/', { waitUntil: 'networkidle' });
 await p.evaluate(() => { document.getElementById('k-load').value = '4'; });
-await p.setInputFiles('#file-input', '/Users/tamer/Downloads/1973-registered.e57');
+await p.setInputFiles('#file-input', FILE);
 await p.waitForFunction(() => /(loaded|from cache) in/.test(document.getElementById('tb-points')?.textContent || ''), null, { timeout: 300000 });
 await p.waitForTimeout(1200);
 try { await p.click('#modal-btns button:has-text("Not now")', { timeout: 3000 }); } catch {}

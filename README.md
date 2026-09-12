@@ -1,332 +1,450 @@
-# e57view
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<h1 align="center">e57view</h1>
 
-**Live: https://opensketch.web.app**
+<p align="center">
+  <strong>Open a 3 GB laser scan in a browser tab. Nothing is uploaded, nothing is installed,
+  and it renders like a desktop application.</strong>
+</p>
 
-A browser E57 point cloud viewer. No install, no upload, no server — the file is read
-straight off your disk and never leaves the machine. Works on desktop, iPhone and iPad,
-and can be added to the home screen as a web app.
+<p align="center">
+  <a href="LICENSE"><img alt="Licence: GPL-3.0-only" src="https://img.shields.io/badge/licence-GPL--3.0--only-14707d"></a>
+  <a href=".github/workflows/build.yml"><img alt="Build" src="https://img.shields.io/badge/build-web%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-14707d"></a>
+  <a href="#the-agent-interface"><img alt="MCP" src="https://img.shields.io/badge/MCP-30%20tools-14707d"></a>
+  <a href="https://opensketch.web.app"><img alt="Live" src="https://img.shields.io/badge/try%20it-opensketch.web.app-2b7a84"></a>
+</p>
 
-Built against a real 3.23 GB / 73.8M point NavVis scan. See `PLAN.md` for the design and
-`FINDINGS.md` for the measurements behind it.
+<p align="center">
+  <img src="docs/hero.jpg" alt="e57view showing a 36.9-million-point scan of a street, with the control panel open" width="100%">
+</p>
 
-## What works today
+<p align="center"><sub>36.9 million points of a 3.23 GB E57, drawn in the browser with eye-dome lighting. The file is still on the disk.</sub></p>
 
-- Opens multi-gigabyte E57 files. **The file is never loaded into WebAssembly memory** — a
-  synchronous ranged-read shim (`FileReaderSync` over `File.slice()`) feeds the Rust reader,
-  so wasm32's 4 GB address space is not a ceiling. No SharedArrayBuffer, no COOP/COEP.
-- Header + XML parse in ~10 ms. Scan card is populated before anything is decoded.
-- A **fast columnar decoder** (`crates/e57-wasm/src/fast.rs`) replaces the crate's readers:
-  no per-page CRC, no per-value 16-byte copy, no per-point allocation. 4x faster raw, validated
-  bit-exact against the crate on all ten fields of the test file.
-- Points are binned into a **leaf-only octree** with 16-bit positions per cell (14 bytes per
-  point) and each cell is **shuffled**, so drawing a prefix of a cell is a uniform subsample.
-  That is continuous level of detail with zero extra storage.
-- A **raw WebGL2 renderer** (`src/cells.ts`) frustum-culls cells, sizes each one's draw count
-  by projected screen area, fills the per-frame budget, and hands the shader a per-cell
-  spacing so adaptive point size never balloons.
-- Colour modes: RGB, intensity, RGB × intensity, elevation ramp, normals, flat.
-- Eye-dome lighting with a same-surface tolerance (no black rings on close-ups), adaptive
-  point sizing with a max-pixel clamp, circular points, normal shading.
-- Tone controls, intensity histogram with auto-ranged handles, height clipping. Bounds for
-  framing and clipping come from percentiles of a sample, so stray outlier points can't
-  blow up the view.
-- **Zoom toward the cursor, double-click to move the orbit centre onto a point, and a fly
-  mode** (W A S D, Q E, drag to look, scroll for speed) for walking inside a building.
-- Renders only when something changed. The whole budget is drawn when idle; a fraction
-  while interacting.
+---
 
-Measured against the live deployment, Chrome on Apple Silicon, all 73.8M points in memory:
+e57view reads **E57**, **LAS**, **LAZ**, **PTX**, **PLY** and delimited text point clouds, and
+**PLY / OBJ / STL** meshes, and lets you look at them, measure them, clean them, register them,
+compare them, reconstruct surfaces from them and write them back out — in a browser tab, or as
+a 4.7 MB desktop application that opens no network connection at all.
+
+**Try it:** [opensketch.web.app](https://opensketch.web.app) — drop a file on the page.
+
+## Why this exists
+
+Point cloud software is desktop software with an import step. You install something, you wait
+for it to convert your file into its own format, and then you look at your data. That is a long
+way to go to answer "how wide is that opening".
+
+The bet was that a browser could skip all of it. It can, and here is what makes it work — every
+number below is asserted by a test driver on every run, not remembered:
+
+- **Nothing is uploaded, ever.** The file is read off your disk by a WebAssembly decoder inside
+  a worker. There is no server that could receive a scan, and the desktop build opens no
+  network connection at all.
+- **A 3.23 GB E57 opens in 13.5 seconds** with no import step — 73.8 million points, from a
+  columnar decoder written for this project that is four times faster than the reference reader
+  and validated bit-exact against it on all ten fields. The file **never enters WebAssembly
+  memory**: a synchronous ranged-read shim feeds the Rust reader, so wasm32's 4 GB address
+  space is not a ceiling. No SharedArrayBuffer, no cross-origin isolation headers.
+- **It renders like a desktop viewer.** A leaf-only octree with 14-byte points, each leaf
+  shuffled so drawing a prefix is a uniform subsample — continuous level of detail at no
+  storage cost — through a hand-written WebGL2 pipeline with eye-dome lighting. 8M points in
+  **9.8 ms**, 32M in **30 ms**.
+- **Destructive edits undo**, including a crop of seventy million points, by spilling to
+  private browser storage rather than keeping a second copy in memory.
+- **Transforms are never baked.** A cloud carries a 4×4 matrix that every consumer reads
+  through, so levelling a scan is instant, lossless and undoable, and only a written file bakes
+  it.
+- **It was built for an AI agent to drive**, not adapted for one afterwards. An orthographic
+  render comes back with the mapping that turns any of its pixels into a world point; `probe`
+  re-establishes a past render's camera to answer exactly; `recommendedSource` says whether to
+  measure the points or the surface and why. 30 MCP tools, offline in the desktop build.
+- **Everything is measured.** A unit cube reads 6.000 m² and 1.000 m³. A volume comes out
+  **−0.11%** from arithmetic. A cylinder fit lands **0.0000°** off the axis. ICP recovers a
+  known offset to **0.000 mm**. Each of those is a driver asserting it, and each caught a real
+  bug the day it was written.
+
+For an honest account of what it does *not* do, see
+[docs/cloudcompare-gap-analysis.md](docs/cloudcompare-gap-analysis.md) — a capability audit
+against CloudCompare read from its source, 190 rows, kept current.
+
+## What it does
+
+<details open>
+<summary><strong>Import and export</strong></summary>
 
 | | |
 |---|---|
-| preview on screen | 2.3 s |
-| all 73,757,292 points loaded | 13.5 s |
-| GPU frame, 8M points drawn, whole site in view | 9.8 ms |
-| GPU frame, 8M points drawn, close up | 5.0 ms |
-| GPU frame, 16M drawn | 14 ms |
-| GPU frame, 32M drawn | 30 ms |
+| **E57** | Read and write. The writer keeps colour, intensity and normals with the original pose; an exported E57 re-parses bit-exact. |
+| **LAS / LAZ** | Reads 1.2–1.4, writes 1.2. LAZ is decompressed a chunk at a time by laz-rs compiled to WebAssembly, so a multi-gigabyte LAZ never enters wasm memory whole. COPC reads as ordinary LAZ. Classification becomes a scalar field. |
+| **PTX** | One cloud with each scan's own transform applied and each scan a station. |
+| **PLY** | Points or meshes, ASCII and both binary orders. |
+| **Text** | `.txt .xyz .pts .asc .csv .neu`, sniffed for delimiter and columns and confirmed in a dialog over the first rows. |
+| **Meshes** | PLY, OBJ and STL in and out. |
+| **Vector out** | Contours as DXF (LWPOLYLINE) or GeoJSON; height models as PNG with a world file. |
 
-iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M.
+</details>
 
-## Layers
+<details open>
+<summary><strong>Viewing and navigation</strong></summary>
 
-More than one cloud can be open at once, which is what registration, cloud-to-cloud distance
-and merging all need. Every visible layer is drawn into the same frame — they share the
-deferred format, so they depth-composite correctly and the eye-dome pass shades whatever ends
-up in front — and exactly one layer is **active**: every tool, every readout and every agent
-command works on that one, deliberately, because a tool that silently spanned several clouds
-would be impossible to reason about.
+- Seven colour modes: RGB, intensity, RGB × intensity, elevation ramp, normals, scalar field, flat.
+- **Eye-dome lighting** with a same-surface tolerance, so close-ups do not ring.
+- Adaptive point sizing with a max-pixel clamp, circular points, normal shading.
+- Tone controls, an intensity histogram with auto-ranged handles, height clipping.
+- Zoom toward the cursor, double-click to move the orbit centre, and a **fly mode**
+  (W A S D, Q E, drag to look) for walking inside a building.
+- **Panorama stations**: stand inside the scan's own 360° photo with the points blended over it.
+- Renders only when something changed; the full budget when idle, a fraction while interacting.
+- **Mobile**: a bottom-sheet panel, two-finger pan and pinch, and an azimuth chosen so the
+  cloud's long axis runs along the screen's long axis.
 
-- **Add file…** opens a scan alongside the ones already open, and so does dropping a file with
-  **Shift** held. *Open file…* still replaces everything, with the unsaved-work warning.
-- A layer added after the first is placed by the difference between its own global shift and
-  the first layer's — the only thing two separate files say about where they sit relative to
-  each other.
-- An eye toggles drawing without unloading; a click activates; a double-click renames; a tint
-  multiplies one layer's colour so two overlapping scans can be told apart.
-- **Clone** copies the active layer, **Merge into active** appends every other visible layer's
-  points through each of their transforms so the geometry is preserved. Scalar fields are
-  dropped on a merge, and it cannot be undone.
-- Undo knows which layer each step belongs to and switches back to it before undoing.
+</details>
 
-## Register
+<details open>
+<summary><strong>Regions and editing</strong></summary>
 
-Moves the **active** layer onto a reference and never touches the reference.
+- Regions are **box, sphere, slab or prism** — created by pointing at a thing and grown or
+  fitted to what they hold, rather than drawn. Any number, unioned.
+- A drawn outline becomes a **prism**: a real 3D region you can orbit around and adjust, not a
+  one-shot screen-space cut.
+- Crop **both ways** — keep what is inside, or remove it — with the preview dimming whichever
+  half is going and the confirmation counting both sides.
+- **Undo and redo** for every destructive step, with disk spill. **Save as** writes what is in
+  memory, crop and transform included, and never touches the original.
 
-- **Match centres** and **Match scales** are the coarse step. Both measure the two layers the
-  same way, from a uniform sample of their own points — comparing a loader percentile box
-  against a resampled one invents a scale error out of nothing, and a rigid fit cannot undo a
-  scale error. *Match scales* is for two clouds in different units; two copies of the same
-  cloud differ in bounding box as soon as one is rotated.
-- **Fine registration (ICP)** is point-to-plane, in Rust, in the analyser worker. Scan data is
-  surfaces, and a point is free to slide along the surface it belongs to; forbidding that —
-  which point-to-point ICP does — is what makes plain ICP crawl across a flat wall. Up to
-  200,000 points of the moving cloud per iteration, nearest reference point through the same
-  voxel grid the analyses use, pairs beyond a gate that tightens as the fit settles rejected,
-  and a 6×6 solve per iteration however many pairs there are. It reports per-iteration RMS,
-  final RMS and overlap, and applies as one undoable step labelled *"ICP: RMS 0.4 mm, 98%
-  overlap"*.
-- **Distance to reference** writes the distance from every point of the active layer to the
-  nearest reference point as a scalar field, so the colour ramp, the histogram and the value
-  filter all work on it. Signed against the reference's own normals is the M3C2-style version:
-  it says which side of the surface each point is on, so settlement and heave stop cancelling
-  into the same positive number.
+</details>
 
-Validated natively: a room moved by a known 2° and 0.15 m, with 2 mm of noise, comes back to
-**0.05 mm and 0.0000°**, and to **0.13 mm** with only 60% overlap. In the browser, two copies
-of the same room register to **0.000 mm** and their distance field reads **0.00 mm**.
+<details open>
+<summary><strong>Analysis and scalar fields</strong></summary>
 
-## Tools
+- **Normals**: computed over a neighbourhood, propagated breadth-first, and oriented toward the
+  scan's own station positions *per point* — the only orientation that is right for something
+  scanned from the inside.
+- **Fifteen geometric features** as scalar fields: roughness, curvature, planarity, linearity,
+  sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume and surface density,
+  neighbour count, and the three eigenvalues.
+- **Cleaning**: statistical outlier removal, a local-surface noise filter, duplicate removal,
+  spatial subsampling, connected components.
+- A field gets a ramp, a histogram, a display range and a value filter that can delete what
+  falls outside it in one undoable step.
 
-- **Crop** — a box, sphere or slab you drag around with a gizmo (arrows move it, handles
-  resize it), or place on the orbit centre and size with sliders — and the same for a sphere, a
-  slab or a drawn prism, any number of them unioned in the Sections list. It cuts either way:
-  **Keep inside** drops everything outside it, **Remove inside** drops what is inside it, and
-  the preview dims whichever half is going so what you see is what Apply will leave. The
-  confirmation counts both sides — *"roughly 6,050 points removed, 6,050 kept"*. The file on
-  disk is never touched; *Undo* puts the points back and *Reload* brings everything back.
-- **Formats in** — **E57**, **PLY**, **LAS**, **LAZ**, **PTX**, mesh **PLY/OBJ/STL** and plain text
-  (`.txt .xyz .pts .asc .csv .neu`). LAZ is decompressed a chunk at a time by laz-rs compiled
-  to WebAssembly, through the same ranged-read shim the E57 path uses, so a multi-gigabyte LAZ
-  never enters wasm memory whole; COPC files read as ordinary LAZ. A LAS or LAZ classification
-  becomes a scalar field named *Classification* — it rides in the record's spare byte, so it
-  survives the octree shuffle. Plain text is sniffed for its delimiter and columns and shown
-  as a mapping dialog over the first rows, with a guess that is right for a header row or the
-  PTS convention. A **PTX** becomes one cloud with each scan's own transform applied and each
-  scan a station.
-- **Export** — save what is in memory (the crop, if you applied one, optionally every Nth
-  point) as **E57**, **LAS 1.2**, **LAZ** or binary **PLY**. E57 keeps colour, intensity and normals
-  (`nor` extension) with the original pose, so coordinates stay georeferenced. Written by
-  the Rust E57 writer in a worker into private browser storage, then streamed to wherever
-  you choose. Verified round-trip: the exported E57 re-parses bit-exact.
-- **Measure** — distance between two clicked points, with the height difference. Single
-  click shows the surface coordinates (Easting / Northing / Z, plus local).
-- **Stations** — every panorama in the file is a marker; click one to stand in the 360°
-  photo with the points blended over it (slider). Walk away and it fades out. Photo and
-  points align.
-- **Cache** — after a decode you are asked whether to cache the decoded cells in the
-  browser's private storage. A cached scan reopens in about a second. Cached scans are
-  listed on the start screen, with a remove button, and reopen in one click in Chromium.
-- **Open another scan** — *Open…* in the top bar, in the Performance group, or **⌘O**. If the
-  loaded scan has unsaved work the viewer says what would be lost in plain words — *"1 edit ·
-  computed normals · a scalar field (Planarity) · a 5,832-triangle surface · a transform"* —
-  and offers *Cancel*, *Save as… first* or *Open anyway*. Drag-and-drop and the cached list
-  ask the same question. With nothing unsaved it opens straight away. One definition of
-  "unsaved" covers point edits, normals, fields, surfaces and transforms, and it is cleared
-  by a save, a reload or an open.
-- **Undo / redo / Save.** Every destructive edit is undoable (⌘Z / ⇧⌘Z). ⌘S opens *Save as…*,
-  which writes a copy of the points in memory; the on-device cache is updated only if the
-  scan was already cached, and history is cleared after a warning. Large undo steps spill
-  to the origin-private file system so a multi-million-point crop does not pin hundreds of
-  megabytes in RAM.
-- **Create a region** — press <b>S</b> (or *Create region*), then click a point on the cloud: a
-  small box or sphere appears centred exactly there, active with the gizmo already in Resize.
-  Make it the right size however suits: the handles, the size sliders, *Grow ×1.5* / *Shrink
-  ÷1.5*, **Alt** (Option) and the scroll wheel, or **Fit to contents**, which grows it until it
-  stops finding new points and then tightens onto the ones it holds — the "enlarge to the
-  object" gesture in one click. Each Create adds another; they union, and any row can be
-  flipped to *Remove*.
-- **Draw an outline** — <b>⇧S</b>, trace a shape over the view, then **Create region**.
-  The outline becomes a **prism**: extruded along the direction you drew it from, scaled to
-  metres at the orbit centre so it lands on the points you were looking at. From then on it is
-  a bounding shape like the box — drawn in 3D so you can orbit around it and see exactly what
-  it holds, moved and rotated with the gizmo, adjustable in depth, switchable between *Keep*
-  and *Remove*, unioned with the other regions, and cut only when you press Apply. The count
-  it holds does not change when the camera does, which is the entire point. Up to four drawn
-  regions of 24 sides can be active at once. *Keep inside now* and *Remove inside now* remain
-  for a one-shot screen-space cut: half a second over 18.4 million points, because each leaf's
-  quantisation is folded into the view-projection matrix and a leaf whose projected box misses
-  the shape is never read back.
-- **Analysis** — one neighbourhood search, reused five ways. *Compute normals* fits a plane
-  to each point's neighbours and *Orient* makes neighbours agree then turns them outward,
-  which matters because surface reconstruction is only as good as the normals feeding it.
-  When the file carries panorama stations, *Orient* turns each normal toward the nearest one:
-  a laser only ever saw a surface from the station that measured it, which is the opposite of
-  "away from the centroid" for anything scanned from the inside. Computed normals are
-  undoable like any other edit.
-  *Measure* writes a geometric feature into a scalar field: roughness, curvature, planarity,
-  linearity, sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume and
-  surface density, neighbour count, or any of the three eigenvalues. *Clean* removes
-  statistical outliers, off-surface noise or duplicates. *Components* labels groups of points
-  that touch, and *Thin* keeps one point per cube. Every removal is confirmed, counted and
-  undoable like a crop.
-- **Scalar fields** — one number per point, displayed through a colour ramp with a histogram,
-  an adjustable display range, and a value filter that can dim, hide or delete the points
-  outside it. A field survives cropping and undo, staying aligned with the points it belongs
-  to.
-- **Surface reconstruction** — builds a triangle mesh from the points and their normals.
-  Each point is a small piece of oriented plane, so a truncated signed distance field can be
-  splatted directly instead of solved for: the field averages every point that reaches a
-  voxel, which is what removes scanner noise, and surface nets turn it into triangles.
-  Taubin smoothing drops the remaining ripple without shrinking the shape. *Detail* is the
-  voxel size and defaults to the scan's own point spacing, because anything finer only
-  reconstructs noise; *Fill gaps* widens the band each point writes, closing small holes at
-  the cost of rounding sharp edges. The surface draws into the same pass as the points, so
-  it is occluded by them correctly and picks up the same eye-dome shading, and
-  *Points / Surface / Both* switches between them. Clouds with no normals fall back to a
-  density isosurface. Save as binary PLY (colour and normals) or OBJ. The points are never
-  modified.
-- **Transform** — move, rotate, scale, level or hand the cloud a 4x4 matrix. **Nothing is
-  baked**: the points stay quantised in their original leaf cubes and the matrix is applied
-  when they are drawn, tested, cropped, lassoed, analysed, meshed and exported. So a
-  transform is instant on 18 million points, loses no precision to requantisation, and
-  undoes with two matrices instead of a copy of the cloud. *Level* fits a plane to a uniform
-  sample by PCA and turns it horizontal about the bounding-box centre; the drag toggle hands
-  the whole cloud to the same gizmo the crop region uses (only one is ever attached). The
-  scan's own global shift sits beside it, separately editable, because that one affects
-  exported coordinates and the readout rather than anything on screen. *Save a copy* bakes
-  the matrix into the file, and the on-device cache stores it, so a cached transformed scan
-  reopens transformed.
-- **Agent modelling tools** — what an AI needs to build a model from a scan, which is not
-  more screenshots. `view` renders a preset with a **true orthographic projection**, so one
-  metre is the same number of pixels everywhere and the mapping it returns turns any pixel
-  into a world point exactly; `probe` turns pixels of that image back into world points by
-  re-establishing its camera, so the answer holds after the view has moved. `section` is a
-  floor plan or a wall elevation of one slab. `contour` gives the same slab as **polylines in
-  metres** rather than pixels — the thing you actually draw from. `fitplane` fits a plane by
-  PCA and reports the RMS that says whether to believe it. `heightmap` is a grey raster of the
-  highest surface per cell with its metre mapping. `distance` and `inside` answer lengths and
-  counts from the data. `state` reports bounds, spacing, normal coverage, the surface's hole
-  ratio, and **recommendedSource** — points or surface, and why. `surface export` writes the
-  mesh with the transform and the global shift baked in. Replies bigger than the relay's 1 MiB
-  document come back in numbered parts. See `public/llms.txt`.
-- **Fit** — a plane, sphere, cylinder or circle through whatever the active region holds, drawn
-  in the view and reported with its **RMS**, because the parameters alone never say whether to
-  believe them: a cylinder fitted to a flat wall has a radius and an axis. A cylinder's axis
-  comes from the normals, which is what makes it robust on a partial arc. **Detect shapes** is
-  RANSAC over the points, one shape at a time, removing each shape's inliers before looking for
-  the next — which is also the non-maximum suppression, since two fits of the same wall cannot
-  both be supported. Every point gets a *Shape* index as a scalar field, each row isolates its
-  own shape, and *Keep / Remove inliers* cuts through the usual undoable mask. Validated
-  natively against known primitives with a millimetre of noise: plane normal to **0.008°**,
-  sphere centre and radius to **0.01 mm**, cylinder axis to **0.0000°**, and three planted
-  planes plus a sphere recovered from a scene that is a fifth noise.
-- **Raster, contours and volume** — a height model over a regular grid (highest, lowest, mean,
-  point density, or the mean of a scalar field, along any axis), draped over the cloud as a
-  coloured surface so it can be judged rather than merely produced, and saved as a PNG with its
-  **world file** so a GIS puts it in the right place. Empty cells can be left alone, filled
-  from the nearest value or by inverse distance — capped in reach, because a hole in a car park
-  should not be filled from the far side of the site. **Contours** at an interval are traced by
-  marching squares with the crossing interpolated along each edge, drawn at their own heights,
-  and exported as **DXF** (LWPOLYLINE) or **GeoJSON** in the global frame. **Volume** is the
-  2.5D difference against another layer or a flat plane, with cut and fill reported separately
-  because their sum hides both: measured against a pyramid and a half-cylinder whose volumes
-  are arithmetic, **64.202 m³ against 64.274 m³ — 0.11%**.
-- **Meshes as layers** — a **PLY**, **OBJ** or **STL** with faces in it opens as a layer of
-  triangles rather than points: it appears in the Layers list with its triangle count, carries
-  its own transform so the move/rotate/level tools place it, and **every visible layer's
-  surface is drawn**, so a design model and a scan of what was built can be looked at
-  together. *Measure* gives surface area and volume through the layer's transform with the
-  boundary edge count beside them — a unit cube reads **6.000 m² and 1.000 m³** — and an open
-  mesh is called open rather than quietly returning a volume that is not one. *Sample points*
-  scatters area-weighted points over the triangles into a new point layer with normals and
-  colours, which is the bridge back to every cloud tool. *Distance* measures each point of a
-  cloud to the nearest **triangle** of a mesh layer as a scalar field — point-to-triangle, via
-  a uniform triangle grid, because on a coarse mesh the nearest vertex is most of a triangle
-  away: a shell of points 250 mm outside a sphere mesh reads **249.96 to 250.64 mm**. *Flip*
-  reverses the winding; *Smooth* is **Taubin** (**+0.12%** volume over ten passes, against
-  **−1.98%** for plain Laplacian); *Decimate* is **vertex clustering** with a quadric-optimal
-  representative per cell, which is linear and fast but takes a cell size rather than a
-  triangle target. Saves as PLY, OBJ or STL with the transform and the global shift baked in.
-- **Desktop app** — the same viewer as a **Tauri v2** application: 4.7 MB, works with no
-  network at all, and adds the three things a web page cannot have. Files open **by path**
-  (Finder drops, a File menu with Open Recent, `e57view scan.e57` from a shell), exports go
-  through **native Save dialogs**, and the **MCP server is built in** — `e57view --mcp` speaks
-  MCP on stdio with no Node and no install, from the same `mcp/tools.json` the web server
-  reads. Measured on a 3.23 GB, 73.8M-point E57: **17.1 s to open by path, 97 MB resident,
-  0.6 s to reopen from the on-device cache**. `npm run desktop:build`.
-- **On-device cache** — decoded cells written to private storage and reopened in a fraction of
-  the decode time (**0.6 s against 17.1 s** on that scan). An agent can write, list and drop
-  them, which is the cheapest thing it can do for its next session.
-- **Scripts** — *Run script…* in the Agent group, and a `script` command over the agent link,
-  take a JSON array of `{cmd, args}` steps and run them in order on the tab, with each step's
-  result available to the next as `$last`, or under a name it chose with `save`. `$layers` and
-  `$active` are refreshed before every step, dotted paths index in (`$last.area`,
-  `$layers.0.id`), and `stopOnError` decides whether a failure ends the run. The round trip is
-  the expensive part of driving a viewer and most steps are decided entirely by the previous
-  answer, so this is the difference between twenty waits and one.
-- **View link** — copies a URL that restores the camera and colour mode when the same file
-  is opened again.
+</details>
 
-## Mobile
+<details open>
+<summary><strong>Fitting and detection</strong></summary>
 
-The point budget starts at 1M on phones and 3M on tablets, because iOS Safari is memory
-limited and kills tabs that overreach. It is a knob, not a cap — raise it and press
-*Reload at this budget*.
+- Fit a **plane, sphere, cylinder or circle** to what a region holds — each reporting an
+  **RMS**, because a cylinder fitted to a flat wall has a radius and an axis and means nothing
+  without one. Validated: plane normal to 0.008°, sphere centre and radius to 0.01 mm, cylinder
+  axis to 0.0000°.
+- **RANSAC shape detection** over the whole cloud, one shape at a time, removing each shape's
+  inliers before looking for the next — which is also the non-maximum suppression. Every point
+  gets a *Shape* index as a field.
 
-- The control panel becomes a bottom sheet with a drag handle; swipe or tap to open.
-- One finger orbits, two fingers pan and pinch-zoom.
-- The camera azimuth is chosen so the cloud's long axis runs along the screen's long axis,
-  which is what makes a wide site usable in portrait.
-- Device pixel ratio is capped at 2. iPhone's native 3 triples fill cost for no visible gain
-  on a point cloud.
-- EDL needs a renderable float texture. The renderer probes `EXT_color_buffer_float`, falls
-  back to half float, and disables EDL rather than failing if neither is available.
-- iOS registers no MIME type for `.e57`, and an `accept` filter greys the file out in the
-  Files picker, so the filter is dropped on iOS.
+</details>
 
-### Tested how
+<details open>
+<summary><strong>Layers, registration and comparison</strong></summary>
 
-Desktop and Chrome device emulation for iPhone 15 Pro and iPad Pro 11, against the real
-3.23 GB file. **Not yet tested on physical iOS hardware**, so the WebKit-specific paths —
-the float-texture fallback, `FileReaderSync` on a multi-gigabyte file coming from iCloud
-Drive, and Safari's tab memory ceiling — are written defensively but unproven.
+- **More than one cloud open at once**, every visible one drawn, exactly one active. Clone,
+  merge, tint, rename, hide.
+- **Registration**: match centres, match scales, and point-to-plane **ICP** reporting
+  per-iteration RMS, overlap, pairs and the matrix.
+- **Cloud-to-cloud distance** as a scalar field, optionally signed along the reference's own
+  normals so settlement and heave stop cancelling.
 
-## Not built yet
+</details>
 
-No parallel decode. No multi-scan visibility toggles (the test file is one registered
-scan). No angle or area measurement.
+<details open>
+<summary><strong>Surfaces and meshes</strong></summary>
 
-## Removed
+- **Surface reconstruction** from oriented points, with a hole ratio so you can tell whether
+  the result is worth measuring.
+- Meshes are **layers**, every visible one drawn: **area and volume** through the layer's
+  transform with the boundary-edge count beside them, **area-weighted point sampling** into a
+  new layer, **cloud-to-mesh distance** as a field (point-to-triangle, not
+  point-to-nearest-vertex), **flip**, **Taubin smoothing**, and **decimation** by quadric
+  vertex clustering.
 
-Cloud upload and AI-assisted cleaning were built and then taken out of the product. The
-viewer is local-only again: a scan never leaves the machine that opened it, there are no
-provider keys and no server-side conversion. The agent interface stays, because it drives
-the tab the user already has open rather than moving any data. History is in
-`FINDINGS.md`.
+</details>
 
-## Deploy
+<details open>
+<summary><strong>Rasters, contours and volumes</strong></summary>
 
-```sh
-npm run build     # bundles the app and the MCP server into dist/
-firebase deploy --only hosting,functions,firestore:rules --project opensketch
+- **Height models** over a regular grid along any axis — highest, lowest, mean, density, or the
+  mean of a scalar field — draped over the cloud so they can be judged rather than merely
+  produced.
+- **Contours** by marching squares with the crossing interpolated along each edge, out as DXF
+  or GeoJSON in the global frame.
+- **2.5D volumes** against another layer or a flat plane, cut and fill reported separately
+  because their sum hides both.
+
+</details>
+
+<details open>
+<summary><strong>The agent interface</strong></summary>
+
+- **30 MCP tools** over a localhost bridge — state, calibrated views, sections, probe, contour,
+  fit, detect, regions, transform, register, distance, volume, mesh, cache, export, script.
+- **A calibrated modelling kit**, not screenshots: every orthographic render returns
+  `metresPerPixel` and a `topLeft`, and `probe` turns pixels of a past render back into world
+  points exactly.
+- **Scripts**: a list of `{cmd, args}` steps run in order with each step's result available to
+  the next, because the round trip is the expensive part.
+- A **hosted HTTP session** for driving a browser tab from anywhere — opt-in, bearer token,
+  read-only by default, revoked when the tab closes.
+- [`public/llms.txt`](public/llms.txt) documents the whole surface with worked examples.
+
+</details>
+
+<details open>
+<summary><strong>The desktop app</strong></summary>
+
+- **Tauri v2**, 4.7 MB, working with **no network at all**: no analytics, no web fonts, and the
+  Firestore client resolved away at build time rather than merely not called.
+- Files open **by path** — Finder drops, a File menu with Open Recent, `e57view scan.e57`.
+- **Native Save dialogs** for every export.
+- **MCP built in**: `e57view --mcp` speaks MCP on stdio with no Node and no install.
+- On a 3.23 GB, 73.8M-point E57: **17.1 s to open, 97 MB resident, 0.6 s to reopen from the
+  on-device cache**.
+
+</details>
+
+## Architecture
+
+```mermaid
+flowchart TB
+  subgraph shell["Desktop shell — Tauri v2 (optional)"]
+    direction LR
+    menu["Menus · Finder drops<br/>Native save dialogs"]
+    ranges["Byte ranges by path<br/>e57vfile://"]
+    bridge["Agent bridge<br/>127.0.0.1:7337"]
+    rmcp["e57view --mcp<br/>MCP over stdio"]
+  end
+
+  subgraph main["Browser main thread"]
+    ui["Panel · menus · modals<br/>main.ts"]
+    viewer["Viewer · entities · camera<br/>viewer.ts · entities.ts"]
+    cells["CellRenderer<br/>octree leaves on the GPU"]
+    meshv["MeshView<br/>one per layer"]
+    hist["History<br/>undo with OPFS spill"]
+  end
+
+  subgraph workers["Workers"]
+    w1["worker.ts<br/>E57 decode"]
+    w2["import-worker.ts<br/>PLY · LAS · LAZ · PTX · text"]
+    w3["analysis-worker.ts<br/>normals · features · ICP · distances"]
+    w4["mesh-worker.ts<br/>TSDF + surface nets"]
+    w5["io-worker.ts<br/>export · cache · panoramas"]
+  end
+
+  subgraph wasm["crates/e57-wasm → WebAssembly"]
+    core["core.rs · fast.rs<br/>columnar E57 decode"]
+    oct["octree.rs<br/>14-byte records, shuffled leaves"]
+    ana["analysis.rs<br/>grid · normals · ICP · features"]
+    shp["shapes.rs<br/>fits · RANSAC"]
+    mshd["mesh.rs · meshdist.rs<br/>surface nets · point-to-triangle"]
+    lazr["laz-rs<br/>LAZ in and out"]
+  end
+
+  subgraph gpu["Render pipeline"]
+    pass1["points + surfaces<br/>→ (colour, log depth)"]
+    edl["eye-dome pass"]
+    out["canvas"]
+  end
+
+  subgraph agents["Agents"]
+    nodemcp["mcp/server.mjs<br/>MCP over stdio (web build)"]
+    relay["Cloud Function /agent<br/>tokened HTTP session"]
+  end
+
+  tools[("mcp/tools.json<br/>30 tool definitions")]
+  opfs[("OPFS<br/>decoded-cell cache<br/>undo spill<br/>export scratch")]
+
+  file["A file on your disk"] -->|"ranged reads, never loaded whole"| w1 & w2
+  ranges --> w1 & w2
+  menu --> ui
+  ui --> viewer --> cells & meshv
+  w1 & w2 -->|leaves| cells
+  viewer --> w3 & w4 & w5
+  w1 & w2 & w3 & w4 & w5 --> wasm
+  w5 <--> opfs
+  hist <--> opfs
+  cells & meshv --> pass1 --> edl --> out
+  nodemcp -. reads .-> tools
+  rmcp -. embeds .-> tools
+  nodemcp <-->|"ws 127.0.0.1"| ui
+  rmcp <--> bridge <--> ui
+  relay <-->|"polled, tokened"| ui
+
+  classDef store fill:#12333a,stroke:#5ac6d2,color:#eaf2f2
+  class tools,opfs store
 ```
 
-The only Cloud Function is `agent`, the mailbox that lets an AI agent drive an open tab
-over HTTP. It stores nothing but the current command and its answer.
+Three things in that diagram are the whole design:
 
-## Run it
+1. **The file is never held.** Every decoder takes a `readRange(offset, length)` callback —
+   `FileReaderSync` over `File.slice()` in the browser, a ranged request to the shell in the
+   desktop app — so the same code reads a 3 GB file from either.
+2. **Points live on the GPU, quantised.** Fourteen bytes each, in leaf cubes, shuffled. Nothing
+   holds a second copy: analysis reads leaves back, undo spills to disk, transforms are a
+   matrix.
+3. **`mcp/tools.json` is the only description of the agent surface.** The Node server reads it;
+   the Rust server embeds it; a test asserts both serve exactly it. Two servers describing the
+   same tools in two languages would have drifted in a week.
+
+## Quick start
+
+### In a browser
+
+Go to [opensketch.web.app](https://opensketch.web.app) and drop a file on the page. Or run it
+yourself:
 
 ```sh
-npm install
-npm run dev          # http://127.0.0.1:5180
+npm ci
+npm run dev            # http://127.0.0.1:5180
 ```
 
-Rebuilding the WebAssembly needs the Rust toolchain and `wasm-bindgen` 0.2.128:
+Chrome or Edge give you the on-device cache and the file picker that remembers where a file
+came from; Firefox and Safari work without those.
+
+### As a desktop app
+
+```sh
+npm ci
+npm run desktop:build      # → desktop/target/release/bundle/
+```
+
+You need [Rust](https://rustup.rs) and, on Linux, `libwebkit2gtk-4.1-dev` and `libgtk-3-dev`.
+CI builds macOS, Windows and Linux on every push.
+
+> **Unsigned builds.** Releases are not code-signed yet. macOS will refuse the first open —
+> right-click the app and choose *Open*, or run
+> `xattr -dr com.apple.quarantine /Applications/e57view.app`. Windows SmartScreen will warn
+> once. [`.github/workflows/build.yml`](.github/workflows/build.yml) documents exactly which
+> secrets to add to sign and notarise.
+
+### Driving it from an agent
+
+**Claude Code, Cursor, or anything else that speaks MCP — desktop app** (no Node, no network):
+
+```sh
+claude mcp add e57view -- "/Applications/e57view.app/Contents/MacOS/e57view" --mcp
+```
+
+**Claude Desktop**, in `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "e57view": {
+    "command": "/Applications/e57view.app/Contents/MacOS/e57view",
+    "args": ["--mcp"] } } }
+```
+
+**Browser build** — one file, Node 20, nothing else:
+
+```sh
+curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
+claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"
+```
+
+then open the viewer and tick **Local MCP** in the Agent panel.
+
+**Over HTTP, no MCP** — press *Copy agent URL* in the Agent panel and POST to the endpoint it
+gives you. Read-only until you tick *Allow edits*; the token is shown once and the session dies
+with the tab. See [`public/llms.txt`](public/llms.txt).
+
+## Development
+
+```sh
+npm ci
+npm ci --prefix mcp                                   # only for the Node MCP server
+npm run dev                                           # the viewer
+
+npx tsc --noEmit -p tsconfig.json                     # types
+npm run build                                         # the web bundle
+npm run test:mcp                                      # both MCP servers against mcp/tools.json
+cargo run --release --bin anatest \
+  --manifest-path crates/e57-wasm/Cargo.toml          # native geometry checks
+```
+
+Rebuilding the WebAssembly, only if you change the Rust:
 
 ```sh
 rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.128      # must equal the crate version exactly
 npm run wasm
 ```
 
-`drive.mjs` opens the app in Chrome, loads a file and captures the screenshots in `shots/`.
+The browser drivers need the built app being served:
+
+```sh
+npm run build && npx vite preview --port 5180 &
+node drive-fit.mjs        # and the other thirty drive-*.mjs
+```
+
+A few drivers need a real multi-gigabyte scan, which cannot live in this repository. They read
+`E57VIEW_TEST_FILE` and skip with an explanation when it is not set.
+
+| | |
+|---|---|
+| `src/` | the viewer: renderer, workers, UI, agent link |
+| `shared/` | code the main thread and the workers both use |
+| `crates/e57-wasm/` | Rust: decoding, the octree, analysis, shapes, meshing |
+| `desktop/` | the Tauri shell, the agent bridge, the Rust MCP server |
+| `mcp/` | `tools.json` and the Node MCP server |
+| `functions/` | the Cloud Function behind the hosted agent session |
+| `drive-*.mjs` | the drivers |
+| `docs/` | the gap analysis |
+| [`FINDINGS.md`](FINDINGS.md) | **the engineering log** — what was hard, what was wrong, and the numbers |
+
+`FINDINGS.md` is the most useful file here if you are going to change anything. It is not a
+changelog; it is what was tried, what broke, and what the measurements said.
+
+## Deploying the hosted build
+
+This repository's own instance lives at `opensketch.web.app` — *opensketch* is the Firebase
+project the maintainer deploys to, and nothing more. To run your own:
+
+```sh
+firebase use --add                    # your project
+# put your own config in src/firebase-config.ts (it is public web config, not a secret)
+npm run build
+firebase deploy --only hosting,functions:agent,firestore:rules
+```
+
+The only Cloud Function is `agent`, the mailbox that lets an agent drive an open tab. **If you
+do not want it, delete it** — the viewer, the local MCP bridge and the desktop app all work
+without any Firebase at all, and the desktop build does not even contain the client.
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the build, the test conventions and the one rule that
+matters: **every feature ships with a driver that measures something with a known answer.**
+
+- [Code of Conduct](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1
+- [Security](SECURITY.md) — how to report, and the agent endpoint's threat model
+- [Changelog](CHANGELOG.md)
+- [Third-party licences](THIRD_PARTY.md) — generated, and it fails the build on an
+  incompatible one
+
+## Roadmap
+
+From the [gap analysis](docs/cloudcompare-gap-analysis.md), in the order they would change most:
+
+1. **A project file.** Several layers, their transforms, regions and the camera, saved
+   together. Almost everything about polylines, labels and reusable sessions waits behind this.
+2. **Headless batch.** `e57view --load x.e57 --sor --save y.las` with no display. `script`
+   batches work in a live window; there is no way to run without one.
+3. **Many scalar fields at once**, with a manager, arithmetic between them and conversion to
+   and from colour.
+4. **More of the format tail**: GeoTIFF rasters, SHP, mesh formats beyond PLY/OBJ/STL, LAS
+   full waveform.
+5. **Screened Poisson reconstruction** alongside the current TSDF, which fills gaps more
+   aggressively.
+6. **Signed release builds** for macOS and Windows.
+
+## Licence
+
+**GPL-3.0-only.** See [LICENSE](LICENSE). Every dependency is compatible; see
+[THIRD_PARTY.md](THIRD_PARTY.md), which is generated from the lock files and refuses to
+finish if it meets a licence that is not.

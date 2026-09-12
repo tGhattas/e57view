@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // The native menu bar. Every item is a message to the page — the viewer already knows how to
 // open a file, undo an edit and frame the cloud, and duplicating any of that in Rust would be
 // two implementations of one behaviour. The menu's whole job is to say which one happened.

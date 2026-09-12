@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 pub mod fast;
 pub mod octree;
 pub mod core;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // What you can do to a triangle mesh once it is in memory.
 //
 // All of it runs on the main thread. A reconstructed surface or an imported model is tens to

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // The desktop shell, seen from the page.
 //
 // Loaded only when the build flag and the Tauri global both say so, so the web bundle never

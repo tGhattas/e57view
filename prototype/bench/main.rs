@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 use e57::*;
 use std::time::Instant;
 fn main(){

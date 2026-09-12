@@ -1,0 +1,112 @@
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+# Third-party licences
+
+e57view is **GPL-3.0-only**. Everything it depends on can be combined into a GPL-3.0 work.
+This file is generated — `node tools/third-party.mjs` — from the lock files in the tree, so
+it is what is actually installed rather than what somebody remembered to write down. The
+generator stops with an error if it meets a licence that is not on its compatible list, which
+makes an awkward new dependency a build failure instead of a discovery years later.
+
+A note on the one that matters: **Apache-2.0 is compatible with GPLv3 in one direction only.**
+GPLv3 code may incorporate Apache-2.0 code; the reverse is not true. Since this project is
+GPLv3, the direction is the right one. (It would *not* be compatible with GPLv2, which is why
+the licence here is GPL-3.0-**only**.)
+
+MPL-2.0 dependencies are compatible through MPL's own secondary-licence clause. Dual-licensed
+packages — `Apache-2.0 OR MIT` and friends — are used under whichever option suits.
+
+## npm — the viewer and its build
+
+| Licence | Packages | Names |
+|---|---:|---|
+| `Apache-2.0` | 52 | @firebase/ai, @firebase/analytics-compat, @firebase/analytics-types, @firebase/analytics, @firebase/app-check-compat, @firebase/app-check-interop-types, @firebase/app-check-types, @firebase/app-check, @firebase/app-compat, @firebase/app-types, @firebase/app, @firebase/auth-compat, @firebase/auth-interop-types, @firebase/auth-types … and 38 more |
+| `MIT` | 18 | @types/node, ansi-regex, ansi-styles, color-convert, color-name, emoji-regex, escalade, http-parser-js, is-fullwidth-code-point, lodash.camelcase, require-directory, safe-buffer, string-width, strip-ansi … and 4 more |
+| `BSD-3-Clause` | 10 | @protobufjs/aspromise, @protobufjs/base64, @protobufjs/codegen, @protobufjs/eventemitter, @protobufjs/fetch, @protobufjs/float, @protobufjs/path, @protobufjs/pool, @protobufjs/utf8, protobufjs |
+| `ISC` | 5 | cliui, get-caller-file, idb, y18n, yargs-parser |
+| `0BSD` | 1 | tslib |
+
+## npm — the build and test tooling (not shipped)
+
+| Licence | Packages | Names |
+|---|---:|---|
+| `Apache-2.0` | 55 | @firebase/ai, @firebase/analytics-compat, @firebase/analytics-types, @firebase/analytics, @firebase/app-check-compat, @firebase/app-check-interop-types, @firebase/app-check-types, @firebase/app-check, @firebase/app-compat, @firebase/app-types, @firebase/app, @firebase/auth-compat, @firebase/auth-interop-types, @firebase/auth-types … and 41 more |
+| `MIT` | 35 | @esbuild/darwin-arm64, @rollup/rollup-darwin-arm64, @tweenjs/tween.js, @types/estree, @types/node, @types/stats.js, @types/three, @types/webxr, ansi-regex, ansi-styles, color-convert, color-name, emoji-regex, esbuild … and 21 more |
+| `BSD-3-Clause` | 12 | @protobufjs/aspromise, @protobufjs/base64, @protobufjs/codegen, @protobufjs/eventemitter, @protobufjs/fetch, @protobufjs/float, @protobufjs/path, @protobufjs/pool, @protobufjs/utf8, @webgpu/types, protobufjs, source-map-js |
+| `ISC` | 6 | cliui, get-caller-file, idb, picocolors, y18n, yargs-parser |
+| `Apache-2.0 OR MIT` | 3 | @tauri-apps/api, @tauri-apps/cli-darwin-arm64, @tauri-apps/cli |
+| `0BSD` | 1 | tslib |
+
+## npm — the Node MCP server
+
+| Licence | Packages | Names |
+|---|---:|---|
+| `MIT` | 83 | @hono/node-server, @modelcontextprotocol/sdk, accepts, ajv-formats, ajv, body-parser, bytes, call-bind-apply-helpers, call-bound, content-disposition, content-type, content-type, cookie-signature, cookie … and 69 more |
+| `ISC` | 7 | inherits, isexe, once, setprototypeof, which, wrappy, zod-to-json-schema |
+| `BSD-3-Clause` | 2 | fast-uri, qs |
+| `BSD-2-Clause` | 1 | json-schema-typed |
+
+## npm — the cloud agent relay (web build only)
+
+| Licence | Packages | Names |
+|---|---:|---|
+| `MIT` | 178 | @fastify/busboy, @js-sdsl/ordered-map, @nodable/entities, @tootallnate/once, @types/body-parser, @types/caseless, @types/connect, @types/cors, @types/express-serve-static-core, @types/express, @types/http-errors, @types/jsonwebtoken, @types/long, @types/mime … and 164 more |
+| `Apache-2.0` | 35 | @firebase/app-check-interop-types, @firebase/app-types, @firebase/auth-interop-types, @firebase/component, @firebase/database-compat, @firebase/database-types, @firebase/database, @firebase/logger, @firebase/util, @google-cloud/firestore, @google-cloud/paginator, @google-cloud/projectify, @google-cloud/promisify, @google-cloud/storage … and 21 more |
+| `BSD-3-Clause` | 13 | @protobufjs/aspromise, @protobufjs/base64, @protobufjs/codegen, @protobufjs/eventemitter, @protobufjs/fetch, @protobufjs/float, @protobufjs/path, @protobufjs/pool, @protobufjs/utf8, buffer-equal-constant-time, protobufjs, qs, qs |
+| `ISC` | 11 | cliui, get-caller-file, inherits, lru-cache, once, semver, setprototypeof, wrappy, y18n, yallist, yargs-parser |
+| `0BSD` | 1 | tslib |
+| `BSD-2-Clause` | 1 | webidl-conversions |
+
+## Cargo — crates/e57-wasm — the decoder, octree and analysis, compiled to WebAssembly
+
+| Licence | Packages | Names |
+|---|---:|---|
+| `Apache-2.0 OR MIT` | 20 | autocfg, bumpalo, cfg-if, console_error_panic_hook, futures-core, futures-task, futures-util, js-sys, num-traits, once_cell, pin-project-lite, proc-macro2, quote, roxmltree … and 6 more |
+| `MIT` | 2 | e57, slab |
+| `MIT OR Unlicense` | 2 | byteorder, memchr |
+| `(Apache-2.0 OR MIT) AND Unicode-3.0` | 1 | unicode-ident |
+| `Apache-2.0` | 1 | laz |
+| `GPL-3.0` | 1 | e57-wasm |
+
+## Cargo — desktop — the Tauri shell, the agent bridge and the Rust MCP server
+
+| Licence | Packages | Names |
+|---|---:|---|
+| `Apache-2.0 OR MIT` | 229 | android_system_properties, anyhow, atomic-waker, autocfg, base64, bit-set, bit-vec, bitflags, block-buffer, bs58, bumpalo, camino, cargo-platform, cargo_toml … and 215 more |
+| `MIT` | 100 | atk, atk-sys, block2, bytes, cairo-rs, cairo-sys-rs, cargo_metadata, cfb, combine, darling, darling_core, darling_macro, data-encoding, derive_more … and 86 more |
+| `Apache-2.0 OR MIT OR Zlib` | 20 | bytemuck, dispatch2, miniz_oxide, objc2-app-kit, objc2-cloud-kit, objc2-core-data, objc2-core-foundation, objc2-core-graphics, objc2-core-image, objc2-core-location, objc2-core-text, objc2-exception-helper, objc2-io-surface, objc2-quartz-core … and 6 more |
+| `Unicode-3.0` | 18 | icu_collections, icu_locale_core, icu_normalizer, icu_normalizer_data, icu_properties, icu_properties_data, icu_provider, litemap, potential_utf, tinystr, writeable, yoke, yoke-derive, zerofrom … and 4 more |
+| `MIT OR Unlicense` | 11 | aho-corasick, byteorder, jiff, jiff-core, jiff-static, jiff-tzdb, jiff-tzdb-platform, memchr, same-file, walkdir, winapi-util |
+| `MPL-2.0` | 5 | cssparser, cssparser-macros, dtoa-short, option-ext, selectors |
+| `Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT` | 3 | wasi, wasip2, wit-bindgen |
+| `Apache-2.0` | 2 | sync_wrapper, tao |
+| `Apache-2.0 OR BSD-2-Clause OR MIT` | 2 | zerocopy, zerocopy-derive |
+| `Apache-2.0 OR BSD-3-Clause OR MIT` | 2 | num_enum, num_enum_derive |
+| `BSD-3-Clause` | 2 | alloc-no-stdlib, alloc-stdlib |
+| `Zlib` | 2 | foldhash, zlib-rs |
+| `(Apache-2.0 OR MIT) AND Unicode-3.0` | 1 | unicode-ident |
+| `0BSD OR Apache-2.0 OR MIT` | 1 | adler2 |
+| `Apache-2.0 AND MIT` | 1 | dpi |
+| `Apache-2.0 OR CC0-1.0 OR MIT-0` | 1 | dunce |
+| `Apache-2.0 OR LGPL-2.1-or-later OR MIT` | 1 | r-efi |
+| `Apache-2.0 WITH LLVM-exception` | 1 | target-lexicon |
+| `BSD-3-Clause AND MIT` | 1 | brotli |
+| `BSD-3-Clause OR MIT` | 1 | brotli-decompressor |
+| `GPL-3.0` | 1 | e57view |
+| `ISC` | 1 | libloading |
+
+## Things that are not dependencies but are worth naming
+
+| What | Where | Licence |
+|---|---|---|
+| **IBM Plex Sans / Mono** | Google Fonts, web build only; the desktop build uses the system font stack and loads nothing | SIL Open Font License 1.1 |
+| **WebKitGTK / WKWebView / WebView2** | the system webview the desktop app renders in, linked dynamically, never redistributed | LGPL-2.1 / Apple / Microsoft, per platform |
+| **The GPL-3.0 text in `LICENSE`** | verbatim from gnu.org | copyright FSF, verbatim copying permitted |
+
+## How to check this yourself
+
+    npm ci && npm ci --prefix mcp && npm ci --prefix functions
+    node tools/third-party.mjs        # regenerates this file, fails on an incompatible licence
+
+    cargo install cargo-license
+    cd crates/e57-wasm && cargo license
+    cd desktop && cargo license

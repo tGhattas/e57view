@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Surface reconstruction on the real NavVis scan, at a few levels of detail.
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
-const FILE = process.env.FILE || '/Users/tamer/Downloads/1973-registered.e57';
+import { requireTestFile } from './shared/testfile.mjs';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
 const URL_ = process.env.URL || 'http://127.0.0.1:5180/';
 mkdirSync('shots', { recursive: true });
 const b = await chromium.launch({ channel: 'chrome', headless: false, args: ['--ignore-gpu-blocklist', '--enable-gpu'] });

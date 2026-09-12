@@ -1,6 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Crop gizmo: drag the arrows to move, drag the handles to resize.
 import { chromium } from 'playwright';
-const FILE = '/Users/tamer/Downloads/1973-registered.e57';
+import { requireTestFile } from './shared/testfile.mjs';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
 const b = await chromium.launch({ channel: 'chrome', headless: false });
 const p = await b.newPage({ viewport: { width: 1500, height: 940 } });
 p.on('pageerror', e => console.log('PAGEERROR', String(e).slice(0, 300)));

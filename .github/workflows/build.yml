@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 # Builds the web bundle and the desktop app for macOS, Windows and Linux.
 #
 # Nothing here is signed. An unsigned build is honest about what it is — it will warn on first
@@ -34,6 +35,31 @@ jobs:
         with:
           name: web-dist
           path: dist/
+
+  hygiene:
+    name: licence and docs hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - name: every source file carries an SPDX header
+        run: node tools/spdx.mjs --check
+      - name: no hard-coded home paths in the drivers
+        run: node tools/scrub-paths.mjs --check
+      - name: internal links resolve and the mermaid diagrams render
+        run: npx playwright install --with-deps chromium && node tools/check-markdown.mjs
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: 0
+      - name: every dependency licence can be combined with GPL-3.0
+        run: |
+          npm ci --prefix mcp
+          npm ci --prefix functions
+          cargo install cargo-license --locked
+          node tools/third-party.mjs
+      - name: THIRD_PARTY.md is up to date
+        run: git diff --exit-code THIRD_PARTY.md
 
   native:
     name: native checks (Rust)

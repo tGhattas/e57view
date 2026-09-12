@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Potree-style EDL. Operates on log2(view depth) stored in alpha, which makes
 // the response a ratio of distances, so one strength works at any scene scale.
 export const EDL_FS = /* glsl */`

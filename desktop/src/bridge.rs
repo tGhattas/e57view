@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // The localhost bridge the viewer and the agents both connect to.
 //
 // In the web build this socket is the Node MCP server itself: one process that is both the

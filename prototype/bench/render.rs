@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 use e57::*;
 
 const W: usize = 1000;

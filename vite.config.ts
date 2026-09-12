@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import { defineConfig, type Plugin } from 'vite';
 
 /** The desktop build must not reach the network at all.

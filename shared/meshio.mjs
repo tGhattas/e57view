@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Reading and writing triangle meshes: PLY, OBJ, STL.
 //
 // Separate from importers.mjs because a mesh is not a cloud: the cloud importers stream

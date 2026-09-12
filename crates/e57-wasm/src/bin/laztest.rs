@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // LAZ compression round trip and decode rate, against a file the crate writes itself.
 // No laszip or pdal on this machine, so the fixture is generated rather than borrowed —
 // which also means the expected bytes are known exactly rather than trusted.

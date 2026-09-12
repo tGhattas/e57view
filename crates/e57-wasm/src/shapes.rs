@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Fitting primitives to points, and finding them without being told where to look.
 //
 // Every fit here answers with an RMS as well as its parameters, because the parameters alone

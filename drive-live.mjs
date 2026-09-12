@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import { chromium, devices } from 'playwright';
-const FILE = '/Users/tamer/Downloads/1973-registered.e57';
+import { requireTestFile } from './shared/testfile.mjs';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
 const URL = 'https://opensketch.web.app/';
 const b = await chromium.launch({ channel: 'chrome', headless: false, args: ['--ignore-gpu-blocklist','--enable-gpu'] });
 

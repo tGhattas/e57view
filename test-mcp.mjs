@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // The two MCP servers — the Node one for the web build, the Rust one inside the desktop app —
 // must offer exactly the tools in mcp/tools.json, and nothing else. This drives each over
 // stdio the way an agent does (initialize, notifications/initialized, tools/list, ping) and

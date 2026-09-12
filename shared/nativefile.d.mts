@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 export declare const NATIVE: string;
 export interface NativeDescriptor {
   id: number; name: string; path: string; size: number; lastModified: number; url: string;

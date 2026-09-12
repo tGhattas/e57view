@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Rasters, contours and volumes, against terrain whose volume is known by arithmetic.
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';

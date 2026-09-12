@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 fn main() {
     // `tauri::generate_context!()` bakes the built front-end into the binary at macro
     // expansion time, and cargo has no idea that happened — so a rebuilt `dist-desktop` with

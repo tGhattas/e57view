@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Agent sessions: a small Firestore mailbox between one viewer tab and the /agent
 // function, so an AI agent can drive this tab from anywhere without local setup.
 // The id names the mailbox; the bearer token is the credential and never enters a URL.

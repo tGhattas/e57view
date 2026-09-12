@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+// SPDX-License-Identifier: GPL-3.0-only
 import init, { E57Handle, set_window_size } from './wasm/e57_wasm.js';
 import wasmUrl from './wasm/e57_wasm_bg.wasm?url';
 import { isNative, nativeReadRange } from '../shared/nativefile.mjs';

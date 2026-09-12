@@ -1,10 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // End-to-end: load → measure → crop → export (PLY + E57) → cache → reload from cache → panorama.
 import { chromium } from 'playwright';
 import { statSync, readFileSync, mkdirSync } from 'node:fs';
+import { requireTestFile } from './shared/testfile.mjs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-const FILE = '/Users/tamer/Downloads/1973-registered.e57';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
 const URL = process.env.URL || 'http://127.0.0.1:5180/';
-const OUT = '/private/tmp/claude-501/-Users-tamer-Developer-playground/d6f1a1ba-ecc2-4157-a520-9812531d0480/scratchpad/exports';
+const OUT = join(tmpdir(), 'e57view-out');
 mkdirSync(OUT, { recursive: true });
 
 const b = await chromium.launch({ channel: 'chrome', headless: false, args: ['--ignore-gpu-blocklist', '--enable-gpu'] });

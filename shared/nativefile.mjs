@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // A file on disk, made to look like a `File` to code that never wanted one.
 //
 // Every decoder in this project is written against `readRange(offset, length) -> Uint8Array`

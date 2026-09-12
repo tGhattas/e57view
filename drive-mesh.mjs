@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Surface reconstruction in the browser, against a shape whose true surface is known.
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync, statSync } from 'node:fs';

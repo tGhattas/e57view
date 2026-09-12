@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Neighbourhood analysis: everything that needs to know what surrounds a point.
 //
 // Normals, geometric features, outlier removal, duplicate detection and connected

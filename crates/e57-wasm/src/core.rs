@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Decode a scan into an octree. Shared by the wasm API and the native bench.
 
 use crate::fast::FastReader;

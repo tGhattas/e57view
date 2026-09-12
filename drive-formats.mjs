@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // LAZ, plain text and PTX: the formats a surveyor actually gets handed.
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';

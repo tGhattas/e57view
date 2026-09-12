@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Native check + benchmark: validates the fast reader against the `e57` crate
 //! on a prefix, then times a full decode + octree build.
 use e57_wasm::{core, fast::FastReader, octree::Octree};

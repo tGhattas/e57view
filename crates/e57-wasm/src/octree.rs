@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Leaf-only octree for out-of-order point binning.
 //!
 //! Every point lands in a leaf as a 14-byte record with positions quantised to

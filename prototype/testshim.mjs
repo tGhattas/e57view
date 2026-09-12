@@ -1,9 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import { openSync, readSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { requireTestFile } from '../shared/testfile.mjs';
 const require = createRequire(import.meta.url);
 const { E57Handle } = require('./shimpkg/shim.js');
 
-const PATH = '/Users/tamer/Downloads/1973-registered.e57';
+const PATH = requireTestFile();
+if (!PATH) process.exit(0);
 const fd = openSync(PATH, 'r');
 const size = statSync(PATH).size;
 

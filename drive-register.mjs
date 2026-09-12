@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Registration: put one cloud on top of another and then measure what is left between them.
 import { chromium } from 'playwright';
 import { tmpdir } from 'node:os';

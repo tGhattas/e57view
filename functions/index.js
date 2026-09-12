@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // e57view Cloud Functions.
 //   agent — a mailbox so an AI agent can drive a viewer tab over HTTP. The tab holds the
 //           data and does the work; this only relays commands and answers.

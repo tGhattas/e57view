@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Fitting primitives to what a region holds, and finding shapes without being told where.
 import { chromium } from 'playwright';
 import { writeFileSync, mkdirSync } from 'node:fs';

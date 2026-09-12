@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Distance from points to a triangle mesh.
 //
 // Point-to-triangle, not point-to-nearest-vertex: a coarse mesh's vertices can be a long way

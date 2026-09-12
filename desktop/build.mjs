@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // `npm run desktop:build`.
 //
 // Wraps `tauri build` for one reason: on macOS the DMG step ends with `hdiutil

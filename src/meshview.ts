@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Triangle renderer for reconstructed surfaces.
 //
 // It draws into the same render target as the points and writes the same

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // e57view, as a desktop application.
 //
 // The whole viewer is the same code the web build runs — the same Rust decoder compiled to

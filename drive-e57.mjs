@@ -1,7 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import { chromium } from 'playwright';
 import { statSync, mkdirSync } from 'node:fs';
-const FILE = '/Users/tamer/Downloads/1973-registered.e57';
-const OUT = '/private/tmp/claude-501/-Users-tamer-Developer-playground/d6f1a1ba-ecc2-4157-a520-9812531d0480/scratchpad/exports';
+import { requireTestFile } from './shared/testfile.mjs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const FILE = requireTestFile();
+if (!FILE) process.exit(0);
+const OUT = join(tmpdir(), 'e57view-out');
 mkdirSync(OUT, { recursive: true });
 const b = await chromium.launch({ channel: 'chrome', headless: false });
 const ctx = await b.newContext({ viewport: { width: 1500, height: 940 }, acceptDownloads: true });

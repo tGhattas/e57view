@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 import './style.css';
 import * as THREE from 'three';
 import { Viewer, isTouch, isIOS, type Knobs, type Station, type GizmoMode } from './viewer';

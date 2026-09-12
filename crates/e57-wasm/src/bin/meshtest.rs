@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Native validation of the surface reconstruction: mesh shapes whose true surface is known,
 // then check the geometry rather than eyeballing a render.
 use e57_wasm::mesh::Mesher;

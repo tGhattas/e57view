@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Fast columnar reader for E57 CompressedVector sections.
 //!
 //! The `e57` crate's readers validate a CRC on every 1 KB page, pull each value

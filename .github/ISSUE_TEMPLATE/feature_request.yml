@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
 name: Feature request
 description: Something it should be able to do
 labels: [enhancement]

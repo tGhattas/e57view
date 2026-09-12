@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // A drawn outline is a 3D region, not a one-shot cut. The property that matters: once created,
 // what it holds does not depend on where the camera is.
 import { chromium } from 'playwright';

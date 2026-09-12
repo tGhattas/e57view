@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Files by path, which is the thing a native shell can do that a web page cannot.
 //
 // The decoders were always written against a `readRange(offset, length) -> Uint8Array`

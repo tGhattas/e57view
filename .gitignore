@@ -1,24 +1,40 @@
+# build output
 target/
-node_modules/
-pkg/
-*.wasm
 dist/
+dist-desktop/
+pkg/
+desktop/gen/
+desktop/target/
 .firebase/
+
+# dependencies
+node_modules/
 functions/node_modules/
-functions/.env
 mcp/node_modules/
 
-# built WebAssembly that the app and the Cloud Function ship (rebuild: see README)
+# secrets: never commit an env file, but do commit the example
+.env
+.env.*
+*.env
+!*.env.example
+
+# WebAssembly, except the built artefacts the app and the Cloud Function ship
+# (rebuild them with `npm run wasm` — see CONTRIBUTING.md)
+*.wasm
 !src/wasm/*.wasm
 !functions/wasm/*.wasm
-# test output
+
+# built by `npm run build:mcp`
+public/mcp.mjs
+
+# whatever the drivers write. Scan data must never end up in this repository.
 shots/
 renders/
 output/
 tmp/
-.DS_Store
+*.e57
+*.las
+*.laz
+*.ptx
 
-# built by npm run build:mcp
-public/mcp.mjs
-dist-desktop/
-desktop/gen/
+.DS_Store

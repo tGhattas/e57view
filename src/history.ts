@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Undo / redo of in-memory edits: crop, clean, computed normals, cloud transform.
 //
 // A point-dropping step keeps the dropped 14-byte records plus a bit-mask of original

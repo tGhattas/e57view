@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // What an agent needs to model from a scan, driven the way an agent drives it: over HTTP,
 // through the session mailbox, against the deployed viewer. Every check asks whether a number
 // an agent would rely on is actually right, not whether a command returned something.

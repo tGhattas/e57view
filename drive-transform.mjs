@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Cloud transforms. The points are never rewritten — the cloud carries a 4x4 matrix that
 // the shader, the region tests, the lasso, the analyser and the exporters all apply — so
 // every check here is really asking "does this consumer read the matrix?".

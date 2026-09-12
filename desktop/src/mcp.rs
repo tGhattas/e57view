@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // `e57view --mcp`: an MCP server on stdin and stdout, with no Node anywhere.
 //
 // It is deliberately not a second implementation of the tools. Every name, description,

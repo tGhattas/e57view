@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // Agent session security + behaviour, against a real viewer tab.
 import { chromium } from 'playwright';
 import { writeFileSync } from 'node:fs';

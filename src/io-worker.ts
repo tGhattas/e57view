@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+// SPDX-License-Identifier: GPL-3.0-only
 // IO worker: everything that needs synchronous file access off the main thread.
 //  - export  : PLY / LAS written in JS, E57 via the Rust writer, into an OPFS scratch file
 //  - cache   : write the in-memory cells to OPFS, list / read / delete cached scans
