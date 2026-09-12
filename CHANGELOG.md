@@ -129,8 +129,8 @@ been released yet, so everything is unreleased.
   exports go through **native Save dialogs**.
 - **MCP built in**: `e57view --mcp` speaks MCP on stdio with no Node and no install, from the
   same `mcp/tools.json` the web server reads, so the two cannot drift.
-- On a 3.23 GB, 73.8M-point E57: **17.1 s to open by path, 97 MB resident, 1.1 s to cache,
-  0.6 s to reopen from that cache**.
+- On a 3.23 GB, 73.8M-point E57: **13.0 s to open by path, 82 MB resident, 1.1 s to cache,
+  0.7 s to reopen from that cache**.
 
 ### Removed
 

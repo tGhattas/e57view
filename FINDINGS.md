@@ -1263,12 +1263,16 @@ will actually use is the right one to test through. Against `1973-registered.e57
 
 | | |
 |---|---|
-| open by path, 73,757,292 points | **17.1 s** (Chrome, same file: 13.5 s) |
-| resident memory, whole scan loaded | **97 MB** (the 1,033 MB of records live in GPU buffers) |
+| open by path, 73,757,292 points | **13.0 s** (Chrome, same file: 13.5 s) |
+| resident memory, whole scan loaded | **82 MB** (the 1,033 MB of records live in GPU buffers) |
 | cache the decoded cells to OPFS | **1.1 s** |
-| reopen from that cache | **0.6 s — 27.9x faster than decoding** |
+| reopen from that cache | **0.7 s — 19.6x faster than decoding** |
 | export 1-in-40 as LAS to a chosen path | 48.0 MB in 1.0 s, byte-exact |
 | exact point-in-box count over all 73.8M | passes |
+
+Repeated runs of the same binary opened the file in 12.1 to 17.1 s; the slow end was the run
+immediately after deleting a one-gigabyte cache, with the disk still busy. The figure above is
+a clean run, and it is within half a second of Chrome on the same machine.
 
 WKWebView was the risk and it carried everything: `FileReaderSync` was not needed in the end,
 OPFS sync access handles work, and the float render targets the eye-dome pass needs are there.

@@ -205,7 +205,7 @@ against CloudCompare read from its source, 190 rows, kept current.
 - Files open **by path** — Finder drops, a File menu with Open Recent, `e57view scan.e57`.
 - **Native Save dialogs** for every export.
 - **MCP built in**: `e57view --mcp` speaks MCP on stdio with no Node and no install.
-- On a 3.23 GB, 73.8M-point E57: **17.1 s to open, 97 MB resident, 0.6 s to reopen from the
+- On a 3.23 GB, 73.8M-point E57: **13.0 s to open, 82 MB resident, 0.7 s to reopen from the
   on-device cache**.
 
 </details>
