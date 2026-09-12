@@ -72,6 +72,27 @@ st = await p.evaluate(() => window.__app.buildMesh({ voxel: 5, smooth: 1, trunc:
 ok('surface now reconstructs from normals', st.oriented > st.unoriented * 10, `${st.oriented} oriented`);
 await p.evaluate(() => document.getElementById('k-mclear').click());
 
+// ---- computed normals are an undoable edit, and the cache is flagged as behind
+const histAfterNormals = await p.evaluate(() => ({ steps: window.__app.hist.steps, label: window.__app.hist.peekUndo()?.label, kind: window.__app.hist.peekUndo()?.kind }));
+ok('normals pushed an undo step', histAfterNormals.kind === 'normals' && histAfterNormals.steps.undo >= 1, `${histAfterNormals.steps.undo} undo · ${histAfterNormals.label}`);
+const markers = () => p.evaluate(() => {
+  let placeholder = 0, real = 0;
+  for (const l of window.__viewer.cells.leavesForMask()) {
+    const recs = l.readback(window.__viewer.cells.gl2);
+    for (let i = 0; i < l.count; i++) {
+      const o = i * 14, nx = (recs[o+10]<<24>>24), ny = (recs[o+11]<<24>>24), nz = (recs[o+12]<<24>>24);
+      if (nx === 0 && ny === 0 && nz === 127) placeholder++; else real++;
+    }
+  }
+  return { placeholder, real };
+});
+await p.click('#tb-undo'); await idle();
+let mk = await markers();
+ok('undo brings back the (0,0,127) marker', mk.placeholder > TOTAL * 0.99 && mk.real < TOTAL * 0.01, `${mk.placeholder} placeholders, ${mk.real} normals`);
+await p.click('#tb-redo'); await idle();
+mk = await markers();
+ok('redo puts the normals back', mk.real > TOTAL * 0.99 && mk.placeholder < TOTAL * 0.01, `${mk.real} normals, ${mk.placeholder} placeholders`);
+
 // ---- a geometric feature becomes a scalar field
 t = Date.now();
 await p.evaluate(() => window.__app.analysis('feature', { name: 'planarity', k: 16, radius: 0.1 }, 'Planarity'));
@@ -134,6 +155,60 @@ await p.waitForSelector('#modal:not(.hidden)', { timeout: 300000 });
 await p.click('#modal-btns button.danger'); await thin; await idle();
 const after = await p.evaluate(() => window.__viewer.loaded);
 ok('thinning keeps roughly one point per cube', after < before / 3 && after > 100, `${before} to ${after}`);
+
+// ---- a scalar field must stay lined up when applyRegions is asked not to record an undo.
+// `mask` used to be allocated only for the undo path, so with record=false every kept value
+// landed at the wrong index. Unique per-point values make any misordering visible.
+await p.evaluate(() => window.__app.analysis('feature', { name: 'neighbours', k: 16, radius: 0.1 }, 'Neighbours'));
+await idle();
+const align = await p.evaluate(() => {
+  const v = window.__viewer, REC = 14;
+  const gl = v.cells.gl2;
+  // a unique value per point, so a shift of one is detectable
+  let tag = 0;
+  for (const l of v.cells.leavesForMask()) {
+    const a = new Float32Array(l.count);
+    for (let i = 0; i < l.count; i++) a[i] = ++tag;
+    l.setScalar(gl, a);
+  }
+  const read = () => {
+    const out = [];
+    for (const l of v.cells.leavesForMask()) {
+      const recs = l.readback(gl);
+      const u16 = new Uint16Array(recs.buffer, recs.byteOffset, (l.count * REC) >> 1);
+      const k = l.size / 65536;
+      for (let i = 0; i < l.count; i++) {
+        const b = i * 7;
+        out.push([l.origin.x + u16[b] * k, l.origin.y + u16[b + 1] * k, l.origin.z + u16[b + 2] * k, l.sf ? l.sf[i] : NaN]);
+      }
+    }
+    return out;
+  };
+  const key = q => q[0].toFixed(4) + ',' + q[1].toFixed(4) + ',' + q[2].toFixed(4);
+  const before = read();
+  const bnd = v.bounds();
+  const c = [bnd.min.x + 2.5, bnd.min.y + 2.5, bnd.min.z + 0.5];
+  const half = [1.7, 1.7, 1.2];
+  const region = { id: 'align', kind: 'box', role: 'keep', center: c, half, radius: half[0], quat: [0, 0, 0, 1] };
+  // which points a CPU test says survive
+  const want = new Map();
+  for (const q of before) {
+    if (Math.abs(q[0] - c[0]) <= half[0] && Math.abs(q[1] - c[1]) <= half[1] && Math.abs(q[2] - c[2]) <= half[2]) want.set(key(q), q[3]);
+  }
+  v.applyRegions([region], false);          // the path that carried the bug
+  const after = read();
+  let wrong = 0, unexpected = 0;
+  for (const q of after) {
+    const w = want.get(key(q));
+    if (w === undefined) unexpected++;
+    else if (Math.abs(w - q[3]) > 1e-6) wrong++;
+  }
+  return { want: want.size, kept: after.length, wrong, unexpected, total: before.length };
+});
+console.log('ALIGN', JSON.stringify(align));
+ok('record=false keeps the field lined up',
+   align.want > 100 && align.kept === align.want && align.wrong === 0 && align.unexpected === 0,
+   `${align.kept} kept of ${align.total} (CPU said ${align.want}) · ${align.wrong} values misplaced, ${align.unexpected} unexpected`);
 
 await p.waitForTimeout(400); await p.screenshot({ path: 'shots/analysis-done.png' });
 console.log(fails ? `\n${fails} CHECK(S) FAILED` : '\nALL CHECKS PASSED');

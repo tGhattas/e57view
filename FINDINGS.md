@@ -540,3 +540,95 @@ the polygon is never read back from the GPU at all. **498 ms over 18,439,323 poi
 The overlay is an SVG, which cost one bug worth remembering: `position: fixed; inset: 0` does
 not stretch a replaced element, so the lasso was drawing correctly into a 300x150 box in the
 corner while every count came out right. The maths was never wrong, only invisible.
+
+## Normals have to face the scanner, not away from the centroid
+
+Orientation voted per connected component for "away from the cloud centroid". On the test
+sphere that is exactly right and the check passed at 100%. Inside a building it is exactly
+wrong, and it fails silently: a room is a closed shell seen from within, so every wall,
+floor and ceiling normal comes out inverted as a block, the vote is unanimous, and the only
+symptom is that the reconstructed surface is lit from the wrong side and the truncated
+signed distance field cancels itself where two walls meet.
+
+The fix is not a better vote, it is a different question. A laser only ever measured a
+surface from the station it was standing at, so the outward direction is "toward the nearest
+station" — a per-point fact, not a per-component one, which matters as soon as one cloud
+covers several rooms. The E57 carries 102 of them in the test file, and
+`viewer.stationPositions()` already had them in the right frame.
+
+Cost: nothing measurable. A brute-force scan of 102 stations is ~102 distance computations
+per point, against the ~150 the k-nearest search already does with its 27-cell sweep and its
+`select_nth_unstable`. A grid over the stations was written and then thrown away as an
+optimisation of the cheap half of the loop.
+
+The synthetic room in `anatest` makes the difference unmissable: 61,206 points on the inside
+faces of a 6 m box with a station at the centre. The centroid vote faces **0.0%** of them at
+the station; the station flip faces **100.0%**. A four-station variant is checked against an
+independently recomputed nearest station, also 100%.
+
+While in there: the propagation pass described itself as breadth-first and popped a stack.
+It is now an index into a growing vector, so a point's sign is decided within a few
+neighbour hops of its seed rather than at the end of one long arm of a depth-first walk.
+
+## Compacting two arrays with one mask, only one of which existed
+
+`applyRegions` kept a bit mask of dropped points so undo could re-interleave the records
+exactly. It allocated that mask **only when recording an undo step**. The scalar-field
+compaction, written later, consulted the same mask — so with `record=false` every kept value
+landed at the index of a different point, and nothing crashed, nothing looked wrong, and the
+field was simply describing the wrong points from then on.
+
+Worth recording because of how it hid: the bug needed a scalar field *and* a non-recording
+call, and the only non-recording caller was a code path no driver exercised. The fix is one
+line of intent — decide keep or drop once per point, then use that decision for the records,
+the scalars and the undo mask alike — and the check in `drive-analysis.mjs` gives each point
+a unique field value so a shift of one is visible: **315 kept of 1,171, 0 misplaced**.
+
+## Cloud transforms: do not bake
+
+The obvious implementation rewrites every point. At 14 bytes and 16-bit positions per leaf
+cube that means a full readback, a matrix multiply, a requantisation and a re-upload — about
+a second per transform on 18 million points, a lossy round trip through the quantisation
+every time, and an undo step the size of the cloud.
+
+So the cloud carries a `model` matrix instead and every consumer reads through it. The work
+is finding all of them: the vertex shader (before the region tests, the height clipping and
+the elevation ramp, with `mat3(uModel)` on the normal), `applyRegions` / `applyMask` /
+`keepPoint`, the leaf classifier, `polygonMask`, the picker, the mesher, the analyser, and
+the three exporters. `leafFold` folds the model into the same three columns the leaf
+quantisation already provided, so a per-point test still costs three multiply-adds; the
+lasso multiplies the model into the view-projection matrix it was building anyway, so the
+**498 ms over 18.4M points** measured for freehand selection is unchanged.
+
+Measured on the synthetic fixtures: a transform is a matrix copy and a bounds recompute.
+Nothing is read back except the sample described below.
+
+Two things bit.
+
+**A rotated box re-boxed is bigger than what it holds.** The framing box (`viewer.bounds()`)
+drives fitting, the elevation ramp and the clipping sliders, and it was being carried through
+each change by transforming its eight corners. A 6 × 6 m plane tilted 15° went from a
+1.546 m height range to **2.982 m** after being levelled — the box grew while the points got
+flatter, which is the opposite of what the feature is for. It is now measured from a uniform
+sample of the points whenever the linear part of the matrix changes (a pure translation
+carries over exactly, so `bounds()` moves by exactly the metres you asked for), and only
+inflated during a gizmo drag, where a readback every frame would stall. Levelled: **1.546 m
+→ 0.000 m**. The leaves are shuffled, so a prefix of each is a uniform subsample — the same
+property the level-of-detail draw relies on.
+
+**A surface built through the model is transformed twice.** The mesher is handed the matrix
+so the voxel grid aligns with the levelled world rather than slicing a floor at an angle,
+which means the vertices come back in world space; drawing them through `uModel` again
+doubled the rotation. The viewer now remembers the matrix a surface was built with and draws
+it through `current × build⁻¹`: the identity right after a build, and exactly the points'
+own movement afterwards. `drive-transform.mjs` rotates a further 90° after a build and
+checks the exported surface's bounding box against the rotation of the previous one.
+
+Row-major on the Rust side, column-major in three.js, and the panel's matrix box is
+row-major because that is how a matrix is written down. Every crossing is commented, because
+that is the kind of thing that is silently transposed once and then compensated for twice.
+
+The gizmo is shared rather than duplicated: `TransformControls` is attached to exactly one
+object at a time, so turning on the cloud drag releases the crop region and showing the crop
+region releases the cloud. That is three lines and one invariant instead of a second gizmo
+instance and a z-fighting problem.

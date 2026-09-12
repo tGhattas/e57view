@@ -80,6 +80,10 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
 - **Analysis** — one neighbourhood search, reused five ways. *Compute normals* fits a plane
   to each point's neighbours and *Orient* makes neighbours agree then turns them outward,
   which matters because surface reconstruction is only as good as the normals feeding it.
+  When the file carries panorama stations, *Orient* turns each normal toward the nearest one:
+  a laser only ever saw a surface from the station that measured it, which is the opposite of
+  "away from the centroid" for anything scanned from the inside. Computed normals are
+  undoable like any other edit.
   *Measure* writes a geometric feature into a scalar field: roughness, curvature, planarity,
   linearity, sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume and
   surface density, neighbour count, or any of the three eigenvalues. *Clean* removes
@@ -102,6 +106,17 @@ iPhone keeps 1 in 10 (7.4M) and draws 1M; iPad keeps 1 in 4 (18.4M) and draws 2M
   *Points / Surface / Both* switches between them. Clouds with no normals fall back to a
   density isosurface. Save as binary PLY (colour and normals) or OBJ. The points are never
   modified.
+- **Transform** — move, rotate, scale, level or hand the cloud a 4x4 matrix. **Nothing is
+  baked**: the points stay quantised in their original leaf cubes and the matrix is applied
+  when they are drawn, tested, cropped, lassoed, analysed, meshed and exported. So a
+  transform is instant on 18 million points, loses no precision to requantisation, and
+  undoes with two matrices instead of a copy of the cloud. *Level* fits a plane to a uniform
+  sample by PCA and turns it horizontal about the bounding-box centre; the drag toggle hands
+  the whole cloud to the same gizmo the crop region uses (only one is ever attached). The
+  scan's own global shift sits beside it, separately editable, because that one affects
+  exported coordinates and the readout rather than anything on screen. *Save a copy* bakes
+  the matrix into the file, and the on-device cache stores it, so a cached transformed scan
+  reopens transformed.
 - **View link** — copies a URL that restores the camera and colour mode when the same file
   is opened again.
 
