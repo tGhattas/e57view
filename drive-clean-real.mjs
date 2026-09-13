@@ -44,12 +44,16 @@ const leaves = await p.evaluate(() => window.__viewer.cells.leavesForMask().leng
 console.log(`CLOUD ${loaded.toLocaleString('en-GB')} points in ${leaves} leaves`);
 ok('the whole scan is loaded, not a subsample', loaded > 20e6, `${loaded.toLocaleString('en-GB')} points`);
 
+// E57VIEW_CLEAN_OPS picks which filters to run, because SOR alone takes twelve minutes on
+// this scan and there is no sense repeating it to re-measure the other two.
+const WANT = (process.env.E57VIEW_CLEAN_OPS || 'sor,noise,duplicates').split(',').map(s => s.trim());
 const rows = [];
 for (const args of [
   { op: 'sor', neighbours: 6, nSigma: 1 },
   { op: 'noise', neighbourhood: 'radius', removeIsolated: false },
   { op: 'duplicates', tolerance: 0.001 },
 ]) {
+  if (!WANT.includes(args.op)) continue;
   const t = Date.now();
   const r = await p.evaluate(async (a) => {
     try { return await window.__app.agentRun('analysis', a); }

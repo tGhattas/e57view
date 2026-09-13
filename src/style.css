@@ -403,3 +403,36 @@ body.desktop .tabpane .step{grid-template-columns:1fr}
 /* a fold that belongs to the button above it should not look like a new section */
 .grp button.wide + details.sub{border-top:none;margin-top:-2px}
 .snipcopy.copied{background:#12333a;border-color:var(--teal-dim);color:var(--teal);font-weight:600}
+
+/* ---------------------------------------------------------------- the agent log
+   What an agent has actually done to this tab, in the tab it did it to. Nothing here is
+   saved: it is a record of this session and it goes when the page does. */
+.tabs .tab .count{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:9.5px;
+  background:#16262c;color:var(--dim);border-radius:8px;padding:1px 5px;flex:none}
+.tabs .tab.on .count{background:#265059;color:var(--ink)}
+.logbar{display:flex;gap:6px;margin:0 0 7px}
+.logbar button{flex:1}
+.loglist{max-height:320px;overflow-y:auto;border:1px solid var(--line);border-radius:5px;
+  background:#0a1216}
+.loglist .empty{margin:0;padding:10px;font-size:11px;color:var(--dim)}
+.logrow{width:100%;display:flex;gap:6px;align-items:baseline;background:none;border:0;
+  border-bottom:1px solid var(--line);padding:5px 7px;text-align:left;color:var(--ink);
+  font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;line-height:1.5;
+  cursor:pointer;min-width:0}
+.logrow:hover{background:#ffffff08}
+.logrow .t{color:var(--dim);flex:none}
+.logrow .src{color:var(--dim);flex:none;max-width:74px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap}
+.logrow .cmd{color:var(--teal);flex:none}
+.logrow .args{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.logrow .ms{color:var(--dim);flex:none}
+.logrow::before{content:"";width:5px;height:5px;border-radius:50%;background:#e0b263;flex:none;
+  transform:translateY(-1px)}
+.logrow.ok::before{background:var(--teal)}
+.logrow.err::before{background:#f0897d}
+.logtag{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:#f0897d;
+  border:1px solid #7a2f27;border-radius:8px;padding:0 4px;flex:none}
+.logdetail{border-bottom:1px solid var(--line);padding:0 7px 7px}
+.logdetail pre{margin:0 0 6px;white-space:pre-wrap;word-break:break-word;max-height:190px;
+  overflow:auto;font-size:10px;color:var(--dim);background:#070f12;border:1px solid var(--line);
+  border-radius:4px;padding:6px}

@@ -1953,7 +1953,7 @@ function haloFor(op: string, args: Record<string, any>, cell: number): number {
     case 'duplicates': return Math.max((args.tol ?? 0.001) * 16, cell);
     case 'subsample': return Math.max((args.spacing ?? cell) * 2, cell);
     case 'noise': return args.useKnn ? knnReach : Math.max(Number(args.radius ?? cell) * 3, cell);
-    case 'feature': return args.name === 'neighbour_count' ? Math.max(Number(args.radius ?? cell) * 2, cell) : knnReach;
+    case 'feature': return args.name === 'neighbours' ? Math.max(Number(args.radius ?? cell) * 2, cell) : knnReach;
     case 'invert': return 0;
     case 'distance_to': case 'distance_to_mesh': return 0;   // measured against something else
     default: return knnReach;                      // sor, normals
@@ -4112,6 +4112,7 @@ async function runScript(a: any): Promise<any> {
       // refreshed every step, because a step can add, remove or activate a layer
       vars.layers = entityList(); vars.active = viewer.activeId;
       const args = scriptSubst(st.args ?? {}, vars);
+      agentSource = 'script';
       const r = slim(await agent.run(cmd, args));
       vars.last = r;
       if (st.save) vars[String(st.save)] = r;
@@ -4180,14 +4181,29 @@ function counted<T extends Record<string, any>>(handlers: T): T {
   for (const [k, fn] of Object.entries(handlers)) {
     out[k] = async (a: any) => {
       agentCalls.n++; agentCalls.last = Date.now();
+      const entry = logStart(k, a);
       refreshAgentState();
-      try { return await (fn as any)(a); } finally { refreshAgentState(); }
+      try {
+        const r = await (fn as any)(a);
+        logEnd(entry, r, null);
+        return r;
+      } catch (e) {
+        logEnd(entry, null, e);
+        throw e;
+      } finally {
+        // back to the default, so the next call has to say where it came from rather than
+        // inheriting the last one's answer
+        agentSource = 'agent';
+        refreshAgentState();
+      }
     };
   }
   return out;
 }
 const agent = new AgentLink(counted({
   state: () => stateRecord(),
+  /** What has been run against this tab. Read-only, and it never leaves the tab otherwise. */
+  log: (a) => logRecord(a),
   screenshot: (a) => ({ png: viewer.snapshot(a.width ?? 1280).split(',')[1], view: viewer.getView(), size: [innerWidth, innerHeight], camera: viewer.cameraRecord() }),
   /** A calibrated image: orthographic by default, so the mapping it comes with is exact. */
   view: (a) => runView(a, (map) => {
@@ -4677,6 +4693,7 @@ const agent = new AgentLink(counted({
 // The connection state is the line above; this one is for one-off messages, so a transient
 // "copied" is not immediately overwritten by a repeat of what the status line already says.
 agent.onStatus = () => refreshAgentState();
+agent.onSource = (s) => { agentSource = s; };
 function agentNote(text: string) {
   const el = $('v-agent');
   el.textContent = text;
@@ -4858,16 +4875,17 @@ function renderClientChips() {
 }
 
 // ------------------------------------------------------------------ the three tabs
-type AgentTab = 'mcp' | 'http' | 'script';
+type AgentTab = 'mcp' | 'http' | 'script' | 'log';
 function showAgentTab(which: AgentTab) {
   const t: AgentTab = (which === 'http' && DESKTOP) ? 'mcp' : which;
-  for (const name of ['mcp', 'http', 'script'] as AgentTab[]) {
+  for (const name of ['mcp', 'http', 'script', 'log'] as AgentTab[]) {
     $(`tab-${name}`)?.classList.toggle('on', name === t);
     $(`pane-${name}`)?.classList.toggle('hidden', name !== t);
   }
   localStorage.setItem('agent-tab', t);
+  if (t === 'log') paintLog();          // the list is only built while it is on screen
 }
-for (const name of ['mcp', 'http', 'script'] as AgentTab[]) {
+for (const name of ['mcp', 'http', 'script', 'log'] as AgentTab[]) {
   $(`tab-${name}`)?.addEventListener('click', () => showAgentTab(name));
 }
 showAgentTab((localStorage.getItem('agent-tab') as AgentTab) || 'mcp');
@@ -4882,6 +4900,163 @@ if (!DESKTOP && (new URLSearchParams(location.search).get('agent') === '1' || lo
 
 /** Commands a remote session may run only when this tab has ticked Allow edits:
  *  anything that drops points, writes a file, loads another scan or spends provider credit. */
+// ------------------------------------------------------------------ the log
+//
+// Three ways in and no record of what came through any of them. "What did it just do?" was
+// answerable only by watching the panel while it happened. Every command an agent runs over
+// any path is kept here, newest first, with what it was given, what came back and how long it
+// took. Nothing is written to disk: this is what happened in this tab, and it goes with it.
+type LogEntry = {
+  id: number; at: number; source: string; cmd: string; args: any; edit: boolean;
+  state: 'pending' | 'ok' | 'error'; ms: number; error?: string; reply?: any;
+};
+const LOG_MAX = 500;
+const agentLog: LogEntry[] = [];
+let logId = 0;
+const logOpen = new Set<number>();
+/** Who is calling right now. Each entry point sets this immediately before it calls a
+ *  handler, and the handler puts it back to `agent` when it is done, so a call that says
+ *  nothing about itself is never attributed to whoever called last. */
+let agentSource = 'agent';
+let logDirty = false;
+
+/** The arguments on one line: long strings cut, big arrays counted, binary sized. */
+function logArgs(a: any): string {
+  const short = (v: any): any => {
+    if (typeof v === 'string') return v.length > 40 ? `${v.slice(0, 37)}…` : v;
+    if (ArrayBuffer.isView(v)) return `…${Math.max(1, Math.round((v as any).byteLength / 1024))}KB`;
+    if (Array.isArray(v)) return v.length > 6 ? `[${v.length} items]` : v.map(short);
+    if (v && typeof v === 'object') {
+      const o: any = {};
+      for (const [k, x] of Object.entries(v)) o[k] = short(x);
+      return o;
+    }
+    return v;
+  };
+  let s = '';
+  try { s = JSON.stringify(short(a) ?? {}) ?? ''; } catch { s = '(arguments could not be read)'; }
+  return s === '{}' ? '' : s;
+}
+const logTime = (t: number) => new Date(t).toTimeString().slice(0, 8);
+function logStart(cmd: string, args: any): LogEntry {
+  const e: LogEntry = {
+    id: ++logId, at: Date.now(), source: agentSource, cmd, args,
+    edit: agentNeedsEdit(cmd, args ?? {}), state: 'pending', ms: 0,
+  };
+  agentLog.unshift(e);
+  while (agentLog.length > LOG_MAX) { const drop = agentLog.pop(); if (drop) logOpen.delete(drop.id); }
+  paintLog();
+  return e;
+}
+function logEnd(e: LogEntry, reply: any, err: any) {
+  e.ms = Date.now() - e.at;
+  e.state = err ? 'error' : 'ok';
+  if (err) e.error = String(err?.message ?? err);
+  // The reply is kept for the detail view, so it has to be small: a screenshot's base64 is
+  // larger than every other entry in the log put together. scriptTrim already knows where the
+  // pictures are, and anything still over the limit is stored as its own size.
+  else {
+    try {
+      const r = scriptTrim(slim(reply));
+      const text = JSON.stringify(r ?? null);
+      e.reply = text && text.length > 20000 ? { note: `${text.length} characters, not kept` } : r;
+    } catch { e.reply = null; }
+  }
+  paintLog();
+}
+/** One line per entry, the way it goes into a bug report. */
+function logText(e: LogEntry): string {
+  const tail = e.state === 'pending' ? 'running' : e.state === 'ok' ? `ok ${e.ms} ms` : `error ${e.error}`;
+  return `${logTime(e.at)}  ${e.source}  ${e.cmd}${e.edit ? ' [edit]' : ''}  ${logArgs(e.args)}  ${tail}`;
+}
+function paintLog() {
+  if (logDirty) return;
+  logDirty = true;
+  requestAnimationFrame(() => {
+    logDirty = false;
+    const badge = $('v-logcount');
+    if (badge) badge.textContent = String(agentCalls.n);
+    const list = $('log-list');
+    if (!list || $('pane-log')?.classList.contains('hidden')) return;
+    if (!agentLog.length) {
+      list.innerHTML = '<p class="empty">Nothing yet. Commands an agent runs over the MCP bridge, an HTTP session or a script all appear here.</p>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const e of agentLog) {
+      const row = document.createElement('button');
+      row.className = 'logrow' + (e.state === 'ok' ? ' ok' : e.state === 'error' ? ' err' : '');
+      row.type = 'button';
+      const args = logArgs(e.args);
+      const tail = e.state === 'pending' ? 'running' : e.state === 'ok' ? `${e.ms} ms` : 'failed';
+      row.innerHTML = `<span class="t"></span><span class="src"></span><span class="cmd"></span>`
+        + (e.edit ? '<span class="logtag">edit</span>' : '') + `<span class="args"></span><span class="ms"></span>`;
+      (row.querySelector('.t') as HTMLElement).textContent = logTime(e.at);
+      (row.querySelector('.src') as HTMLElement).textContent = e.source;
+      (row.querySelector('.cmd') as HTMLElement).textContent = e.cmd;
+      (row.querySelector('.args') as HTMLElement).textContent = e.state === 'error' ? (e.error ?? '') : args;
+      (row.querySelector('.ms') as HTMLElement).textContent = tail;
+      row.addEventListener('click', () => {
+        logOpen.has(e.id) ? logOpen.delete(e.id) : logOpen.add(e.id);
+        paintLog();
+      });
+      frag.appendChild(row);
+      if (logOpen.has(e.id)) {
+        const d = document.createElement('div');
+        d.className = 'logdetail';
+        const pre = document.createElement('pre');
+        const reply = e.state === 'pending' ? 'still running' : e.error ?? JSON.stringify(e.reply ?? null, null, 1);
+        pre.textContent = `args\n${JSON.stringify(slim(e.args) ?? {}, null, 1)}\n\nreply\n${reply}`;
+        const copy = document.createElement('button');
+        copy.className = 'ghost';
+        copy.textContent = 'Copy';
+        copy.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          try { await navigator.clipboard.writeText(`${logText(e)}\n\n${pre.textContent}`); copy.textContent = 'Copied'; }
+          catch { copy.textContent = 'could not reach the clipboard'; }
+          setTimeout(() => { copy.textContent = 'Copy'; }, 2000);
+        });
+        d.append(pre, copy);
+        frag.appendChild(d);
+      }
+    }
+    list.replaceChildren(frag);
+    const line = $('v-log');
+    if (line) {
+      const bad = agentLog.filter(e => e.state === 'error').length;
+      line.textContent = `${agentLog.length} of the last ${LOG_MAX} shown · ${agentCalls.n} run in this tab`
+        + (bad ? ` · ${bad} failed` : '');
+      line.className = 'statusline' + (bad ? ' err' : agentLog.length ? ' ok' : '');
+    }
+  });
+}
+$('k-logclear')?.addEventListener('click', () => { agentLog.length = 0; logOpen.clear(); paintLog(); });
+$('k-logcopy')?.addEventListener('click', async () => {
+  const btn = $('k-logcopy');
+  const text = agentLog.length
+    ? [...agentLog].reverse().map(logText).join('\n')
+    : 'no commands have been run in this tab';
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; }
+  catch { btn.textContent = 'could not reach the clipboard'; }
+  setTimeout(() => { btn.textContent = 'Copy log'; }, 2000);
+});
+/** The log as an agent reads it. Read-only: this is the one command that answers with what
+ *  the other commands did. */
+function logRecord(a: any = {}) {
+  const limit = Math.max(1, Math.min(Number(a?.limit ?? 20) || 20, 200));
+  const withReplies = a?.replies === true;
+  return {
+    calls: agentCalls.n, kept: agentLog.length, of: LOG_MAX,
+    entries: agentLog.slice(0, limit).map(e => ({
+      at: new Date(e.at).toISOString(), source: e.source, cmd: e.cmd,
+      args: slim(e.args) ?? {}, edit: e.edit, outcome: e.state, ms: e.ms,
+      ...(e.error ? { error: e.error } : {}),
+      ...(withReplies && e.reply !== undefined ? { reply: e.reply } : {}),
+    })),
+  };
+}
+paintLog();
+
 function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   if (cmd === 'open') return true;
   if (cmd === 'regions') return a.op === 'apply';
@@ -4923,6 +5098,7 @@ async function dispatchAgent(cmd: string, args: any = {}) {
     throw new Error(`"${cmd}" changes the scan or spends credit. This session is read-only: tick "Allow edits" in the Agent panel of the viewer tab.`);
   const noShot = NO_SHOT.has(cmd) || OWN_IMAGE.has(cmd) || (cmd === 'surface' && args?.op === 'export');
   const wantShot = cmd === 'screenshot' || args?.shot === true || (args?.shot !== false && !noShot);
+  agentSource = 'HTTP';
   const raw = await agent.run(cmd, args);
   if (raw && typeof raw === 'object' && wantShot) delete (raw as any).png;   // don't ship the same frame twice
   let result = slim(raw);

@@ -566,6 +566,7 @@
         <button class="tab on" id="tab-mcp" role="tab" data-tab="mcp">MCP<i class="dot"></i></button>
         <button class="tab web-only" id="tab-http" role="tab" data-tab="http">HTTP<i class="dot"></i></button>
         <button class="tab" id="tab-script" role="tab" data-tab="script">Scripts</button>
+        <button class="tab" id="tab-log" role="tab" data-tab="log">Log<span class="count" id="v-logcount">0</span></button>
       </div>
 
       <!-- ---------------------------------------------------------------- 1. local MCP -->
@@ -655,6 +656,15 @@
           <summary>How this works</summary>
           <p class="hint">A script is a JSON array of <span class="mono">{ "cmd", "args" }</span> steps, run in order against this tab. Each step's result is available to the next as <span class="mono">$last</span>. It is the same command set an agent drives, without the round trip.</p>
         </details>
+      </section>
+      <section class="tabpane hidden" id="pane-log">
+        <p class="use">Every command an agent has run in this tab, newest first. Click one to see what it was given and what came back. Nothing is saved.</p>
+        <div class="logbar">
+          <button id="k-logcopy" class="ghost">Copy log</button>
+          <button id="k-logclear" class="ghost">Clear</button>
+        </div>
+        <div class="loglist" id="log-list"></div>
+        <p class="statusline" id="v-log">nothing yet</p>
       </section>
     </div>
 

@@ -162,6 +162,82 @@ r = await call({ session: sid, cmd: 'history', args: { op: 'undo', shot: false }
 ok('undo restores through the endpoint', r.status === 200 && r.j.result?.points === NPTS, `${r.j.result?.points} pts`);
 await p.click('#http-live #k-agentedits2'); await p.waitForTimeout(800);
 
+// ---------------------------------------------------------------- the log
+// Everything above ran commands over the HTTP session. The Log tab has to have them, with
+// where they came from, whether they needed the edit permission, and what came back.
+await p.click('#tab-log');
+await p.waitForTimeout(400);
+const log = await p.evaluate(() => ({
+  badge: Number(document.getElementById('v-logcount')?.textContent || 0),
+  rows: [...document.querySelectorAll('#log-list .logrow')].map(r => ({
+    t: r.querySelector('.t')?.textContent ?? '',
+    src: r.querySelector('.src')?.textContent ?? '',
+    cmd: r.querySelector('.cmd')?.textContent ?? '',
+    args: r.querySelector('.args')?.textContent ?? '',
+    ms: r.querySelector('.ms')?.textContent ?? '',
+    edit: !!r.querySelector('.logtag'),
+    cls: r.className,
+  })),
+  line: document.getElementById('v-log')?.textContent ?? '',
+}));
+ok('the Log tab lists what the session ran', log.rows.length > 3, `${log.rows.length} entries`);
+ok('and the tab badge counts them', log.badge >= log.rows.length, `badge ${log.badge}`);
+ok('newest first', /^\d\d:\d\d:\d\d$/.test(log.rows[0]?.t ?? ''), log.rows[0]?.t ?? '');
+ok('each entry says where the call came from', log.rows.every(r => r.src === 'HTTP'),
+   [...new Set(log.rows.map(r => r.src))].join(', '));
+ok('the commands are named', log.rows.some(r => r.cmd === 'state') && log.rows.some(r => r.cmd === 'history'),
+   [...new Set(log.rows.map(r => r.cmd))].slice(0, 8).join(', '));
+ok('an edit carries the edit tag, a read does not',
+   log.rows.some(r => r.cmd === 'history' && r.edit) && log.rows.some(r => r.cmd === 'state' && !r.edit), '');
+ok('the outcome is coloured', log.rows.every(r => /\b(ok|err)\b/.test(r.cls)), log.rows[0]?.cls ?? '');
+ok('and the duration is shown', log.rows.every(r => /ms|failed/.test(r.ms)), log.rows[0]?.ms ?? '');
+ok('the status line counts them', /run in this tab/.test(log.line), log.line);
+// arguments are summarised, never dumped: a screenshot's base64 must not be in the row
+ok('long arguments are elided', log.rows.every(r => r.args.length < 200), `longest ${Math.max(...log.rows.map(r => r.args.length))}`);
+
+// clicking one opens what it was given and what came back
+await p.click('#log-list .logrow');
+await p.waitForTimeout(250);
+const detail = await p.evaluate(() => ({
+  open: document.querySelectorAll('#log-list .logdetail').length,
+  text: document.querySelector('#log-list .logdetail pre')?.textContent?.slice(0, 400) ?? '',
+  copy: !!document.querySelector('#log-list .logdetail button'),
+}));
+ok('clicking an entry opens its arguments and reply', detail.open === 1 && /args/.test(detail.text) && /reply/.test(detail.text),
+   detail.text.split('\n')[0]);
+ok('with a Copy button on it', detail.copy, '');
+
+// the whole log, as plain text for a bug report
+await p.click('#k-logcopy');
+await p.waitForTimeout(400);
+const logText = await p.evaluate(() => navigator.clipboard.readText());
+ok('Copy log gives one line per command, oldest first',
+   logText.split('\n').length > 3 && /\d\d:\d\d:\d\d {2}HTTP {2}\w+/.test(logText), logText.split('\n')[0]);
+
+// and an agent can read the same list
+const logCmd = await call({ session: sid, cmd: 'log', args: { limit: 5 } }, auth);
+ok('viewer_log answers over the session', logCmd.status === 200 && Array.isArray(logCmd.j.result?.entries),
+   `http ${logCmd.status} · ${logCmd.j.result?.entries?.length} entries`);
+ok('and its entries carry the source, the command and the outcome',
+   (logCmd.j.result?.entries ?? []).every(e => e.source && e.cmd && e.outcome && e.at),
+   JSON.stringify(logCmd.j.result?.entries?.[1] ?? {}).slice(0, 120));
+ok('reading the log needs no edit permission', logCmd.j.result?.entries?.some(e => e.edit === false), '');
+
+await p.screenshot({ path: 'docs/ui/agent-log.png', clip: await p.evaluate(() => {
+  const r = document.querySelector('[data-grp="agent"]').getBoundingClientRect();
+  return { x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.min(760, Math.round(r.height)) };
+}) });
+
+// Clear empties it and says so
+await p.click('#k-logclear');
+await p.waitForTimeout(300);
+const cleared = await p.evaluate(() => ({
+  rows: document.querySelectorAll('#log-list .logrow').length,
+  empty: !!document.querySelector('#log-list .empty'),
+}));
+ok('Clear empties the list', cleared.rows === 0 && cleared.empty, `${cleared.rows} rows`);
+
+await p.click('#tab-http');
 await p.click('#k-agentstop');
 await p.waitForTimeout(1500);
 r = await call({ session: sid, cmd: 'state' }, auth);

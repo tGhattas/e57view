@@ -8,6 +8,9 @@ export class AgentLink {
   ws: WebSocket | null = null;
   connected = false;
   onStatus: ((s: string) => void) | null = null;
+  /** Who the next handler call is coming from, for the viewer's log. The MCP server passes
+   *  the agent's own name along with the command when its client has given one. */
+  onSource: ((s: string) => void) | null = null;
   private timer = 0;
   private wanted = false;
   constructor(private handlers: Record<string, Handler>, private port = 7337) {}
@@ -32,6 +35,7 @@ export class AgentLink {
       let m: any; try { m = JSON.parse(ev.data); } catch { return; }
       const h = this.handlers[m.cmd];
       if (!h) { this.ws?.send(JSON.stringify({ id: m.id, ok: false, error: `unknown command ${m.cmd}` })); return; }
+      this.onSource?.(m.client ? `MCP ${String(m.client).slice(0, 24)}` : 'MCP');
       try { const result = await h(m.args ?? {}); this.ws?.send(JSON.stringify({ id: m.id, ok: true, result })); }
       catch (e: any) { this.ws?.send(JSON.stringify({ id: m.id, ok: false, error: String(e?.message ?? e) })); }
     };
