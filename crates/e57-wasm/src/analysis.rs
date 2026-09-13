@@ -86,6 +86,37 @@ impl Feature {
     }
 }
 
+/// How a noise filter chooses its neighbourhood and its threshold.
+#[derive(Clone, Copy, Debug)]
+pub struct NoiseParams {
+    /// The `knn` nearest points rather than a sphere. CloudCompare's dialog defaults to
+    /// the sphere; its function signature defaults to this being false as well.
+    pub use_knn: bool,
+    pub knn: usize,
+    /// Sphere radius in metres, used when `use_knn` is false.
+    pub radius: f32,
+    /// A fixed distance from the local plane instead of a multiple of the local spread.
+    pub use_absolute_error: bool,
+    pub absolute_error: f32,
+    pub n_sigma: f32,
+    /// Drop points with too few neighbours to fit a plane. Off by default in
+    /// CloudCompare, and off here, because "I could not measure this point" and "this
+    /// point is noise" are different statements.
+    pub remove_isolated: bool,
+}
+
+impl Default for NoiseParams {
+    /// CloudCompare's own defaults: sphere neighbourhood, relative error, one sigma,
+    /// isolated points kept.
+    fn default() -> NoiseParams {
+        NoiseParams {
+            use_knn: false, knn: 6, radius: 0.0,
+            use_absolute_error: false, absolute_error: 0.0,
+            n_sigma: 1.0, remove_isolated: false,
+        }
+    }
+}
+
 pub struct Analyzer {
     pub x: Vec<f32>,
     pub y: Vec<f32>,
@@ -99,6 +130,8 @@ pub struct Analyzer {
     starts: FastMap<i64, (u32, u32)>,
     order: Vec<u32>,
     built: bool,
+    /// Bounding-box diagonal, so a neighbour search knows when it has covered everything.
+    extent: f32,
 }
 
 /// Public wrapper, so the shape fits can share this rather than carry a second copy.
@@ -260,6 +293,7 @@ impl Analyzer {
             nx: Vec::new(), ny: Vec::new(), nz: Vec::new(),
             cell, inv_cell: 1.0 / cell,
             starts: FastMap::default(), order: Vec::new(), built: false,
+            extent: 0.0,
         }
     }
 
@@ -330,6 +364,18 @@ impl Analyzer {
     pub fn build(&mut self) {
         if self.built { return; }
         let n = self.x.len();
+        // the longest distance that can exist in this cloud, which is where a neighbour
+        // search can stop looking
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for i in 0..n {
+            for (a, v) in [self.x[i], self.y[i], self.z[i]].into_iter().enumerate() {
+                if v < lo[a] { lo[a] = v; }
+                if v > hi[a] { hi[a] = v; }
+            }
+        }
+        self.extent = if n == 0 { 0.0 } else {
+            ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt()
+        };
         let mut counts: FastMap<i64, u32> = FastMap::default();
         let mut keys = Vec::with_capacity(n);
         for i in 0..n {
@@ -804,58 +850,200 @@ impl Analyzer {
     /// Statistical outlier removal: drop points whose mean distance to their k nearest
     /// neighbours is more than `n_sigma` above the cloud-wide average of that distance.
     /// Returns 1 to keep, 0 to drop.
-    pub fn sor(&mut self, k: usize, n_sigma: f32, mut progress: impl FnMut(usize)) -> (Vec<u8>, f32, f32) {
+    /// The `m` nearest points to point `i`, **including `i` itself**, as CloudCompare's octree
+    /// search returns them. Fewer if the cloud has fewer.
+    ///
+    /// Including the query point is not an oversight in either implementation: CloudCompare
+    /// asks its octree for `knn` neighbours and then skips the query point when averaging, so
+    /// the mean is over `knn - 1` others. Its own comment says why — asking for `knn + 1`
+    /// would be more natural but would not match PCL, and matching PCL was the point.
+    fn nearest_set(&self, i: usize, m: usize, scratch: &mut Vec<(f32, u32)>) -> usize {
+        let mut r = self.cell;
+        // Keep widening until there really are `m` points, or until the search has covered
+        // the whole cloud. Stopping after a fixed number of doublings is the kind of
+        // shortcut that is invisible on dense data and wrong on exactly the points these
+        // filters exist to find: a speck on its own gets whatever happened to be inside the
+        // last radius tried, its mean neighbour distance comes out far too small, and it
+        // survives a threshold it should have failed.
+        let cap = self.extent.max(self.cell);
+        loop {
+            self.radius_search(i, r, scratch);
+            if scratch.len() >= m || r >= cap { break; }
+            r = (r * 2.0).min(cap);
+        }
+        if scratch.len() > m {
+            // Ranked on an f64 distance recomputed from the coordinates, not on the grid's
+            // f32 squared distance. Two neighbours can be equal to the last bit of an f32 and
+            // still be ordered, and on a surface there are a great many of those; picking a
+            // different one of a near-tied pair changes which points a threshold drops.
+            // Partition rather than sort: only the set of the m closest matters.
+            let px = self.x[i] as f64;
+            let py = self.y[i] as f64;
+            let pz = self.z[i] as f64;
+            let d64 = |j: u32| {
+                let ju = j as usize;
+                let dx = self.x[ju] as f64 - px;
+                let dy = self.y[ju] as f64 - py;
+                let dz = self.z[ju] as f64 - pz;
+                dx * dx + dy * dy + dz * dz
+            };
+            // Ties broken by point index, so the answer does not depend on the order the
+            // grid happened to visit cells in. Two points exactly equidistant from a third
+            // do occur, and without a rule the chosen one varies between runs and between
+            // implementations.
+            scratch.select_nth_unstable_by(m - 1, |a, b| {
+                d64(a.1).partial_cmp(&d64(b.1)).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
+            });
+            scratch.truncate(m);
+        }
+        scratch.len()
+    }
+
+    /// Statistical outlier removal.
+    ///
+    /// Based on CloudCompare's SOR filter — `CCCoreLib::CloudSamplingTools::sorFilter` and its
+    /// per-cell worker `applySORFilterAtLevel`, read at
+    /// <https://github.com/CloudCompare/CCCoreLib> commit
+    /// dc8c7d80f4ef8fd6a2c302c8d5f9c35099ba8432. This is a reimplementation in Rust from the
+    /// published algorithm, not translated or copied code; CCCoreLib is LGPL-2.0-or-later,
+    /// which combines with this project's GPL-3.0-only. The point of following it exactly is
+    /// that somebody moving between the two tools gets the same points removed for the same
+    /// settings, and CloudCompare in turn follows PCL.
+    ///
+    /// Four details decide whether the answer matches, and all four are theirs:
+    ///
+    /// * the `knn` nearest points are gathered **including the query point**, and the query
+    ///   point is then skipped, so each mean is over `knn - 1` distances;
+    /// * a point whose mean cannot be computed keeps a distance of zero, so it survives —
+    ///   this filter never removes a point for being under-populated;
+    /// * the mean and standard deviation are taken over **every** point, and the standard
+    ///   deviation is the population one, `sqrt(|Σd²/N − µ²|)`;
+    /// * the test is `mean ≤ µ + nσ·σ`, inclusive.
+    ///
+    /// Their octree picks a level with about `knn` points per cell and searches from there;
+    /// ours is a uniform grid sized to a few points per cell, expanding the radius until it
+    /// holds enough. That is an implementation detail of the neighbour search: both return
+    /// the true `knn` nearest, so the result is the same.
+    ///
+    /// Returns the keep mask, the mean of the mean distances, and the cut-off.
+    pub fn sor(&mut self, knn: usize, n_sigma: f32, mut progress: impl FnMut(usize)) -> (Vec<u8>, f32, f32) {
         self.build();
         let n = self.len();
+        let knn = knn.max(1);
+        // CloudCompare refuses a cloud no bigger than knn rather than filtering it; keeping
+        // everything says the same thing without an error path the caller has to handle.
+        if n <= knn {
+            return (vec![1u8; n], 0.0, f32::INFINITY);
+        }
         let mut mean_d = vec![0.0f32; n];
         let mut scratch: Vec<(f32, u32)> = Vec::with_capacity(256);
         for i in 0..n {
-            let m = self.knn(i, k, &mut scratch);
-            if m < 2 {
-                mean_d[i] = f32::INFINITY;
-                continue;
-            }
-            let mut s = 0.0f32;
+            self.nearest_set(i, knn, &mut scratch);
+            let mut s = 0.0f64;
             let mut c = 0u32;
-            for &(d, j) in scratch.iter() {
-                if j as usize == i { continue; }
-                s += d.sqrt();
+            for &(_, j) in scratch.iter() {
+                let ju = j as usize;
+                if ju == i { continue; }
+                // recomputed in f64 rather than reusing the grid's f32 squared distance: the
+                // threshold is a single number compared against millions of means, so a
+                // rounding difference of one part in ten million decides real points
+                let dx = self.x[ju] as f64 - self.x[i] as f64;
+                let dy = self.y[ju] as f64 - self.y[i] as f64;
+                let dz = self.z[ju] as f64 - self.z[i] as f64;
+                s += (dx * dx + dy * dy + dz * dz).sqrt();
                 c += 1;
             }
-            mean_d[i] = if c > 0 { s / c as f32 } else { f32::INFINITY };
+            // zero when there was nothing to average, which keeps the point
+            mean_d[i] = if c > 0 { (s / c as f64) as f32 } else { 0.0 };
             if i % 65536 == 0 { progress(i); }
         }
-        let finite: Vec<f32> = mean_d.iter().copied().filter(|v| v.is_finite()).collect();
-        let mu = finite.iter().sum::<f32>() / finite.len().max(1) as f32;
-        let var = finite.iter().map(|v| (v - mu) * (v - mu)).sum::<f32>() / finite.len().max(1) as f32;
-        let sd = var.sqrt();
-        let cut = mu + n_sigma * sd;
-        let keep = mean_d.iter().map(|&d| if d <= cut { 1u8 } else { 0u8 }).collect();
-        (keep, mu, cut)
+        let mut sum = 0.0f64;
+        let mut sum2 = 0.0f64;
+        for &d in &mean_d {
+            sum += d as f64;
+            sum2 += (d as f64) * (d as f64);
+        }
+        let avg = sum / n as f64;
+        let sd = (sum2 / n as f64 - avg * avg).abs().sqrt();
+        let cut = avg + n_sigma as f64 * sd;
+        let keep = mean_d.iter().map(|&d| if (d as f64) <= cut { 1u8 } else { 0u8 }).collect();
+        (keep, avg as f32, cut as f32)
     }
 
-    /// Noise filter: drop points that sit too far from the best-fit plane of their
-    /// neighbourhood, which removes speckle while leaving real edges alone.
-    pub fn noise_filter(&mut self, k: usize, n_sigma: f32, mut progress: impl FnMut(usize)) -> Vec<u8> {
+    /// Noise filter: drop points that sit too far from the best-fit plane of the points
+    /// **around** them.
+    ///
+    /// Based on CloudCompare's noise filter — `CCCoreLib::CloudSamplingTools::noiseFilter`
+    /// and `applyNoiseFilterAtLevel`, read at <https://github.com/CloudCompare/CCCoreLib>
+    /// commit dc8c7d80f4ef8fd6a2c302c8d5f9c35099ba8432. Reimplemented in Rust from the
+    /// published algorithm, not copied. CCCoreLib is LGPL-2.0-or-later, which combines with
+    /// GPL-3.0-only.
+    ///
+    /// The thing that makes this filter work, and the thing our first version got wrong, is
+    /// that **the threshold is local**. The plane is fitted to the neighbours with the query
+    /// point left out, the spread is measured among those same neighbours, and the query
+    /// point is compared against that. A global threshold over the whole cloud instead
+    /// removes detail wherever the surface is smooth and keeps noise wherever it is rough.
+    ///
+    /// The other details that decide whether the answer matches CloudCompare's:
+    ///
+    /// * a neighbourhood needs **more than three** points counting the query point, so at
+    ///   least three others, before a plane is fitted at all;
+    /// * the query point is excluded from the plane fit and from the spread;
+    /// * the spread is the population standard deviation of the neighbours' **signed**
+    ///   distances to the plane, `sqrt(|Σd²·n − (Σd)²|) / n`;
+    /// * the query point's own distance is compared as an absolute value, and the test is
+    ///   `≤`, inclusive;
+    /// * too few neighbours means the point is kept unless `remove_isolated` is set.
+    pub fn noise_filter(&mut self, p: NoiseParams, mut progress: impl FnMut(usize)) -> Vec<u8> {
         self.build();
         let n = self.len();
-        let mut dist = vec![0.0f32; n];
+        let mut keep = vec![0u8; n];
         let mut scratch: Vec<(f32, u32)> = Vec::with_capacity(256);
+        let mut nb: Vec<(f32, u32)> = Vec::with_capacity(256);
         for i in 0..n {
-            let m = self.knn(i, k, &mut scratch);
-            if m < 4 {
-                dist[i] = 0.0;
+            if p.use_knn {
+                self.nearest_set(i, p.knn.max(1), &mut scratch);
+            } else {
+                self.radius_search(i, p.radius.max(1e-6), &mut scratch);
+            }
+            // "more than 3" counting the query point, exactly as CloudCompare tests it
+            if scratch.len() <= 3 {
+                keep[i] = if p.remove_isolated { 0 } else { 1 };
                 continue;
             }
-            let (_, vecs, cen) = self.local_pca(&scratch);
-            let d = [self.x[i] as f64 - cen[0], self.y[i] as f64 - cen[1], self.z[i] as f64 - cen[2]];
-            dist[i] = (d[0] * vecs[0][0] + d[1] * vecs[1][0] + d[2] * vecs[2][0]).abs() as f32;
+            nb.clear();
+            nb.extend(scratch.iter().copied().filter(|&(_, j)| j as usize != i));
+            if nb.len() < 3 {
+                keep[i] = if p.remove_isolated { 0 } else { 1 };
+                continue;
+            }
+            let (_, vecs, cen) = self.local_pca(&nb);
+            let nrm = [vecs[0][0], vecs[1][0], vecs[2][0]];
+            let max_d = if p.use_absolute_error {
+                p.absolute_error as f64
+            } else {
+                let mut sum = 0.0f64;
+                let mut sum2 = 0.0f64;
+                for &(_, j) in nb.iter() {
+                    let j = j as usize;
+                    let d = (self.x[j] as f64 - cen[0]) * nrm[0]
+                          + (self.y[j] as f64 - cen[1]) * nrm[1]
+                          + (self.z[j] as f64 - cen[2]) * nrm[2];
+                    sum += d;
+                    sum2 += d * d;
+                }
+                let m = nb.len() as f64;
+                let stddev = (sum2 * m - sum * sum).abs().sqrt() / m;
+                stddev * p.n_sigma as f64
+            };
+            let d = ((self.x[i] as f64 - cen[0]) * nrm[0]
+                   + (self.y[i] as f64 - cen[1]) * nrm[1]
+                   + (self.z[i] as f64 - cen[2]) * nrm[2]).abs();
+            keep[i] = if d <= max_d { 1 } else { 0 };
             if i % 65536 == 0 { progress(i); }
         }
-        let mu = dist.iter().sum::<f32>() / n.max(1) as f32;
-        let var = dist.iter().map(|v| (v - mu) * (v - mu)).sum::<f32>() / n.max(1) as f32;
-        let cut = mu + n_sigma * var.sqrt();
-        dist.iter().map(|&d| if d <= cut { 1u8 } else { 0u8 }).collect()
+        keep
     }
 
     /// Points closer together than `tol` collapse to the first one seen.

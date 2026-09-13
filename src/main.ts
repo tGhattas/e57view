@@ -1971,15 +1971,43 @@ async function commitMask(label: string, masks: Uint8Array[], promptText: string
   return res;
 }
 
-const anaUi = { k: 16, sigma: 1.0, spacing: 0.1 };
+// CloudCompare's defaults where the filters share a setting with it: nSigma 1.0, a sphere
+// neighbourhood for the noise filter, a relative threshold, isolated points kept. Neighbours
+// is 16 rather than its 8 because the same slider also drives the feature computations,
+// where 8 is too few to be stable.
+const anaUi = {
+  k: 16, sigma: 1.0, spacing: 0.1,
+  noiseKnn: false, noiseRadius: 0.15, noiseAbsolute: false, noiseAbsError: 0.02, noiseRip: false,
+};
 function syncAnaLabels() {
   $('v-ank').textContent = String(anaUi.k);
   $('v-ansigma').textContent = anaUi.sigma.toFixed(1) + ' σ';
   $('v-anspace').textContent = anaUi.spacing.toFixed(2) + ' m';
+  $('v-annradius').textContent = anaUi.noiseRadius.toFixed(2) + ' m';
+  $('v-annabs').textContent = anaUi.noiseAbsError.toFixed(3) + ' m';
+  // only one of the two pairs applies at a time; dim the other rather than hide it, so the
+  // value it would use is still visible
+  $('k-annradius').closest('label')!.classList.toggle('dim', anaUi.noiseKnn);
+  $('k-annabs').closest('label')!.classList.toggle('dim', !anaUi.noiseAbsolute);
 }
 $('k-ank').addEventListener('input', e => { anaUi.k = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
 $('k-ansigma').addEventListener('input', e => { anaUi.sigma = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
 $('k-anspace').addEventListener('input', e => { anaUi.spacing = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
+$('k-annbmode').addEventListener('change', e => { anaUi.noiseKnn = (e.target as HTMLSelectElement).value === 'knn'; syncAnaLabels(); });
+$('k-anerrmode').addEventListener('change', e => { anaUi.noiseAbsolute = (e.target as HTMLSelectElement).value === 'absolute'; syncAnaLabels(); });
+$('k-annradius').addEventListener('input', e => { anaUi.noiseRadius = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
+$('k-annabs').addEventListener('input', e => { anaUi.noiseAbsError = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
+$('k-annrip').addEventListener('change', e => { anaUi.noiseRip = (e.target as HTMLInputElement).checked; });
+/** Everything the noise filter needs, in the shape both the panel and an agent send. */
+function noiseArgs(over: Record<string, any> = {}) {
+  return {
+    knn: anaUi.k, sigma: anaUi.sigma,
+    useKnn: anaUi.noiseKnn, radius: anaUi.noiseRadius,
+    useAbsoluteError: anaUi.noiseAbsolute, absoluteError: anaUi.noiseAbsError,
+    removeIsolated: anaUi.noiseRip,
+    ...over,
+  };
+}
 
 async function analysis(op: string, args: Record<string, any> = {}, note = '') {
   const t0 = performance.now();
@@ -2041,10 +2069,12 @@ async function maskTool(op: string, args: Record<string, any>, label: string, pr
     $('v-analysis').textContent = 'failed: ' + (e?.message ?? e);
   } finally { hideBusy(); }
 }
-$('k-ansor').addEventListener('click', () => maskTool('sor', { k: anaUi.k, sigma: anaUi.sigma }, 'Remove outliers',
-  '<p>Points whose neighbours sit unusually far away are isolated specks. <b>{n}</b> of them will be dropped, leaving {k}.</p>'));
-$('k-annoise').addEventListener('click', () => maskTool('noise', { k: anaUi.k, sigma: anaUi.sigma }, 'Remove noise',
-  '<p>Points that sit too far off the local surface will be dropped: <b>{n}</b> of them, leaving {k}. Real edges are kept because they still fit a plane.</p>'));
+$('k-ansor').addEventListener('click', () => maskTool('sor', { knn: anaUi.k, sigma: anaUi.sigma }, 'Remove outliers',
+  '<p>Each point\'s mean distance to its nearest neighbours is measured, and points further out than the mean plus your <b>Strictness</b> in standard deviations are dropped: <b>{n}</b> of them, leaving {k}.</p>'
+  + '<p class="hint">This is a single threshold over the whole cloud, so a handful of very distant points can raise it far enough to let nearer outliers through. Same algorithm and defaults as CloudCompare\'s SOR filter.</p>'));
+$('k-annoise').addEventListener('click', () => maskTool('noise', noiseArgs(), 'Remove noise',
+  '<p>A plane is fitted to the points around each point, and the point is dropped if it sits further off that plane than the spread of its own neighbours allows: <b>{n}</b> of them, leaving {k}. Real edges survive because they still fit a plane.</p>'
+  + '<p class="hint">The threshold is local, so smooth areas are judged strictly and rough ones loosely. Same algorithm and defaults as CloudCompare\'s noise filter.</p>'));
 $('k-andup').addEventListener('click', () => maskTool('duplicates', { tol: 0.001 }, 'Remove duplicates',
   '<p>Points within 1 mm of an earlier point add nothing. <b>{n}</b> will be dropped, leaving {k}.</p>'));
 $('k-ansub').addEventListener('click', () => maskTool('subsample', { spacing: anaUi.spacing }, 'Thin the cloud',
@@ -4047,6 +4077,70 @@ const agent = new AgentLink({
     await new Promise<void>(res => afterUploads(res));
     return { points: viewer.loaded, cached: fromCache, file: currentFile?.name ?? null };
   },
+  analysis: async (a) => {
+    const op = String(a.op ?? '');
+    if (!viewer.loaded) throw new Error('nothing loaded');
+    const k = a.neighbours !== undefined ? Number(a.neighbours) : anaUi.k;
+    const sigma = a.nSigma !== undefined ? Number(a.nSigma) : anaUi.sigma;
+    /** An argument an agent did not give falls back to CloudCompare's default, not to
+     *  whatever the panel happens to be showing. An agent cannot see the panel, and a filter
+     *  that behaves differently depending on a control somebody left switched is not a filter
+     *  anybody can reason about. */
+    const ccDefault = (given: any, fallback: any): any => (given === undefined ? fallback : given);
+    if (op === 'normals') {
+      const r = await analysis('normals', { k, orient: a.orient !== false, viewpoints: viewpointList() }, 'Normals');
+      viewer.render();
+      return { points: r?.points ?? viewer.loaded, hasNormals: normalFraction() };
+    }
+    if (op === 'invert') { await analysis('invert', {}, 'normals inverted'); viewer.render(); return { hasNormals: normalFraction() }; }
+    if (op === 'feature') {
+      const name = String(a.feature ?? 'roughness');
+      const r = await analysis('feature', { name, k, radius: a.radius !== undefined ? Number(a.radius) : anaUi.spacing }, name);
+      viewer.render();
+      const st = viewer.cells.scalarStats();
+      return { field: sfName, points: r?.points ?? viewer.loaded, range: st ? [r6(st.min), r6(st.max)] : null };
+    }
+    if (op === 'components') {
+      const r = await analysis('components', { radius: a.radius !== undefined ? Number(a.radius) : anaUi.spacing, minPts: Number(a.minPoints ?? 16) }, 'Connected components');
+      viewer.render();
+      return { field: sfName, components: r?.components ?? null, points: r?.points ?? viewer.loaded };
+    }
+    // the four that remove points, all through the same undoable mask
+    const before = viewer.loaded;
+    let args: Record<string, any>;
+    let label: string;
+    // CloudCompare's filter dialogs default to 8 neighbours; its panel slider here is 16
+    // because the same slider drives the feature computations, where 8 is too few to be
+    // steady. An agent asking for neither gets the filter's own default.
+    const filterK = a.neighbours !== undefined ? Number(a.neighbours) : 8;
+    if (op === 'sor') { args = { knn: filterK, sigma }; label = 'Remove outliers'; }
+    else if (op === 'noise') {
+      args = {
+        knn: filterK, sigma,
+        useKnn: ccDefault(a.neighbourhood, 'radius') === 'knn',
+        // omitted, the worker sizes it from the cloud the way CloudCompare does
+        ...(a.radius !== undefined ? { radius: Number(a.radius) } : {}),
+        useAbsoluteError: ccDefault(a.threshold, 'relative') === 'absolute',
+        absoluteError: Number(ccDefault(a.absoluteError, 0)),
+        removeIsolated: !!ccDefault(a.removeIsolated, false),
+      };
+      label = 'Remove noise';
+    }
+    else if (op === 'duplicates') { args = { tol: Number(a.tolerance ?? 0.001) }; label = 'Remove duplicates'; }
+    else if (op === 'subsample') { args = { spacing: Number(a.spacing ?? anaUi.spacing) }; label = 'Thin the cloud'; }
+    else throw new Error(`unknown analysis op: ${op}. Use normals, invert, feature, components, sor, noise, duplicates or subsample.`);
+    const r = await runAnalysis(op, args);
+    hideBusy();
+    // no modal for an agent: the gate is "Allow edits", and it undoes like any other edit
+    await commitMask(label, perLeaf(r.data as Uint8Array, r.counts), '', false);
+    viewer.render();
+    return {
+      op, removed: before - viewer.loaded, kept: viewer.loaded, of: before,
+      ...(r.mean !== undefined ? { meanNeighbourDistance: r6(r.mean), cutOff: r6(r.cut) } : {}),
+      ...(r.params ? { params: r.params } : {}),
+      note: $('v-analysis').textContent,
+    };
+  },
   cache: async (a) => {
     const op = String(a.op ?? 'list');
     if (op === 'list') { await refreshCachedList(); return { cached: cachedItems.map(c => ({ key: c.key, name: c.name, points: c.points, bytes: c.bytes })) }; }
@@ -4444,6 +4538,7 @@ function agentNeedsEdit(cmd: string, a: any = {}): boolean {
   // cloud against it is not
   if (cmd === 'mesh') return !['list', 'measure', 'show'].includes(String(a.op ?? 'measure'));
   if (cmd === 'cache') return String(a.op ?? 'list') !== 'list';
+  if (cmd === 'analysis') return true;      // every op either removes points or writes a field
   // a script is exactly as privileged as the steps in it
   if (cmd === 'script') {
     const steps = Array.isArray(a?.steps) ? a.steps : Array.isArray(a) ? a : [];
@@ -4752,7 +4847,7 @@ if (DESKTOP) startDesktop().catch(e => { $('v-agent').textContent = 'desktop she
   matchCentres, matchScales, runIcp, distanceToReference, removeLayer, addFile,
   get entities() { return viewer.entities; }, get activeId() { return viewer.activeId; },
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; },
-  agentRun: (cmd: string, args: any) => agent.run(cmd, args), runScript,
+  agentRun: (cmd: string, args: any) => agent.run(cmd, args), runScript, noiseArgs, get anaUi() { return anaUi; },
   mcpBlocks, mcpTarget, mcpDesktopTarget, renderMcpSetup, get mcpClients() { return MCP_CLIENTS.map(c => ({ id: c.id, name: c.name })); },
   importMesh, measureActiveMesh, smoothActiveMesh, decimateActiveMesh, sampleMeshPoints, distanceToMesh,
   replaceMesh, flipMesh, meshEntities, meshBlob, saveMesh, refreshMeshUI, setDisplay,

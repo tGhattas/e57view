@@ -1210,6 +1210,108 @@
     }
   },
   {
+    "name": "viewer_analysis",
+    "cmd": "analysis",
+    "description": "Neighbourhood analysis and cleaning on the ACTIVE layer. Every op is one undoable step.\n\nnormals estimates a normal per point from its neighbours and, unless orient:false, turns each one toward the nearest scanner station \u2014 the only orientation that is right for something scanned from the inside. invert flips them. feature writes one of fifteen geometric measures as a scalar field: roughness, curvature, planarity, linearity, sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume_density, surface_density, neighbours, eig1, eig2, eig3. components labels groups of points that touch within radius, as a field, so one cluster can be isolated with the value filter.\n\nThe four that remove points: sor and noise are CloudCompare's SOR and noise filters, reimplemented so the same settings remove the same points. sor measures each point's mean distance to its knn nearest neighbours and drops those beyond mean + nSigma standard deviations, over the whole cloud \u2014 one global threshold, so be aware that a few very distant points raise it far enough to let nearer outliers through. noise fits a plane to the points AROUND each point and drops the point if it sits further off that plane than its neighbours' own spread allows, so the threshold is local: smooth areas are judged strictly and rough ones loosely. Its neighbourhood is a sphere of radius (CloudCompare's default) or the knn nearest; its threshold is relative (nSigma of the local spread) or an absolute distance; and points with fewer than three neighbours are kept unless removeIsolated is set, because \"too few points to judge\" is not the same as \"noise\". duplicates drops points within tolerance of an earlier one. subsample keeps one point per cube of spacing.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "normals",
+            "invert",
+            "feature",
+            "components",
+            "sor",
+            "noise",
+            "duplicates",
+            "subsample"
+          ]
+        },
+        "neighbours": {
+          "type": "integer",
+          "description": "k for normals, feature, sor, and noise in knn mode. CloudCompare's filter dialogs default to 8."
+        },
+        "nSigma": {
+          "type": "number",
+          "description": "op=sor, and op=noise with a relative threshold. Default 1.0, as in CloudCompare."
+        },
+        "orient": {
+          "type": "boolean",
+          "description": "op=normals: turn normals toward the scanner stations. Default true."
+        },
+        "feature": {
+          "type": "string",
+          "enum": [
+            "roughness",
+            "curvature",
+            "planarity",
+            "linearity",
+            "sphericity",
+            "anisotropy",
+            "omnivariance",
+            "eigenentropy",
+            "verticality",
+            "volume_density",
+            "surface_density",
+            "neighbours",
+            "eig1",
+            "eig2",
+            "eig3"
+          ]
+        },
+        "radius": {
+          "type": "number",
+          "description": "metres: the neighbourhood for feature and components, and for noise in radius mode"
+        },
+        "minPoints": {
+          "type": "integer",
+          "description": "op=components: the smallest cluster worth labelling"
+        },
+        "neighbourhood": {
+          "type": "string",
+          "enum": [
+            "radius",
+            "knn"
+          ],
+          "description": "op=noise. CloudCompare defaults to radius."
+        },
+        "threshold": {
+          "type": "string",
+          "enum": [
+            "relative",
+            "absolute"
+          ],
+          "description": "op=noise. CloudCompare defaults to relative."
+        },
+        "absoluteError": {
+          "type": "number",
+          "description": "op=noise with an absolute threshold: metres from the local plane"
+        },
+        "removeIsolated": {
+          "type": "boolean",
+          "description": "op=noise: drop points with too few neighbours to fit a plane. Default false, as in CloudCompare."
+        },
+        "tolerance": {
+          "type": "number",
+          "description": "op=duplicates: metres, default 0.001"
+        },
+        "spacing": {
+          "type": "number",
+          "description": "op=subsample: metres between kept points"
+        }
+      },
+      "required": [
+        "op"
+      ]
+    },
+    "timeoutMs": 1800000,
+    "ui": {
+      "shot": "always"
+    }
+  },
+  {
     "name": "viewer_transform",
     "cmd": "transform",
     "description": "Move, rotate, scale or level the whole cloud. The points are never rewritten: the cloud carries a 4x4 matrix applied at render, test, analysis and export time, so this is instant, lossless and undoable, and only a written file bakes it. get reports the matrix; set replaces it (16 numbers, row-major); translate/rotate/scale compose on top of it; level fits a plane to a sample and turns it horizontal; reset clears it.",

@@ -48,7 +48,12 @@ export class CloudAnalysis {
     invert_normals(): void;
     len(): number;
     constructor(cell: number);
-    noise(k: number, n_sigma: number, progress?: Function | null): Uint8Array;
+    /**
+     * CloudCompare's noise filter, with all of its options: a kNN or a sphere
+     * neighbourhood, a relative (n sigma) or absolute distance threshold, and whether
+     * points with too few neighbours to fit a plane are dropped or kept.
+     */
+    noise(use_knn: boolean, knn: number, radius: number, use_absolute_error: boolean, absolute_error: number, n_sigma: number, remove_isolated: boolean, progress?: Function | null): Uint8Array;
     /**
      * Normals interleaved as x,y,z signed bytes, for the viewer to patch into its records.
      */
@@ -266,7 +271,7 @@ export interface InitOutput {
     readonly cloudanalysis_len: (a: number) => number;
     readonly cloudanalysis_mean_distance: (a: number) => number;
     readonly cloudanalysis_new: (a: number) => number;
-    readonly cloudanalysis_noise: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly cloudanalysis_noise: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
     readonly cloudanalysis_normals_bytes: (a: number) => [number, number];
     readonly cloudanalysis_orient_normals: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly cloudanalysis_orient_to_viewpoints: (a: number, b: number, c: number) => void;

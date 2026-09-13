@@ -295,6 +295,38 @@ picture reports its size instead of its bytes, so ask for pictures with their ow
 The viewer's own Agent group has **Run script…**, which takes the same JSON, remembers the last
 one, and shows a row per step.
 
+## Cleaning: the same filters CloudCompare has
+
+{"session":"S","cmd":"analysis","args":{"op":"sor","neighbours":8,"nSigma":1}}
+{"session":"S","cmd":"analysis","args":{"op":"noise","neighbourhood":"radius","radius":0.15,"nSigma":1}}
+{"session":"S","cmd":"analysis","args":{"op":"feature","feature":"planarity"}}
+
+`analysis` covers normals, the fifteen geometric features, connected components, and the four
+operations that remove points. Every one is a single undoable step on the active layer.
+
+`sor` and `noise` are CloudCompare's SOR and noise filters, reimplemented in Rust from the
+published algorithm so the same settings remove the same points. They behave differently and
+the difference matters:
+
+- **`sor`** measures each point's mean distance to its `neighbours` nearest, then drops
+  everything beyond `mean + nSigma` standard deviations **of the whole cloud**. One global
+  threshold. Its weakness follows from that: a handful of points tens of metres from anything
+  contribute enormously to the standard deviation, the cut-off moves out past everything else,
+  and outliers a few centimetres off a surface sail through. If a scan has a stray reflection
+  in it, crop that away first. The reply gives the mean and the cut-off it used, so you can see
+  when this has happened.
+- **`noise`** fits a plane to the points **around** each point and drops the point if it sits
+  further off that plane than its own neighbours' spread allows. The threshold is local, so a
+  smooth wall is judged strictly and a hedge loosely. The neighbourhood is a sphere of `radius`
+  (the default) or the `neighbours` nearest; the threshold is `relative` (the default,
+  `nSigma` of the local spread) or `absolute` in metres. Points with fewer than three
+  neighbours are kept unless `removeIsolated` is set, because "too few points to judge this"
+  is not the same statement as "this is noise".
+
+Arguments you leave out take CloudCompare's defaults, not whatever the viewer's panel happens
+to be showing: `neighbours` 8, `nSigma` 1.0, a sphere neighbourhood, a relative threshold, and
+isolated points kept.
+
 ## Meshes are layers
 
 {"session":"S","cmd":"mesh","args":{"op":"list"}}

@@ -700,7 +700,7 @@ mod wasm_shapes {
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_analysis {
-    use crate::analysis::{Analyzer, Feature};
+    use crate::analysis::{Analyzer, Feature, NoiseParams};
     use wasm_bindgen::prelude::*;
 
     /// Neighbourhood analysis driven from a worker. The caller streams in the viewer's own
@@ -849,8 +849,18 @@ mod wasm_analysis {
             self.last_cut = cut;
             keep
         }
-        pub fn noise(&mut self, k: u32, n_sigma: f32, progress: Option<js_sys::Function>) -> Vec<u8> {
-            self.inner.noise_filter(k as usize, n_sigma, |i| tick(&progress, i))
+        /// CloudCompare's noise filter, with all of its options: a kNN or a sphere
+        /// neighbourhood, a relative (n sigma) or absolute distance threshold, and whether
+        /// points with too few neighbours to fit a plane are dropped or kept.
+        #[allow(clippy::too_many_arguments)]
+        pub fn noise(&mut self, use_knn: bool, knn: u32, radius: f32,
+                     use_absolute_error: bool, absolute_error: f32, n_sigma: f32,
+                     remove_isolated: bool, progress: Option<js_sys::Function>) -> Vec<u8> {
+            let p = NoiseParams {
+                use_knn, knn: knn as usize, radius,
+                use_absolute_error, absolute_error, n_sigma, remove_isolated,
+            };
+            self.inner.noise_filter(p, |i| tick(&progress, i))
         }
         pub fn duplicates(&mut self, tol: f32) -> Vec<u8> { self.inner.duplicates(tol) }
         pub fn subsample(&mut self, spacing: f32) -> Vec<u8> { self.inner.spatial_subsample(spacing) }

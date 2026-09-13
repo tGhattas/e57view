@@ -344,6 +344,25 @@
       </div>
 
       <p class="lab mono">CLUSTER AND THIN</p>
+      <details class="sub">
+        <summary>Noise filter options</summary>
+        <label class="row"><span title="CloudCompare calls this the neighbours option. A sphere is its default.">Neighbourhood</span>
+          <select id="k-annbmode">
+            <option value="radius">Sphere of a radius</option>
+            <option value="knn">Nearest neighbours</option>
+          </select>
+        </label>
+        <label class="row"><span>Radius</span><input type="range" id="k-annradius" min="0.01" max="2" step="0.01" value="0.15"><b class="mono" id="v-annradius">0.15 m</b></label>
+        <label class="row"><span title="CloudCompare calls this the error option. Relative is its default.">Threshold</span>
+          <select id="k-anerrmode">
+            <option value="relative">Relative, in sigma</option>
+            <option value="absolute">Absolute distance</option>
+          </select>
+        </label>
+        <label class="row"><span>Absolute</span><input type="range" id="k-annabs" min="0.001" max="0.5" step="0.001" value="0.02"><b class="mono" id="v-annabs">0.020 m</b></label>
+        <label class="row"><span title="Points with fewer than three neighbours cannot have a plane fitted, so the filter has nothing to judge them by.">Remove isolated points</span><input type="checkbox" id="k-annrip"></label>
+        <p class="hint">Same algorithm and same defaults as CloudCompare's noise filter, so the same settings remove the same points. <b>Strictness</b> above is its nSigma; <b>Neighbours</b> is its kNN.</p>
+      </details>
       <label class="row"><span>Spacing</span><input type="range" id="k-anspace" min="0.01" max="2" step="0.01" value="0.1"><b class="mono" id="v-anspace">0.10 m</b></label>
       <div class="seg">
         <button id="k-ancc" class="ghost">Components</button>

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Native validation of the neighbourhood analyses against shapes with known answers.
-use e57_wasm::analysis::{Analyzer, Feature};
+use e57_wasm::analysis::{Analyzer, Feature, NoiseParams};
 use e57_wasm::shapes;
 
 fn recs(pts: &[[f32; 3]], origin: [f32; 3], size: f32) -> Vec<u8> {
@@ -46,6 +46,132 @@ fn med(v: &mut Vec<f32>) -> f32 {
     v.retain(|x| x.is_finite());
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     if v.is_empty() { f32::NAN } else { v[v.len() / 2] }
+}
+
+// ---------------------------------------------------------------------------------------
+// CloudCompare's own algorithms, transcribed as literally as Rust allows, for the tests to
+// compare against. Brute force everywhere: correctness is the only thing wanted here, and a
+// second fast implementation would only be a second place for the same mistake to hide.
+//
+// Source: CCCoreLib::CloudSamplingTools::sorFilter / applySORFilterAtLevel and
+// noiseFilter / applyNoiseFilterAtLevel, https://github.com/CloudCompare/CCCoreLib
+// commit dc8c7d80f4ef8fd6a2c302c8d5f9c35099ba8432. LGPL-2.0-or-later; nothing is copied,
+// this is written from the algorithm.
+// ---------------------------------------------------------------------------------------
+
+/// The `m` nearest points to `i` including `i` itself, sorted, as their octree search gives.
+fn cc_nearest(cloud: &[[f32; 3]], i: usize, m: usize) -> Vec<(f64, usize)> {
+    let mut all: Vec<(f64, usize)> = (0..cloud.len())
+        .map(|j| (dist2(cloud[i], cloud[j]), j))
+        .collect();
+    // ties by index, matching what our own search does, so an exact tie cannot make the two
+    // disagree about a point neither of them has a reason to prefer
+    all.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+    all.truncate(m.min(all.len()));
+    all
+}
+fn cc_in_sphere(cloud: &[[f32; 3]], i: usize, r: f64) -> Vec<(f64, usize)> {
+    let r2 = r * r;
+    (0..cloud.len())
+        .map(|j| (dist2(cloud[i], cloud[j]), j))
+        .filter(|&(d2, _)| d2 <= r2)
+        .collect()
+}
+fn dist2(a: [f32; 3], b: [f32; 3]) -> f64 {
+    let d = [a[0] as f64 - b[0] as f64, a[1] as f64 - b[1] as f64, a[2] as f64 - b[2] as f64];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+}
+
+fn cc_sor(cloud: &[[f32; 3]], knn: usize, n_sigma: f64) -> Vec<u8> {
+    let n = cloud.len();
+    // sorFilter refuses a cloud no bigger than knn
+    if knn == 0 || n <= knn { return vec![1u8; n]; }
+    let mut mean_distances = vec![0.0f64; n];
+    for i in 0..n {
+        // applySORFilterAtLevel: minNumberOfNeighbors = knn (the query point included),
+        // then skip the query point when summing
+        let nb = cc_nearest(cloud, i, knn);
+        let mut sum_dist = 0.0;
+        let mut count = 0u32;
+        for &(d2, j) in nb.iter() {
+            if j != i {
+                sum_dist += d2.sqrt();
+                count += 1;
+            }
+        }
+        if count != 0 { mean_distances[i] = sum_dist / count as f64; }
+    }
+    let mut sum_dist = 0.0;
+    let mut sum_square_dist = 0.0;
+    for &d in &mean_distances {
+        sum_dist += d;
+        sum_square_dist += d * d;
+    }
+    let avg_dist = sum_dist / n as f64;
+    let std_dev = (sum_square_dist / n as f64 - avg_dist * avg_dist).abs().sqrt();
+    let max_dist = avg_dist + n_sigma * std_dev;
+    mean_distances.iter().map(|&d| if d <= max_dist { 1u8 } else { 0u8 }).collect()
+}
+
+/// The least-squares plane of a point set: centroid, and the normal from the smallest
+/// eigenvector of the covariance, which is what Neighbourhood::getLSPlane computes.
+fn cc_ls_plane(cloud: &[[f32; 3]], idx: &[usize]) -> Option<([f64; 3], [f64; 3])> {
+    if idx.len() < 3 { return None; }
+    let n = idx.len() as f64;
+    let mut g = [0.0f64; 3];
+    for &j in idx { for a in 0..3 { g[a] += cloud[j][a] as f64; } }
+    for a in 0..3 { g[a] /= n; }
+    let mut cov = [[0.0f64; 3]; 3];
+    for &j in idx {
+        let d = [cloud[j][0] as f64 - g[0], cloud[j][1] as f64 - g[1], cloud[j][2] as f64 - g[2]];
+        for a in 0..3 { for b in 0..3 { cov[a][b] += d[a] * d[b]; } }
+    }
+    for a in 0..3 { for b in 0..3 { cov[a][b] /= n; } }
+    let (_, vecs) = e57_wasm::analysis::eigen_sym3_pub(cov);
+    Some((g, [vecs[0][0], vecs[1][0], vecs[2][0]]))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cc_noise(cloud: &[[f32; 3]], use_knn: bool, knn: usize, kernel_radius: f64,
+            use_absolute_error: bool, absolute_error: f64, n_sigma: f64,
+            remove_isolated_points: bool) -> Vec<u8> {
+    let n = cloud.len();
+    let mut keep = vec![0u8; n];
+    for i in 0..n {
+        let found = if use_knn { cc_nearest(cloud, i, knn) } else { cc_in_sphere(cloud, i, kernel_radius) };
+        let neighbor_count = found.len();
+        if neighbor_count > 3 {
+            // the query point is swapped to the end and excluded
+            let idx: Vec<usize> = found.iter().map(|&(_, j)| j).filter(|&j| j != i).collect();
+            let real_neighbor_count = idx.len() as f64;
+            match cc_ls_plane(cloud, &idx) {
+                Some((g, nrm)) => {
+                    let signed = |p: [f32; 3]| {
+                        (p[0] as f64 - g[0]) * nrm[0] + (p[1] as f64 - g[1]) * nrm[1] + (p[2] as f64 - g[2]) * nrm[2]
+                    };
+                    let max_d = if use_absolute_error {
+                        absolute_error
+                    } else {
+                        let mut sum_d = 0.0;
+                        let mut sum_d2 = 0.0;
+                        for &j in &idx {
+                            let d = signed(cloud[j]);
+                            sum_d += d;
+                            sum_d2 += d * d;
+                        }
+                        let stddev = (sum_d2 * real_neighbor_count - sum_d * sum_d).abs().sqrt() / real_neighbor_count;
+                        stddev * n_sigma
+                    };
+                    let d = signed(cloud[i]).abs();
+                    if d <= max_d { keep[i] = 1; }
+                }
+                None => {}
+            }
+        } else if !remove_isolated_points {
+            keep[i] = 1;
+        }
+    }
+    keep
 }
 
 fn main() {
@@ -207,23 +333,153 @@ fn main() {
     let up = t_lev.nz.iter().filter(|&&v| v.abs() > 120).count();
     ck("levelled normals point along z", up > t_lev.len() * 98 / 100, format!("{}/{}", up, t_lev.len()));
 
-    // ---------------------------------------------------------------- outliers
-    let mut noisy = plane.clone();
-    let planted = 150;
-    for i in 0..planted {
-        noisy.push([10.0 + (i % 12) as f32 * 0.4, 10.0 + (i / 12) as f32 * 0.4, 21.5 + (i % 5) as f32 * 0.3]);
-    }
-    let mut o = mk(&noisy, 0.2);
-    let (keep, mu, cut) = o.sor(16, 1.0, |_| {});
-    let dropped_out = (plane.len()..noisy.len()).filter(|&i| keep[i] == 0).count();
-    let dropped_in = (0..plane.len()).filter(|&i| keep[i] == 0).count();
-    ck("SOR drops the planted outliers", dropped_out > planted * 9 / 10, format!("{}/{} planted removed, mean {:.4} cut {:.4}", dropped_out, planted, mu, cut));
-    ck("SOR keeps the surface", dropped_in < plane.len() / 50, format!("{} of {} surface points lost", dropped_in, plane.len()));
+    // ---------------------------------------------------------------- outliers and noise
+    //
+    // Both filters are checked against an oracle written below: a literal, brute-force
+    // transcription of CloudCompare's own algorithm, close enough to the C++ that it can be
+    // read beside it. Asserting "most of the planted outliers went" would pass for a filter
+    // that is merely in the right area; asserting "exactly the same points as CloudCompare"
+    // is what makes the settings mean the same thing in both programs.
+    {
+        // a plane, a sphere resting on it, outliers 3 to 10 spacings off the surface, and a
+        // few points far enough from everything to have almost no neighbours
+        let sp = 0.05f32;
+        let mut seed0 = 424242u64;
+        let mut jit = || {
+            seed0 = seed0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (((seed0 >> 33) as f32) / 2147483648.0 - 0.5) * sp * 0.4
+        };
+        let mut cloud: Vec<[f32; 3]> = Vec::new();
+        // A little jitter, because a perfect lattice is not a scan and is not a fair test:
+        // on an exact grid thousands of neighbour distances are identical to the last bit, so
+        // which of them a partial sort picks is arbitrary and the two implementations
+        // disagree about points that are genuinely tied. Real data has no exact ties.
+        for i in 0..60 { for j in 0..60 {
+            cloud.push([10.0 + i as f32 * sp + jit(), 10.0 + j as f32 * sp + jit(), 20.0 + jit()]);
+        }}
+        let ball_c = [11.5f32, 11.5, 20.5];
+        for i in 0..800 {
+            let y = 1.0 - (i as f32 / 799.0) * 2.0;
+            let r = (1.0 - y * y).max(0.0).sqrt();
+            let th = std::f32::consts::PI * (3.0 - 5.0f32.sqrt()) * i as f32;
+            cloud.push([ball_c[0] + th.cos() * r * 0.5 + jit(), ball_c[1] + y * 0.5 + jit(), ball_c[2] + th.sin() * r * 0.5 + jit()]);
+        }
+        let surface_n = cloud.len();
+        let mut seed = 987654321u64;
+        let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); ((seed >> 33) as f32) / 2147483648.0 };
+        let mut planted = 0;
+        for _ in 0..120 {
+            let off = (3.0 + rnd() * 7.0) * sp * if rnd() > 0.5 { 1.0 } else { -1.0 };
+            cloud.push([10.2 + rnd() * 2.5, 10.2 + rnd() * 2.5, 20.0 + off]);
+            planted += 1;
+        }
+        let isolated_from = cloud.len();
+        for i in 0..6 {
+            cloud.push([30.0 + i as f32 * 3.0, 30.0, 25.0]);
+        }
+        let total = cloud.len();
 
-    let mut o2 = mk(&noisy, 0.2);
-    let keep2 = o2.noise_filter(16, 1.0, |_| {});
-    let nf_out = (plane.len()..noisy.len()).filter(|&i| keep2[i] == 0).count();
-    ck("noise filter drops off-surface points", nf_out > planted * 8 / 10, format!("{}/{} removed", nf_out, planted));
+        // The Analyzer stores points quantised into its leaf cubes, so the oracle has to see
+        // the same numbers it does. Comparing against the unquantised input would be
+        // comparing two different clouds and blaming the algorithm.
+        let points_of = |a: &Analyzer| -> Vec<[f32; 3]> {
+            (0..a.len()).map(|i| [a.x[i], a.y[i], a.z[i]]).collect()
+        };
+
+        for &(knn, nsig) in &[(6usize, 1.0f32), (8, 1.0), (16, 2.0)] {
+            let mut a = mk(&cloud, sp * 3.0);
+            let pts = points_of(&a);
+            let (keep, _, _) = a.sor(knn, nsig, |_| {});
+            let want = cc_sor(&pts, knn, nsig as f64);
+            let diff = (0..total).filter(|&i| keep[i] != want[i]).count();
+            ck(&format!("SOR matches CloudCompare at knn={knn}, nSigma={nsig}"), diff == 0,
+               format!("{} of {} points differ, {} kept", diff, total, keep.iter().filter(|&&k| k == 1).count()));
+        }
+        // and it does the job it is for
+        let mut a = mk(&cloud, sp * 3.0);
+        let (keep, mu, cut) = a.sor(8, 1.0, |_| {});
+        let out = (surface_n..surface_n + planted).filter(|&i| keep[i] == 0).count();
+        let lost = (0..surface_n).filter(|&i| keep[i] == 0).count();
+        // With the six far-flung points present, SOR keeps every planted outlier. That is not
+        // a bug in either implementation, it is what a global threshold does: six points tens
+        // of metres from anything contribute enormously to the standard deviation, the
+        // cut-off moves out past everything else, and outliers a few centimetres off a
+        // surface sail through. Worth knowing before reaching for this filter on a scan with
+        // a stray reflection in it.
+        ck("a few very distant points push SOR's cut-off out past the real outliers",
+           out == 0 && cut > 0.4, format!("{out}/{planted} removed, mean {mu:.4} m, cut {cut:.4} m"));
+        ck("SOR keeps the surface", lost < surface_n / 50, format!("{lost} of {surface_n} surface points lost"));
+        // the same cloud without them, where the filter does what it is for
+        let near: Vec<[f32; 3]> = cloud[..isolated_from].to_vec();
+        let mut a2 = mk(&near, sp * 3.0);
+        let (keep2, mu2, cut2) = a2.sor(8, 1.0, |_| {});
+        let out2 = (surface_n..surface_n + planted).filter(|&i| keep2[i] == 0).count();
+        let lost2 = (0..surface_n).filter(|&i| keep2[i] == 0).count();
+        ck("without them it removes the planted outliers", out2 > planted * 8 / 10,
+           format!("{out2}/{planted} removed, mean {mu2:.4} m, cut {cut2:.4} m"));
+        ck("and still keeps the surface", lost2 < surface_n / 50, format!("{lost2} of {surface_n} lost"));
+        let pts2: Vec<[f32; 3]> = (0..a2.len()).map(|i| [a2.x[i], a2.y[i], a2.z[i]]).collect();
+        let want2 = cc_sor(&pts2, 8, 1.0);
+        ck("and CloudCompare agrees about that cloud too",
+           (0..pts2.len()).all(|i| keep2[i] == want2[i]),
+           format!("{} of {} differ", (0..pts2.len()).filter(|&i| keep2[i] != want2[i]).count(), pts2.len()));
+        // SOR has no isolated-point rule: a lonely point goes because its mean neighbour
+        // distance is large, the same reason as any other outlier
+        let iso_dropped = (isolated_from..total).filter(|&i| keep[i] == 0).count();
+        ck("SOR drops lonely points for their distance, not by a special rule", iso_dropped == 6,
+           format!("{iso_dropped} of 6 dropped"));
+
+        // noise filter, in both neighbourhood modes, both error modes, and with the
+        // isolated-point option
+        let cases: [(bool, usize, f32, bool, f32, f32, bool); 6] = [
+            //  use_knn  knn  radius     abs    absErr    nSigma  removeIsolated
+            (false, 6, sp * 3.0, false, 0.0, 1.0, false),
+            (false, 6, sp * 3.0, false, 0.0, 1.0, true),
+            (false, 6, sp * 6.0, false, 0.0, 2.0, false),
+            (true, 6, 0.0, false, 0.0, 1.0, false),
+            (true, 16, 0.0, false, 0.0, 2.0, false),
+            (false, 6, sp * 3.0, true, sp * 0.5, 1.0, false),
+        ];
+        let mut noise_masks = Vec::new();
+        for &(use_knn, knn, radius, abs_err, abs_val, nsig, rip) in &cases {
+            let p = NoiseParams { use_knn, knn, radius, use_absolute_error: abs_err, absolute_error: abs_val, n_sigma: nsig, remove_isolated: rip };
+            let mut a = mk(&cloud, sp * 3.0);
+            let pts = points_of(&a);
+            let keep = a.noise_filter(p, |_| {});
+            let want = cc_noise(&pts, use_knn, knn, radius as f64, abs_err, abs_val as f64, nsig as f64, rip);
+            let diff = (0..total).filter(|&i| keep[i] != want[i]).count();
+            let what = if use_knn { format!("knn={knn}") } else { format!("radius={:.3} m", radius) };
+            let how = if abs_err { format!("absolute {:.3} m", abs_val) } else { format!("{nsig} sigma") };
+            ck(&format!("noise filter matches CloudCompare, {what}, {how}{}", if rip { ", isolated removed" } else { "" }),
+               diff == 0, format!("{} of {} points differ, {} kept", diff, total, keep.iter().filter(|&&k| k == 1).count()));
+            noise_masks.push(keep);
+        }
+
+        // what the options actually do, stated as behaviour rather than as agreement
+        let k_keep = &noise_masks[0];
+        let k_drop = &noise_masks[1];
+        let kept_iso = (isolated_from..total).filter(|&i| k_keep[i] == 1).count();
+        let dropped_iso = (isolated_from..total).filter(|&i| k_drop[i] == 0).count();
+        ck("points with too few neighbours are kept by default", kept_iso == 6, format!("{kept_iso} of 6 kept"));
+        ck("and dropped when remove-isolated is on", dropped_iso == 6, format!("{dropped_iso} of 6 dropped"));
+        // The planted outliers are 3 to 10 spacings off the plane, so at a 0.15 m radius most
+        // of them have no neighbours at all and the filter keeps them: too few points to fit a
+        // plane is not the same statement as "this is noise". In kNN mode there is always a
+        // neighbourhood, and then they go.
+        let knn_mask = &noise_masks[3];
+        let nf_knn = (surface_n..surface_n + planted).filter(|&i| knn_mask[i] == 0).count();
+        ck("in kNN mode the noise filter drops the off-surface points", nf_knn > planted * 8 / 10,
+           format!("{nf_knn}/{planted} removed"));
+        let rip_mask = &noise_masks[1];
+        let nf_rip = (surface_n..surface_n + planted).filter(|&i| rip_mask[i] == 0).count();
+        ck("in radius mode they go once isolated points are removed too", nf_rip > planted * 8 / 10,
+           format!("{nf_rip}/{planted} removed"));
+        // an absolute threshold of half a spacing is looser than one sigma of this jitter
+        let abs_mask = &noise_masks[5];
+        ck("an absolute threshold keeps more than one sigma does",
+           abs_mask.iter().filter(|&&k| k == 1).count() > k_keep.iter().filter(|&&k| k == 1).count(),
+           format!("{} kept against {}", abs_mask.iter().filter(|&&k| k == 1).count(), k_keep.iter().filter(|&&k| k == 1).count()));
+    }
 
     // ---------------------------------------------------------------- duplicates
     let mut dup = plane.clone();

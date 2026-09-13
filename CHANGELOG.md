@@ -63,8 +63,12 @@ been released yet, so everything is unreleased.
   something scanned from the inside.
 - **Scalar fields** from curvature, planarity, verticality, roughness, density and more, with a
   ramp, a histogram and a value filter.
-- **Cleaning**: statistical outlier removal, a local-surface noise filter, duplicate removal and
-  spatial subsampling.
+- **Cleaning**: **SOR and noise filters with the same semantics and defaults as CloudCompare's**
+  — reimplemented in Rust from `CCCoreLib::CloudSamplingTools`, not copied, and asserted to
+  remove the same points as a transcription of that algorithm on every run. The noise filter
+  has all of CloudCompare's options: a sphere or kNN neighbourhood, a relative or absolute
+  threshold, and whether points with too few neighbours to fit a plane are dropped. Plus
+  duplicate removal and spatial subsampling.
 - **Connected components**, so a cluster can be isolated and kept or dropped.
 - **Fit primitives** — plane, sphere, cylinder, circle — each reporting an RMS, because a
   cylinder fitted to a flat wall has a radius and an axis and means nothing without one.

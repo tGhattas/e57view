@@ -15,7 +15,13 @@ const files = [
 let hits = 0;
 for (const f of files) {
   const src = readFileSync(f, 'utf8');
-  const found = [...src.matchAll(BAD)];
+  // A line may opt out with `scrub-ok:` and a reason. There is one real use: a made-up path
+  // with a space in it, used to check that shell quoting survives it.
+  const lines = src.split('\n');
+  const found = [...src.matchAll(BAD)].filter(m => {
+    const line = lines[src.slice(0, m.index).split('\n').length - 1] ?? '';
+    return !line.includes('scrub-ok:');
+  });
   if (!found.length) continue;
   hits += found.length;
   if (check) { console.log(`${f}: ${found.map(m => m[2]).join(', ')}`); continue; }

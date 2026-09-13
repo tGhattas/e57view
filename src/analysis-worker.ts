@@ -120,12 +120,27 @@ self.onmessage = async (ev: MessageEvent) => {
         out.data = f;
       } else if (op === 'sor') {
         out.kind = 'mask';
-        out.data = a!.sor(m.k, m.sigma, prog('Measuring neighbourhoods', n));
+        out.data = a!.sor(m.knn ?? m.k ?? 6, Number(m.sigma ?? 1), prog('Measuring neighbourhoods', n));
         out.mean = a!.mean_distance;
         out.cut = a!.cut_distance;
+        out.params = { knn: m.knn ?? m.k ?? 6, nSigma: Number(m.sigma ?? 1) };
       } else if (op === 'noise') {
+        // CloudCompare's own defaults, so the same settings mean the same thing there:
+        // a sphere neighbourhood, a relative threshold, one sigma, isolated points kept.
+        // The radius defaults to three point spacings, which is the same idea as their
+        // "1% of the bounding box scaled by point count" and lands in the same place.
         out.kind = 'mask';
-        out.data = a!.noise(m.k, m.sigma, prog('Fitting local surfaces', n));
+        const useKnn = !!m.useKnn;
+        const radius = m.radius !== undefined ? Number(m.radius) : cell * 1.2;
+        out.data = a!.noise(useKnn, m.knn ?? m.k ?? 6, radius,
+          !!m.useAbsoluteError, Number(m.absoluteError ?? 0), Number(m.sigma ?? 1),
+          !!m.removeIsolated, prog('Fitting local surfaces', n));
+        out.params = {
+          neighbourhood: useKnn ? 'knn' : 'radius', knn: m.knn ?? m.k ?? 6, radius,
+          threshold: m.useAbsoluteError ? 'absolute' : 'relative',
+          absoluteError: Number(m.absoluteError ?? 0), nSigma: Number(m.sigma ?? 1),
+          removeIsolated: !!m.removeIsolated,
+        };
       } else if (op === 'duplicates') {
         out.kind = 'mask';
         out.data = a!.duplicates(m.tol);

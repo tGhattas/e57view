@@ -145,9 +145,10 @@ for (const [plat, exe] of EXES) {
      Object.values(byClient).every(b => !b.some(x => /curl/.test(x.text))), '');
 }
 // the shell form has to survive a path with a space in it
+// an invented path with a space in it, to check the shell quoting
 const spaced = await p.evaluate(() =>
-  window.__app.mcpBlocks('claude-code', window.__app.mcpDesktopTarget('/Users/a b/e57view'))[0].text);
-ok('a path with a space is quoted for the shell', spaced.includes('"/Users/a b/e57view"'), spaced);
+  window.__app.mcpBlocks('claude-code', window.__app.mcpDesktopTarget('/Users/a b/e57view'))[0].text);  // scrub-ok: a fixture, not anybody's home
+ok('a path with a space is quoted for the shell', spaced.includes('"/Users/a b/e57view"'), spaced);     // scrub-ok: the same fixture
 
 console.log(`\n${fails === 0 ? 'ALL CHECKS PASSED' : `${fails} CHECK(S) FAILED`}`);
 await br.close();

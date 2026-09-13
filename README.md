@@ -123,8 +123,13 @@ against CloudCompare read from its source, 190 rows, kept current.
 - **Fifteen geometric features** as scalar fields: roughness, curvature, planarity, linearity,
   sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume and surface density,
   neighbour count, and the three eigenvalues.
-- **Cleaning**: statistical outlier removal, a local-surface noise filter, duplicate removal,
-  spatial subsampling, connected components.
+- **Cleaning**: **SOR and a noise filter with the same semantics and defaults as
+  CloudCompare's**, reimplemented in Rust from the published algorithm and checked point for
+  point against a transcription of it. SOR uses one global threshold on mean neighbour
+  distance; the noise filter fits a plane to the points around each point and judges it
+  against its own neighbours' spread, with a sphere or kNN neighbourhood, a relative or
+  absolute threshold, and a choice about points too sparse to judge. Plus duplicate removal,
+  spatial subsampling and connected components.
 - A field gets a ramp, a histogram, a display range and a value filter that can delete what
   falls outside it in one undoable step.
 

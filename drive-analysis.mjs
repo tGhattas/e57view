@@ -211,6 +211,91 @@ ok('record=false keeps the field lined up',
    align.want > 100 && align.kept === align.want && align.wrong === 0 && align.unexpected === 0,
    `${align.kept} kept of ${align.total} (CPU said ${align.want}) · ${align.wrong} values misplaced, ${align.unexpected} unexpected`);
 
+// ---------------------------------------------------------------- the CloudCompare filters
+// The numbers are checked natively in anatest against a transcription of CloudCompare's own
+// code. What is checked here is that the panel and the agent reach that code with the right
+// arguments, which is where the settings actually get lost.
+const filterUi = await p.evaluate(() => {
+  const el = (id) => document.getElementById(id);
+  return {
+    have: ['k-annbmode', 'k-annradius', 'k-anerrmode', 'k-annabs', 'k-annrip'].filter(id => !!el(id)),
+    neighbourhood: el('k-annbmode')?.value,
+    threshold: el('k-anerrmode')?.value,
+    removeIsolated: el('k-annrip')?.checked,
+    nSigma: Number(el('k-ansigma')?.value),
+    options: Array.from(el('k-annbmode')?.options ?? []).map(o => o.value)
+      .concat(Array.from(el('k-anerrmode')?.options ?? []).map(o => o.value)),
+  };
+});
+ok('the noise filter exposes every CloudCompare option', filterUi.have.length === 5, filterUi.have.join(', '));
+ok('and starts on CloudCompare\'s defaults',
+   filterUi.neighbourhood === 'radius' && filterUi.threshold === 'relative' && filterUi.removeIsolated === false && filterUi.nSigma === 1,
+   `neighbourhood ${filterUi.neighbourhood}, threshold ${filterUi.threshold}, removeIsolated ${filterUi.removeIsolated}, nSigma ${filterUi.nSigma}`);
+ok('both neighbourhood modes and both threshold modes are offered',
+   ['radius', 'knn', 'relative', 'absolute'].every(o => filterUi.options.includes(o)), filterUi.options.join(', '));
+
+// the arguments the panel would send, read from the same function the button uses
+const sent = await p.evaluate(() => {
+  const before = window.__app.noiseArgs();
+  document.getElementById('k-annbmode').value = 'knn';
+  document.getElementById('k-annbmode').dispatchEvent(new Event('change'));
+  document.getElementById('k-anerrmode').value = 'absolute';
+  document.getElementById('k-anerrmode').dispatchEvent(new Event('change'));
+  document.getElementById('k-annrip').checked = true;
+  document.getElementById('k-annrip').dispatchEvent(new Event('change'));
+  const after = window.__app.noiseArgs();
+  return { before, after };
+});
+ok('the panel sends the defaults as CloudCompare states them',
+   sent.before.useKnn === false && sent.before.useAbsoluteError === false && sent.before.removeIsolated === false && sent.before.sigma === 1,
+   JSON.stringify(sent.before));
+ok('and changing the controls changes what it sends',
+   sent.after.useKnn === true && sent.after.useAbsoluteError === true && sent.after.removeIsolated === true,
+   JSON.stringify(sent.after));
+
+// the agent surface, over the real dispatcher
+const agentNoise = await p.evaluate(() => window.__app.agentRun('analysis', {
+  op: 'noise', neighbourhood: 'knn', neighbours: 12, nSigma: 2, removeIsolated: true,
+}));
+console.log('AGENT NOISE', JSON.stringify(agentNoise.params), `removed ${agentNoise.removed} of ${agentNoise.of}`);
+ok('an agent can drive the noise filter', agentNoise.op === 'noise' && agentNoise.of > 100 && agentNoise.kept + agentNoise.removed === agentNoise.of,
+   `${agentNoise.removed} removed of ${agentNoise.of}`);
+ok('and its arguments arrive at the filter intact',
+   agentNoise.params.neighbourhood === 'knn' && agentNoise.params.knn === 12
+   && agentNoise.params.nSigma === 2 && agentNoise.params.removeIsolated === true,
+   JSON.stringify(agentNoise.params));
+// the panel was left on knn + absolute + remove-isolated a moment ago; an agent that says
+// nothing must still get CloudCompare's defaults, not whatever the panel is showing
+const agentDefaults = await p.evaluate(() => window.__app.agentRun('analysis', { op: 'noise' }));
+ok('an agent that gives no options gets CloudCompare\'s defaults, not the panel\'s state',
+   agentDefaults.params.neighbourhood === 'radius' && agentDefaults.params.threshold === 'relative'
+   && agentDefaults.params.removeIsolated === false && agentDefaults.params.nSigma === 1
+   && agentDefaults.params.knn === 8,
+   JSON.stringify(agentDefaults.params));
+await p.evaluate(() => window.__app.undoEdit());
+await p.waitForTimeout(300);
+await p.evaluate(() => window.__app.undoEdit());
+await p.waitForTimeout(300);
+
+const agentSor = await p.evaluate(() => window.__app.agentRun('analysis', { op: 'sor', neighbours: 8, nSigma: 1 }));
+console.log('AGENT SOR', JSON.stringify(agentSor.params), `removed ${agentSor.removed}, cut ${agentSor.cutOff}`);
+ok('an agent can drive the SOR filter', agentSor.op === 'sor' && agentSor.params.knn === 8 && agentSor.params.nSigma === 1,
+   JSON.stringify(agentSor.params));
+ok('and it reports the mean and the cut-off it used',
+   typeof agentSor.meanNeighbourDistance === 'number' && typeof agentSor.cutOff === 'number'
+   && agentSor.cutOff > agentSor.meanNeighbourDistance,
+   `mean ${agentSor.meanNeighbourDistance} m, cut ${agentSor.cutOff} m`);
+await p.evaluate(() => window.__app.undoEdit());
+await p.waitForTimeout(300);
+
+const tool = await p.evaluate(async () => {
+  const r = await fetch('/mcp.mjs');       // the bundled server carries tools.json inline
+  const src = await r.text();
+  return { hasTool: src.includes('viewer_analysis'), hasNoiseOpts: src.includes('removeIsolated') && src.includes('absoluteError') };
+});
+ok('viewer_analysis is in the shipped MCP server', tool.hasTool, '');
+ok('with the noise filter options', tool.hasNoiseOpts, '');
+
 await p.waitForTimeout(400); await p.screenshot({ path: 'shots/analysis-done.png' });
 console.log(fails ? `\n${fails} CHECK(S) FAILED` : '\nALL CHECKS PASSED');
 await b.close();

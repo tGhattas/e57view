@@ -173,7 +173,27 @@ for (const { label, counts, verbatim } of cargo) {
   }
   md += `## Cargo — ${label}\n\n${table(counts, 'cargo')}\n`;
 }
-md += `## Things that are not dependencies but are worth naming
+md += `## Algorithms
+
+Two filters in this project are reimplementations of published algorithms rather than original
+work, and the code says so at the top of each function.
+
+| What | Whose | Where ours lives | Licence of the original |
+|---|---|---|---|
+| Statistical outlier removal (SOR) | \`CCCoreLib::CloudSamplingTools::sorFilter\` and \`applySORFilterAtLevel\`, from [CloudCompare](https://github.com/CloudCompare/CCCoreLib), commit \`dc8c7d80\` | \`Analyzer::sor\` in \`crates/e57-wasm/src/analysis.rs\` | LGPL-2.0-or-later |
+| Noise filter | \`CCCoreLib::CloudSamplingTools::noiseFilter\` and \`applyNoiseFilterAtLevel\`, same repository and commit | \`Analyzer::noise_filter\`, same file | LGPL-2.0-or-later |
+
+**No CloudCompare code is copied into this repository.** Both are written in Rust from the
+published algorithm, with the intent that the same settings remove the same points, so somebody
+moving between the two tools is not surprised. \`crates/e57-wasm/src/bin/anatest.rs\` contains a
+brute-force transcription of both algorithms as a test oracle and asserts that our filters agree
+with it point for point.
+
+LGPL-2.0-or-later can be combined with GPL-3.0-only: the "or later" lets a recipient take
+LGPL-3.0, and LGPL-3.0 is compatible with GPL-3.0. Since nothing is copied, this is a courtesy
+note about lineage rather than a licence obligation.
+
+## Things that are not dependencies but are worth naming
 
 | What | Where | Licence |
 |---|---|---|

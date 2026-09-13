@@ -1364,3 +1364,90 @@ of the polyline and label rows wait behind), no headless batch mode, none of the
 plugins, and a long tail of formats and conveniences. Keeping the statuses in the generator
 rather than the Markdown means the counts at the top cannot disagree with the tables — which
 they would have, within a week, otherwise.
+
+## Reading CloudCompare's filters instead of guessing at them
+
+Our outlier and noise filters were written from the generic PCL recipe and behaved roughly
+right, which is the worst place for a filter to be: near enough that nothing looks wrong, far
+enough that the same settings in two programs remove different points. Reading
+`CCCoreLib::CloudSamplingTools` (commit `dc8c7d80`) turned up five real differences, one of
+them a bug in ours.
+
+**SOR, four differences.**
+
+1. *How many neighbours.* CloudCompare asks its octree for `knn` neighbours **including the
+   query point**, then skips the query point when averaging, so the mean is over `knn − 1`
+   distances. Its own comment says why: `knn + 1` would be more natural, "but in this case we
+   won't get the same result as PCL". Ours asked for `k` others. At the same nominal setting
+   we were averaging one more neighbour than they were.
+2. *Under-populated points.* Ours set the mean distance to infinity when it could not compute
+   one, which drops the point. Theirs leaves it at zero, which keeps it. SOR has no
+   isolated-point rule at all: a lonely point goes because its mean neighbour distance is
+   large, exactly like any other outlier.
+3. *Which points the statistics are over.* Ours averaged over the finite values only. Theirs
+   averages over every point.
+4. *The standard deviation.* Both are the population one, but theirs is the one-pass
+   `sqrt(|Σd²/N − µ²|)`. Same number; we now compute it the same way so the last digit agrees.
+
+**The noise filter, one difference, and it was the whole filter.** Ours computed a distance to
+the local plane for every point and then applied **one global threshold** over the cloud.
+CloudCompare's threshold is **local**: the plane is fitted to the neighbours with the query
+point left out, the spread is measured among those same neighbours, and the query point is
+compared against that. The difference is not cosmetic. A global threshold removes detail
+wherever the surface is smooth and keeps noise wherever it is rough, because it judges a
+polished wall and a hedge by the same number. It also had none of CloudCompare's options: no
+radius neighbourhood (which is its *default*), no absolute threshold, no choice about points
+too sparse to judge.
+
+### The bug the comparison found
+
+Writing the test first surfaced something neither filter's own logic was responsible for. Our
+kNN search widened its radius by doubling, **at most six times**, and then used whatever it had
+found. On dense data that always succeeds and the cap never fires. On exactly the points these
+filters exist to find, it fires every time: a speck on its own gets the handful of points that
+happened to be inside the last radius tried, its mean neighbour distance comes out far too
+small, and it survives a threshold it should have failed. The search now widens until it has
+the points it was asked for or has covered the bounding-box diagonal.
+
+That single fix took the SOR comparison from 82 differing points to zero.
+
+### Two smaller things that decide whether "identical" is achievable at all
+
+Neighbour ranking was on the grid's `f32` squared distance. Two neighbours can be equal to the
+last bit of an `f32` and still be genuinely ordered; a threshold compared against millions of
+means then lands differently. Ranking is in `f64`, recomputed from the coordinates, and **ties
+are broken by point index** so the answer does not depend on which order the grid visited
+cells in. Without that rule two implementations disagree about points neither of them has a
+reason to prefer.
+
+And the test's own oracle has to see the points the Analyzer holds, not the points that were
+fed to it. Ours quantises into leaf cubes at load; comparing against the unquantised input is
+comparing two different clouds and blaming the algorithm. That accounted for the entire
+remaining disagreement in the noise filter.
+
+### What the test is
+
+`anatest` carries a brute-force transcription of both CloudCompare functions, close enough to
+the C++ to be read beside it, and asserts our filters produce **the same mask, point for
+point**, on a plane with a sphere resting on it, 120 outliers 3 to 10 spacings off the surface,
+and 6 points far from everything. Nine settings: SOR at knn 6/8/16 and nSigma 1/1/2, and the
+noise filter in both neighbourhood modes, both threshold modes, and with remove-isolated on.
+All nine agree exactly.
+
+One of those checks asserts something unflattering and true: with the 6 far-flung points
+present, SOR at its defaults removes **none** of the 120 planted outliers. Their mean
+distances of 10 to 25 metres push the standard deviation to 0.26 m and the cut-off to 0.59 m,
+past everything real. CloudCompare does the same thing for the same reason. Remove those 6
+points and the same filter removes 102 of 120. It is worth knowing before reaching for SOR on
+a scan with a stray reflection in it, and it is now written down in the tool's own description
+rather than being something a user discovers.
+
+### Where we still differ, on purpose
+
+CloudCompare picks an octree level with roughly `knn` points per cell and searches from there;
+we use a uniform grid sized to a few points per cell and widen. Both return the true nearest
+neighbours, so the results match. Theirs refuses a cloud no larger than `knn`; ours keeps
+everything, which says the same thing without an error path every caller has to handle. And the
+panel's *Neighbours* slider defaults to 16 rather than CloudCompare's 8, because the same
+slider drives the feature computations where 8 is too few to be steady. An agent that names no
+neighbour count gets 8, the filter's own default.

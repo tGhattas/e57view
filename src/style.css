@@ -327,3 +327,11 @@ body.desktop .web-only{display:none!important}
 #mcp-snips .snipwrap{display:flex;flex-direction:column;gap:4px}
 #mcp-snips .sniplabel{font-size:11px;color:var(--dim);margin:2px 0 0}
 #mcp-snips .snipcopy{align-self:flex-start;font-size:11px;padding:3px 9px}
+
+/* A fold for options most people never change. Open it and the defaults are still there. */
+.grp details.sub{border-top:1px solid var(--line);margin-top:6px;padding-top:4px}
+.grp details.sub>summary{cursor:pointer;font-size:11px;color:var(--dim);padding:3px 0;list-style:none}
+.grp details.sub>summary::-webkit-details-marker{display:none}
+.grp details.sub>summary::before{content:"▸ ";font-size:9px}
+.grp details.sub[open]>summary::before{content:"▾ "}
+.grp label.dim{opacity:.4}

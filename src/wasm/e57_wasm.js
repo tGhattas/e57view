@@ -208,13 +208,21 @@ export class CloudAnalysis {
         return this;
     }
     /**
-     * @param {number} k
+     * CloudCompare's noise filter, with all of its options: a kNN or a sphere
+     * neighbourhood, a relative (n sigma) or absolute distance threshold, and whether
+     * points with too few neighbours to fit a plane are dropped or kept.
+     * @param {boolean} use_knn
+     * @param {number} knn
+     * @param {number} radius
+     * @param {boolean} use_absolute_error
+     * @param {number} absolute_error
      * @param {number} n_sigma
+     * @param {boolean} remove_isolated
      * @param {Function | null} [progress]
      * @returns {Uint8Array}
      */
-    noise(k, n_sigma, progress) {
-        const ret = wasm.cloudanalysis_noise(this.__wbg_ptr, k, n_sigma, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+    noise(use_knn, knn, radius, use_absolute_error, absolute_error, n_sigma, remove_isolated, progress) {
+        const ret = wasm.cloudanalysis_noise(this.__wbg_ptr, use_knn, knn, radius, use_absolute_error, absolute_error, n_sigma, remove_isolated, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
