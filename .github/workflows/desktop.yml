@@ -55,8 +55,13 @@ jobs:
       - name: the built binary serves the tools in mcp/tools.json
         shell: bash
         run: |
-          BIN="desktop/target/${{ matrix.target }}/release/e57view"
-          [ -f "$BIN" ] || BIN="desktop/target/${{ matrix.target }}/release/e57view.exe"
+          # Windows names it e57view.exe, and the extension has to be decided from the runner
+          # rather than probed: bash on Windows answers yes to `test -f e57view` when what is
+          # there is e57view.exe, and then node is handed a path it cannot open.
+          EXT=""
+          [ "${{ runner.os }}" = "Windows" ] && EXT=".exe"
+          BIN="desktop/target/${{ matrix.target }}/release/e57view$EXT"
+          ls -l "$BIN"
           E57VIEW_BIN="$BIN" node test-mcp.mjs --rust
       - uses: actions/upload-artifact@v4
         with:
