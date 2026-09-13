@@ -161,15 +161,19 @@ self.onmessage = async (ev: MessageEvent) => {
         // applies it, so each neighbourhood is searched once instead of once per pass.
         out.kind = 'means';
         out.data = a.sor_means(m.knn ?? m.k ?? 6, own, prog('Measuring neighbourhoods', n));
-      } else if (op === 'sor_stats') {
-        // first pass of a tiled SOR: this tile's contribution to the cloud's mean and
-        // standard deviation, so the second pass can use one threshold everywhere
-        const st = a.sor_stats(m.knn ?? m.k ?? 6, own, prog('Measuring neighbourhoods', n));
-        out.kind = 'stats';
-        out.sum = st[0]; out.sum2 = st[1]; out.count = st[2];
-      } else if (op === 'sor_cut') {
-        out.kind = 'mask';
-        out.data = a.sor_cut(m.knn ?? m.k ?? 6, Number(m.cut), own, prog('Removing outliers', n));
+      } else if (op === 'sor_stats' || op === 'sor_cut') {
+        // The two-pass form, kept because the native tests drive it and because it is the
+        // one that needs no memory on the main thread. The viewer uses sor_means: the same
+        // first pass, handing back the numbers rather than a summary, so there is no second
+        // pass at all.
+        if (op === 'sor_stats') {
+          const st = a.sor_stats(m.knn ?? m.k ?? 6, own, prog('Measuring neighbourhoods', n));
+          out.kind = 'stats';
+          out.sum = st[0]; out.sum2 = st[1]; out.count = st[2];
+        } else {
+          out.kind = 'mask';
+          out.data = a.sor_cut(m.knn ?? m.k ?? 6, Number(m.cut), own, prog('Removing outliers', n));
+        }
       } else if (op === 'sor') {
         out.kind = 'mask';
         out.data = a.sor(m.knn ?? m.k ?? 6, Number(m.sigma ?? 1), prog('Measuring neighbourhoods', n));

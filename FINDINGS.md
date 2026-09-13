@@ -1581,7 +1581,7 @@ out identical, and the two-pass mean and cut-off match the whole-cloud ones to t
 `drive-analysis.mjs` does the same in the browser on a 1.54M point fixture written as binary
 PLY. The octree splits a leaf at 400,000 points, so a fixture has to be a few million before
 there are enough leaves to tile at all. With the cap lowered to a third of the cloud it runs
-in ten tiles and every mask is identical to the whole-cloud run, checked by a checksum over
+in eight tiles and every mask is identical to the whole-cloud run, checked by a checksum over
 the quantised coordinates of every surviving point.
 
 <!--REALSCAN-->

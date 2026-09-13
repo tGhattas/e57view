@@ -2179,8 +2179,16 @@ async function runTiled(op: string, args: Record<string, any> = {}, ref: Entity 
   let full: any = null;
   let kind = '';
 
+  // One tile means one worker, and the one that has been open since the page loaded will do:
+  // a cloud small enough to index whole should not pay for starting a worker and compiling
+  // the WebAssembly again every time somebody moves a slider.
   const workers: Ana[] = [];
-  for (let i = 0; i < Math.min(pool, tiles.length); i++) workers.push(makeAna(i));
+  if (tiles.length === 1) {
+    anaAlive = true; anaError = null;
+    workers.push({ id: -1, once: anaOnce, post: (m, t = []) => anaWorker.postMessage(m, t), kill: () => {}, heap: 0 });
+  } else {
+    for (let i = 0; i < Math.min(pool, tiles.length); i++) workers.push(makeAna(i));
+  }
   anaPoolLive = workers;
   let next = 0, done = 0, active = 0;
   let stop: string | null = null;
@@ -2220,7 +2228,7 @@ async function runTiled(op: string, args: Record<string, any> = {}, ref: Entity 
   try {
     await Promise.all(workers.map(pump));
   } finally {
-    for (const a of workers) { anaHeap += a.heap; a.kill(); }
+    for (const a of workers) { anaHeap = a.id < 0 ? anaHeap : anaHeap + a.heap; a.kill(); }
     anaPoolLive = [];
     $('busy-stop').classList.add('hidden');
   }
