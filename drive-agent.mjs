@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-const URL_ = process.env.URL || 'https://opensketch.web.app/';
+const URL_ = process.env.URL || 'https://e57view.web.app/';
 const ORIGIN = new URL(URL_).origin;
 // A solid slab plus isolated specks floating clear of it, which the noise detector should find.
 const ply = join(tmpdir(), 'e57view-agent.ply');

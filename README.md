@@ -10,7 +10,7 @@
   <a href="LICENSE"><img alt="Licence: GPL-3.0-only" src="https://img.shields.io/badge/licence-GPL--3.0--only-14707d"></a>
   <a href=".github/workflows/build.yml"><img alt="Build" src="https://img.shields.io/badge/build-web%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-14707d"></a>
   <a href="#the-agent-interface"><img alt="MCP" src="https://img.shields.io/badge/MCP-30%20tools-14707d"></a>
-  <a href="https://opensketch.web.app"><img alt="Live" src="https://img.shields.io/badge/try%20it-opensketch.web.app-2b7a84"></a>
+  <a href="https://e57view.web.app"><img alt="Live" src="https://img.shields.io/badge/try%20it-e57view.web.app-2b7a84"></a>
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@ e57view reads **E57**, **LAS**, **LAZ**, **PTX**, **PLY** and delimited text poi
 compare them, reconstruct surfaces from them and write them back out — in a browser tab, or as
 a 4.7 MB desktop application that opens no network connection at all.
 
-**Try it:** [opensketch.web.app](https://opensketch.web.app) — drop a file on the page.
+**Try it:** [e57view.web.app](https://e57view.web.app) — drop a file on the page.
 
 ## Why this exists
 
@@ -302,7 +302,7 @@ Three things in that diagram are the whole design:
 
 ### In a browser
 
-Go to [opensketch.web.app](https://opensketch.web.app) and drop a file on the page. Or run it
+Go to [e57view.web.app](https://e57view.web.app) and drop a file on the page. Or run it
 yourself:
 
 ```sh
@@ -340,7 +340,7 @@ no install, no network); the **browser build** is driven by a one-file Node serv
 you. Everything below is the desktop form — for the browser build, first
 
 ```sh
-curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
+curl -fsSL https://e57view.web.app/mcp.mjs -o e57view-mcp.mjs
 ```
 
 then replace `/Applications/e57view.app/Contents/MacOS/e57view --mcp` with
@@ -446,15 +446,21 @@ changelog; it is what was tried, what broke, and what the measurements said.
 
 ## Deploying the hosted build
 
-This repository's own instance lives at `opensketch.web.app` — *opensketch* is the Firebase
-project the maintainer deploys to, and nothing more. To run your own:
+This repository's own instance lives at `e57view.web.app`. *opensketch* is the Firebase project
+the maintainer deploys to, and nothing more; `e57view` is the Hosting site inside it.
+`opensketch.web.app` is a second site in the same project that does nothing but 301 every path
+to the new address, so old links and the old MCP install line keep working. To run your own:
 
 ```sh
-firebase use --add                    # your project
+firebase use --add                            # your project
+firebase target:apply hosting app YOUR_SITE    # this repo uses a target called "app"
 # put your own config in src/firebase-config.ts (it is public web config, not a secret)
 npm run build
-firebase deploy --only hosting,functions:agent,firestore:rules
+firebase deploy --only hosting:app,functions:agent,firestore:rules
 ```
+
+Add your site's domain under **Authentication → Settings → Authorised domains** in the Firebase
+console, or the anonymous sign-in that agent sessions use will be refused.
 
 The only Cloud Function is `agent`, the mailbox that lets an agent drive an open tab. **If you
 do not want it, delete it** — the viewer, the local MCP bridge and the desktop app all work

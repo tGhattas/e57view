@@ -1,5 +1,18 @@
 {
   "projects": {
     "default": "opensketch"
-  }
+  },
+  "targets": {
+    "opensketch": {
+      "hosting": {
+        "app": [
+          "e57view"
+        ],
+        "legacy": [
+          "opensketch"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

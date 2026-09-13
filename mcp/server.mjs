@@ -6,7 +6,7 @@
 // agent can look at what it changed.
 //
 //   claude mcp add e57view -- node /path/to/mcp/server.mjs
-//   then open https://opensketch.web.app/?agent=1 in Chrome (or toggle "Agent link").
+//   then open https://e57view.web.app/?agent=1 in Chrome (or toggle "Agent link").
 //
 // The desktop build serves the same tools from Rust with no Node at all. Neither server
 // describes a tool itself: mcp/tools.json holds every name, description, argument schema,
@@ -46,7 +46,7 @@ wss.on('connection', (ws) => {
 
 function call(cmd, args = {}, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
-    if (!app || app.readyState !== 1) return reject(new Error('No viewer connected. Open https://opensketch.web.app/?agent=1 (or switch on "Agent link" in the Cache group) in Chrome on this machine.'));
+    if (!app || app.readyState !== 1) return reject(new Error('No viewer connected. Open https://e57view.web.app/?agent=1 (or switch on "Agent link" in the Cache group) in Chrome on this machine.'));
     const id = nextId++;
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`viewer did not answer ${cmd} within ${timeoutMs / 1000}s`)); }, timeoutMs);
     pending.set(id, { resolve, reject, timer });

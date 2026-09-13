@@ -41,5 +41,5 @@ it and choose *Open*, or run \`xattr -dr com.apple.quarantine /Applications/e57v
 SmartScreen warns once. Signing is on the roadmap; until then the sums above are how you check
 that a download is the file this workflow built.
 
-The browser build is at <https://opensketch.web.app> and needs no download at all.
+The browser build is at <https://e57view.web.app> and needs no download at all.
 `);

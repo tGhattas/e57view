@@ -123,7 +123,7 @@ without it, intensity mode ships looking broken.
 
 ## Built and deployed
 
-The viewer is live at **https://opensketch.web.app** and was driven against the real 3.23 GB
+The viewer is live at **https://e57view.web.app** and was driven against the real 3.23 GB
 file on the deployed build, not just locally.
 
 | viewport | budget default | points | index time |
@@ -325,7 +325,7 @@ thickness. Two horizontal sections 1.5 m and 8 m above the floor cut 18,439,323 
   reasons quoting the close-ups; `grok-4.3` answered in 12.9 s and confirmed 13 of 16,
   keeping the roof edge and the playground structure. Every returned box is 1.8–6.8 m on a
   side with the height taken from the points, against 43 × 34 × 34 m before the rework.
-- Production (https://opensketch.web.app, same load): `gpt-5.5` 36.6 s, 13 of 16 candidates
+- Production (https://e57view.web.app, same load): `gpt-5.5` 36.6 s, 13 of 16 candidates
   confirmed plus 15 added (six parked cars, canopies the colour detector missed because
   they render white); `grok-4.3` 14.6 s, 13 of 16 plus 6 added. Added boxes take their
   height from the ground under them with a cap implied by the label (a car is 3 m, not
@@ -1326,6 +1326,8 @@ tracked. `.gitignore` now also refuses `*.e57`, `*.las`, `*.laz` and `*.ptx` out
 the cost of a 3 GB accident is a rewritten history.
 
 `opensketch` is a Firebase project name, not a product name, and the README now says so. The
+site inside it is `e57view`, which is the address people use; `opensketch.web.app` is a second
+site in the same project that does nothing but 301 every path to the new one. The
 config in `src/firebase-config.ts` is public web config rather than a secret, and the README
 says how to point it at your own project — or delete the whole thing, since the viewer, the
 local MCP bridge and the desktop app all work with no Firebase at all, and the desktop build
@@ -1451,3 +1453,37 @@ everything, which says the same thing without an error path every caller has to 
 panel's *Neighbours* slider defaults to 16 rather than CloudCompare's 8, because the same
 slider drives the feature computations where 8 is too few to be steady. An agent that names no
 neighbour count gets 8, the filter's own default.
+
+## Moving the address without breaking the links
+
+The public URL is `https://e57view.web.app` now. `opensketch` was always a Firebase project
+name rather than a product name, and it was showing in the one place a project name should
+never show.
+
+The move is two Hosting sites in the same project, wired with Firebase's hosting targets so
+`firebase.json` can describe both: target `app` serves `dist` at `e57view`, target `legacy`
+serves nothing at `opensketch` except a redirect. Every path 301s, with the path and the query
+carried over, which matters because the MCP install line people have already pasted into their
+agents names the old host:
+
+    curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
+
+The `L` in `-fsSL` follows a 301 on a GET, so that line still downloads the server. The
+driver asserts it rather than assuming it.
+
+**Two things about Firebase's redirect syntax cost a deploy each.** A source of `**` matches
+every path but **binds nothing**, so a `:path*` in the destination stays literal and the rule
+silently never fires; the capture has to be declared in the source, `"/:path*"`. And
+`"/:path*"` does not match the bare root, which needs its own `"/"` rule. Both failures look
+identical from outside: the site serves its static fallback and nothing redirects.
+
+`drive-redirect.mjs` checks the root, the root with a query, a file, the MCP server, a deep
+path with two query parameters and a path that never existed, that the new address does not
+redirect anywhere itself, and that the bytes arriving through the redirect are the same server
+the new address serves.
+
+The one thing outside the repository: **Firebase Auth's authorised-domain list**. It held
+`opensketch.firebaseapp.com` and `opensketch.web.app`, and anonymous sign-in is what agent
+sessions are built on. `e57view.web.app` is on it now, added through the Identity Toolkit admin
+API. Anyone deploying their own copy has to do the same for their own domain, and the README
+says so next to the deploy commands.

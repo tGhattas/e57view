@@ -8,8 +8,8 @@ A scan is opened from the viewer's own machine: drag an .e57, .ply or .las file 
 page, or pick one. Nothing is uploaded anywhere. A scan already cached on that device can be
 reopened by an agent with {"cmd":"open","args":{"cached":"KEY"}}.
 
-https://opensketch.web.app/?view=top
-https://opensketch.web.app/?session=SESSION
+https://e57view.web.app/?view=top
+https://e57view.web.app/?session=SESSION
 
 Query args: view (fit|top), az, el, dist, session, agent=1 (local MCP bridge).
 
@@ -17,9 +17,9 @@ Query args: view (fit|top), az, el, dist, session, agent=1 (local MCP bridge).
 
 1. In the viewer: Agent -> Copy agent URL. That copies a page link and a bearer token.
    The token is shown once and never appears in the URL. Keep the tab open.
-2. POST https://opensketch.web.app/agent with the token in an Authorization header:
+2. POST https://e57view.web.app/agent with the token in an Authorization header:
 
-curl -s https://opensketch.web.app/agent \
+curl -s https://e57view.web.app/agent \
   -H 'Authorization: Bearer TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{"session":"SESSION","cmd":"state"}'
@@ -68,7 +68,7 @@ Responses carry result JSON and, for most commands, shot (JPEG base64).
 The MCP server is one self-contained file. Download it, then register it. Node 20+, nothing
 to install, no clone:
 
-curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
+curl -fsSL https://e57view.web.app/mcp.mjs -o e57view-mcp.mjs
 claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"
 
 Then open the viewer with ?agent=1 and allow local network access when Chrome asks.
@@ -211,7 +211,7 @@ and world-file export, contours at an interval, and DXF or GeoJSON out in the gl
 
 ## Two builds, one interface
 
-There is a browser build at opensketch.web.app and a desktop app, and every command below
+There is a browser build at e57view.web.app and a desktop app, and every command below
 behaves identically in both. Two differences are worth knowing:
 
 - **`open`** takes `path` in the desktop app — a file on that machine, with `add:true` to bring

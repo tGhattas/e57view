@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { roomPly } from './room-fixture.mjs';
 
-const URL_ = process.env.URL || 'https://opensketch.web.app/';
+const URL_ = process.env.URL || 'https://e57view.web.app/';
 const ORIGIN = new URL(URL_).origin;
 const ply = join(tmpdir(), 'e57view-room.ply');
 const R = roomPly(ply);                      // a 6 x 4 x 3 m room, points on its inside faces

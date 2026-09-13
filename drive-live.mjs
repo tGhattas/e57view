@@ -3,7 +3,7 @@ import { chromium, devices } from 'playwright';
 import { requireTestFile } from './shared/testfile.mjs';
 const FILE = requireTestFile();
 if (!FILE) process.exit(0);
-const URL = 'https://opensketch.web.app/';
+const URL = 'https://e57view.web.app/';
 const b = await chromium.launch({ channel: 'chrome', headless: false, args: ['--ignore-gpu-blocklist','--enable-gpu'] });
 
 for (const [name, dev] of [['desktop', null], ['iphone', devices['iPhone 15 Pro']]]) {
