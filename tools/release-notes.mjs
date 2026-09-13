@@ -36,10 +36,18 @@ Check what you downloaded against \`SHA256SUMS.txt\`:
 
     sha256sum -c SHA256SUMS.txt --ignore-missing
 
-**These builds are not code-signed.** macOS refuses the first open of an unsigned app: right-click
-it and choose *Open*, or run \`xattr -dr com.apple.quarantine /Applications/e57view.app\`. Windows
-SmartScreen warns once. Signing is on the roadmap; until then the sums above are how you check
-that a download is the file this workflow built.
+**These builds are not notarised.** The bundle is signed ad-hoc, which is what makes macOS
+treat it as intact, but there is no Apple Developer ID behind it, so the first launch is
+refused with "cannot be opened because Apple cannot check it for malicious software".
+
+On macOS 15 and later, right-click and *Open* no longer gets past that. Open **System Settings
+-> Privacy & Security** and press **Open Anyway** next to the message about e57view, which
+appears after the first refused launch. Or clear the quarantine flag yourself:
+
+    xattr -dr com.apple.quarantine /Applications/e57view.app
+
+Windows SmartScreen warns once. Notarisation is on the roadmap; until then the sums above are
+how you check that a download is the file this workflow built.
 
 The browser build is at <https://e57view.web.app> and needs no download at all.
 `);

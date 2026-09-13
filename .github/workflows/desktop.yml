@@ -52,6 +52,38 @@ jobs:
       - run: npm ci --prefix mcp
       - name: build the app
         run: npm run desktop:build -- --target ${{ matrix.target }}
+      # The linker's automatic ad-hoc signature covers the Mach-O and nothing else: Info.plist
+      # is not bound and there are no sealed resources, and Gatekeeper calls a bundle in that
+      # state damaged rather than offering the unidentified-developer dialog. desktop/build.mjs
+      # signs the bundle and the copy inside the disk image; this is the check that it did.
+      - name: the macOS bundle is sealed, and Gatekeeper does not call it damaged
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="desktop/target/${{ matrix.target }}/release/bundle/macos/e57view.app"
+          DMG=$(ls desktop/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          codesign -dv --verbose=2 "$APP" 2>&1 | tee /tmp/cs-app.txt
+          grep -q "Sealed Resources version" /tmp/cs-app.txt
+          grep -q "Info.plist entries" /tmp/cs-app.txt
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          # and the copy people actually download, inside the image
+          mkdir -p /tmp/mnt
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint /tmp/mnt
+          codesign -dv --verbose=2 /tmp/mnt/e57view.app 2>&1 | tee /tmp/cs-dmg.txt
+          grep -q "Sealed Resources version" /tmp/cs-dmg.txt
+          codesign --verify --deep --strict --verbose=2 /tmp/mnt/e57view.app
+          rm -rf /tmp/gk && mkdir -p /tmp/gk && cp -R /tmp/mnt/e57view.app /tmp/gk/
+          hdiutil detach /tmp/mnt
+          # what a download from a browser looks like: quarantined, and assessed by Gatekeeper.
+          # "rejected" is the right answer for an app nobody has notarised, and it is the one
+          # that gives the user Open Anyway. "damaged" or "no resources" is the broken seal.
+          xattr -w com.apple.quarantine "0083;00000000;Safari;" /tmp/gk/e57view.app
+          spctl --assess --type execute --verbose=4 /tmp/gk/e57view.app 2>&1 | tee /tmp/gk.txt || true
+          if grep -qiE "damaged|no resources" /tmp/gk.txt; then
+            echo "Gatekeeper still treats the bundle as broken."
+            exit 1
+          fi
       - name: the built binary serves the tools in mcp/tools.json
         shell: bash
         run: |

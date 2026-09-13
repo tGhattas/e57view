@@ -343,11 +343,19 @@ npm run desktop:build      # → desktop/target/release/bundle/
 You need [Rust](https://rustup.rs) and, on Linux, `libwebkit2gtk-4.1-dev` and `libgtk-3-dev`.
 CI builds macOS, Windows and Linux on every push.
 
-> **Unsigned builds.** Releases are not code-signed yet. macOS will refuse the first open. To
-> get past it, right-click the app and choose *Open*, or run
-> `xattr -dr com.apple.quarantine /Applications/e57view.app`. Windows SmartScreen will warn
-> once. [`.github/workflows/build.yml`](.github/workflows/build.yml) documents exactly which
-> secrets to add to sign and notarise.
+> **Unsigned builds.** Releases carry an ad-hoc signature, which is enough for macOS to treat
+> the bundle as intact, and no Developer ID, so the app is not notarised. macOS refuses the
+> first open with "cannot be opened because Apple cannot check it for malicious software".
+> Right-click and *Open* no longer helps on macOS 15 and later: open **System Settings →
+> Privacy & Security**, and press **Open Anyway** next to the message about e57view, which
+> appears after the first refused launch. Or clear the quarantine flag yourself:
+>
+> ```sh
+> xattr -dr com.apple.quarantine /Applications/e57view.app
+> ```
+>
+> Windows SmartScreen warns once. [`.github/workflows/build.yml`](.github/workflows/build.yml)
+> documents exactly which secrets to add to sign and notarise properly.
 
 ### Driving it from an agent
 

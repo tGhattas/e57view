@@ -155,6 +155,9 @@ _Nothing yet._
   same `mcp/tools.json` the web server reads, so the two cannot drift.
 - On a 3.23 GB, 73.8M-point E57: **13.0 s to open by path, 82 MB resident, 1.1 s to cache,
   0.7 s to reopen from that cache**.
+- The macOS bundle is **signed ad-hoc**, so its seal is intact and macOS shows the ordinary
+  unidentified-developer refusal with an Open Anyway in System Settings rather than calling the
+  app damaged. It is not notarised, and the notes on the release say what to do about that.
 
 ### Removed
 
