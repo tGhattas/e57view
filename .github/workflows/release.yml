@@ -87,6 +87,11 @@ jobs:
       - name: SHA256SUMS.txt
         working-directory: artifacts
         run: |
+          # the desktop artifacts keep their bundle folders (dmg/, nsis/, deb/, appimage/);
+          # the release wants flat files, so lift them out first
+          find . -mindepth 2 -type f -exec mv -f {} . \;
+          find . -mindepth 1 -type d -empty -delete
+          ls -la
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -110,7 +115,6 @@ jobs:
           files: |
             artifacts/*.dmg
             artifacts/*.exe
-            artifacts/*.msi
             artifacts/*.deb
             artifacts/*.AppImage
             artifacts/SHA256SUMS.txt
