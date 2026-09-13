@@ -1618,3 +1618,31 @@ it goes when the tab does.
 `viewer_log` reads the same list, which turns out to be the more useful half. An agent that
 has just been handed a session can ask what has already been done to the cloud rather than
 inferring it, and an agent that ran a script can read back what each step actually received.
+
+### Tiles are independent, so they can run at the same time
+
+The first version did one tile at a time on one worker, and SOR on the 73.8M point scan took
+twelve minutes with seven of this machine's cores idle. Tiles do not depend on each other:
+that is the property the halo buys. So they run on a pool of workers, one tile in flight per
+worker, the main thread reading records out of the GPU and handing each worker the tile it is
+about to do.
+
+The pool is the browser's `hardwareConcurrency` less one, capped at six. The cap is about
+memory rather than cores. Every worker holds a whole tile, and a WebAssembly heap never
+shrinks once it has grown, so the per-tile budget is derived the other way around: about two
+gigabytes for the pool as a whole, divided by the pool size, divided by what a point costs.
+That works out at a few million points a tile, and the driver reports what it actually cost.
+
+**The bigger win was doing half the work.** SOR used to search every neighbourhood twice: once
+to collect the statistics and once to apply the threshold. The threshold is one number for the
+cloud, and the thing it is compared against is one number per point, so a tile now hands back
+its points' mean neighbour distances rather than a summary of them. The main thread adds up
+the sums, works out the cut-off, and compares. One pass over the neighbourhoods instead of
+two, and the second pass had been the one that re-fed and re-indexed every tile.
+
+The same reasoning applied to the halo. The noise filter and the geometric features were
+computing a value for every point a tile held, then throwing away the ones belonging to its
+neighbours. Both now answer for a prefix, which is the tile's own points. On a tile whose halo
+is as big as its core, that is half the work gone.
+
+<!--POOLNUMBERS-->

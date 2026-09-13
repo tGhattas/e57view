@@ -1986,71 +1986,179 @@ function leafPlan() {
   return { cells, leaves, counts, offs, boxes, total: at };
 }
 
-/** Run one operation over the cloud a tile at a time, and put the answer back together. */
+// ------------------------------------------------------------------ the worker pool
+//
+// One tile at a time left seven of this machine's eight cores idle, and SOR on the 73.8M
+// point scan took twelve minutes. Tiles are independent by construction, so they run on a
+// pool of workers instead: one worker per tile in flight, each holding its own points and
+// its own index.
+//
+// The pool size is what the browser says it has, less one for the main thread, capped at six.
+// The cap is about memory rather than cores: every worker holds a whole tile, and the per-tile
+// budget is set so the pool as a whole stays near two gigabytes.
+const POOL_MAX = 6;
+/** A driver pins this to 1 to measure the parallel run against the one-at-a-time run. */
+let anaPoolMax = 0;
+const anaPool = () => Math.max(1, Math.min((navigator.hardwareConcurrency || 4) - 1, anaPoolMax || POOL_MAX));
+/** Roughly what a point costs in the analyser's heap: three f32 coordinates, three normal
+ *  bytes, a global index, and the grid's order and key arrays, with the high-water mark of a
+ *  build on top. Measured at 57 bytes a point on a small tile and 195 on a worker that had
+ *  been through nine large ones, the difference being that a WebAssembly heap never shrinks.
+ *  120 is the number the per-tile budget is set from, and the drivers report what it cost. */
+const BYTES_PER_POINT = 120;
+const POOL_BYTES = 2.0e9;
+
+/** One worker, with the promise plumbing for talking to it. */
+type Ana = {
+  id: number;
+  once: (type: string) => Promise<any>;
+  post: (m: any, t?: Transferable[]) => void;
+  kill: () => void;
+  heap: number;
+};
+function makeAna(id: number): Ana {
+  const w = new Worker(new URL('./analysis-worker.ts', import.meta.url), { type: 'module' });
+  const waiters = new Map<string, (m: any) => void>();
+  let dead: string | null = null;
+  const self_: Ana = {
+    id,
+    once: (type: string) => dead
+      ? Promise.reject(new Error(dead))
+      : new Promise((res, rej) => {
+        waiters.set(type, res);
+        waiters.set('error', (m: any) => rej(new Error(m.message ?? 'analysis failed')));
+      }),
+    post: (m: any, t: Transferable[] = []) => w.postMessage(m, t),
+    // Killing a worker leaves whoever was waiting on it waiting for ever, so the wait is
+    // ended here rather than in the caller.
+    kill: () => {
+      w.terminate();
+      dead = dead ?? 'cancelled';
+      const rej = waiters.get('error');
+      waiters.clear();
+      rej?.({ message: dead });
+    },
+    heap: 0,
+  };
+  w.onmessage = (ev: MessageEvent) => {
+    const m = ev.data;
+    if (m.type === 'progress') return;                 // the pool reports tiles, not phases
+    if (m.type === 'error') {
+      dead = m.message ?? 'analysis failed';
+      const rej = waiters.get('error');
+      waiters.clear();
+      rej?.(m);
+      return;
+    }
+    if (m.heap) self_.heap = Math.max(self_.heap, m.heap);
+    const f = waiters.get(m.type);
+    if (f) { waiters.delete(m.type); waiters.delete('error'); f(m); }
+  };
+  return self_;
+}
+
+/** What the busy line calls this while it runs. */
+function opPhase(op: string): string {
+  switch (op) {
+    case 'sor': return 'Measuring neighbourhoods';
+    case 'noise': return 'Fitting local surfaces';
+    case 'duplicates': return 'Looking for duplicates';
+    case 'subsample': return 'Thinning';
+    case 'normals': case 'invert': return 'Computing normals';
+    case 'feature': return 'Computing the field';
+    case 'distance_to': case 'distance_to_mesh': return 'Measuring';
+    default: return 'Working';
+  }
+}
+/** Set when the person watching presses Cancel. The pool is terminated where it stands. */
+let anaCancelled = false;
+let anaPoolLive: Ana[] = [];
+function anaCancel() {
+  anaCancelled = true;
+  for (const a of anaPoolLive) a.kill();
+  anaPoolLive = [];
+  busy('Stopping…');
+}
+$('busy-stop')?.addEventListener('click', anaCancel);
+/** Where the last tiled run spent its time, for the profile in FINDINGS. */
+let anaProfile: Record<string, number> = {};
+
+/** Run one operation over the cloud a tile at a time, in parallel, and put the answer back
+ *  together. */
 async function runTiled(op: string, args: Record<string, any> = {}, ref: Entity | null = null): Promise<any> {
   if (!viewer.loaded) throw new Error('nothing loaded');
   const { cells, leaves, counts, offs, boxes, total } = leafPlan();
-  anaHeap = 0;
+  anaHeap = 0; anaCancelled = false;
   const cell = Math.max(cells.medianSpacing * 2.5, 0.01);
-  const budget = anaCap();
+  const cap = anaCap();
   // leaf boxes are in the cloud's own frame; the reach is a distance on screen
   const scale = cells.modelScale || 1;
-  const tiles = total <= budget
-    ? [{ core: leaves.map((_, i) => i), halo: [] as number[], points: total, fed: total }]
-    : planTiles(boxes, budget, haloFor(op, args, cell) / scale);
+  const whole = total <= cap;
+  const pool = whole ? 1 : anaPool();
+  // A tile has to fit in its own worker, and the pool has to fit in this machine. The second
+  // is the binding one: six workers each holding thirty million points would ask for ten
+  // gigabytes of WebAssembly heap.
+  const tileBudget = whole ? total : Math.max(1.2e6, Math.min(cap, Math.floor(POOL_BYTES / (pool * BYTES_PER_POINT))));
+  const tiles: Tile[] = whole
+    ? [{ core: leaves.map((_, i) => i), halo: [], points: total, fed: total }]
+    : planTiles(boxes, tileBudget, haloFor(op, args, cell) / scale);
   const model = rowMajor(cells.model);
   const refModel = ref ? rowMajor(ref.cells.model) : null;
   const refLeaves = ref ? ref.cells.leavesForMask() : [];
   const reach = Math.max(cell * 200, 2);
   let refStride = 1;
   const t0 = performance.now();
+  const prof = { readback: 0, feed: 0, build: 0, run: 0, fed: 0 };
 
-  /** Feed one tile and run one thing over it. */
-  const onTile = async (t: Tile, ti: number, run: Record<string, any>) => {
-    anaAlive = true; anaError = null;
-    anaTile = tiles.length > 1 ? `Tile ${ti + 1} of ${tiles.length} · ` : '';
-    anaWorker.postMessage({ type: 'start', cell, maxPoints: Math.max(budget * 2, t.fed + 1), model });
-    await anaOnce('ready');
+  /** Feed one tile to one worker and run one thing over it. */
+  const onTile = async (a: Ana, t: Tile, run: Record<string, any>) => {
+    a.post({ type: 'start', cell, maxPoints: Math.max(tileBudget * 3, t.fed + 1), model });
+    await a.once('ready');
     let n = 0;
-    const feed = t.core.length + t.halo.length;
     for (const i of t.core.concat(t.halo)) {
-      if (!anaAlive) break;
+      if (anaCancelled) throw new Error('cancelled');
       const context = n >= t.core.length;
+      const r0 = performance.now();
       const recs = leaves[i].readback(cells.gl2);
+      prof.readback += performance.now() - r0;
       const buf = recs.buffer as ArrayBuffer;
-      anaWorker.postMessage({ type: 'leaf', origin: leaves[i].origin.toArray(), size: leaves[i].size, recs: buf, base: offs[i], context }, [buf]);
-      if (++n % 8 === 0) { busy(`${anaTile}Reading cells… ${n} of ${feed}`, n / Math.max(feed, 1)); await tick(); }
+      a.post({ type: 'leaf', origin: leaves[i].origin.toArray(), size: leaves[i].size, recs: buf, base: offs[i], context }, [buf]);
+      if (++n % 8 === 0) await tick();
     }
+    prof.fed += t.fed;
     // the reference cloud, only the part of it this tile can reach
     if (ref && refModel) {
       const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-      for (const i of t.core) for (let a = 0; a < 3; a++) {
-        lo[a] = Math.min(lo[a], boxes[i].lo[a]); hi[a] = Math.max(hi[a], boxes[i].hi[a]);
+      for (const i of t.core) for (let a2 = 0; a2 < 3; a2++) {
+        lo[a2] = Math.min(lo[a2], boxes[i].lo[a2]); hi[a2] = Math.max(hi[a2], boxes[i].hi[a2]);
       }
       const box = new THREE.Box3(new THREE.Vector3(lo[0], lo[1], lo[2]), new THREE.Vector3(hi[0], hi[1], hi[2]))
         .applyMatrix4(cells.model).expandByScalar(reach);
       const want = refLeaves.filter(l => box.intersectsBox(
         new THREE.Box3(l.bmin.clone(), l.bmax.clone()).applyMatrix4(ref.cells.model)));
+      if (!want.length) throw new Error('no reference cloud was fed');
       const refPts = want.reduce((s, l) => s + l.count, 0);
-      const stride = Math.max(1, Math.ceil(refPts / Math.max(1, budget - t.points)));
+      const stride = Math.max(1, Math.ceil(refPts / Math.max(1, tileBudget - t.points)));
       let m = 0;
       for (const l of want) {
-        if (!anaAlive) break;
+        if (anaCancelled) throw new Error('cancelled');
         const recs = l.readback(ref.cells.gl2);
         const buf = recs.buffer as ArrayBuffer;
-        anaWorker.postMessage({ type: 'ref', origin: l.origin.toArray(), size: l.size, recs: buf, model: refModel, stride }, [buf]);
-        if (++m % 8 === 0) { busy(`${anaTile}Reading the reference… ${m} of ${want.length}`, m / Math.max(want.length, 1)); await tick(); }
+        a.post({ type: 'ref', origin: l.origin.toArray(), size: l.size, recs: buf, model: refModel, stride }, [buf]);
+        if (++m % 8 === 0) await tick();
       }
-      if (!want.length) throw new Error('no reference cloud was fed');
       refStride = Math.max(refStride, stride);
     }
-    anaWorker.postMessage({ type: 'run', outLen: t.points, ...run });
-    const res = await anaOnce('result');
-    anaWorker.postMessage({ type: 'done' });
+    a.post({ type: 'run', outLen: t.points, ...run });
+    const res = await a.once('result');
+    a.post({ type: 'done' });
+    prof.feed += res.msFeed ?? 0;
+    prof.build += res.msBuild ?? 0;
+    prof.run += res.ms ?? 0;
     return res;
   };
 
-  /** Copy a tile's answer back into the array that covers the whole cloud. */
+  /** Copy a tile's answer into the array that covers the whole cloud. */
   const scatter = (t: Tile, part: any, full: any, per = 1) => {
     let at = 0;
     for (const i of t.core) {
@@ -2059,46 +2167,100 @@ async function runTiled(op: string, args: Record<string, any> = {}, ref: Entity 
     }
   };
 
-  try {
-    let out: any = { op, points: total, counts, tiles: tiles.length };
-    if (op === 'sor' && tiles.length > 1) {
-      // pass one: the cloud's mean and standard deviation, added up over the tiles
-      let sum = 0, sum2 = 0, cnt = 0;
-      for (let i = 0; i < tiles.length; i++) {
-        const r = await onTile(tiles[i], i, { op: 'sor_stats', knn: args.knn ?? args.k ?? 6 });
-        sum += r.sum; sum2 += r.sum2; cnt += r.count;
-      }
-      const mean = sum / Math.max(cnt, 1);
-      const sd = Math.sqrt(Math.abs(sum2 / Math.max(cnt, 1) - mean * mean));
-      const cut = mean + Number(args.sigma ?? 1) * sd;
-      // pass two: one threshold, every tile
-      const full = new Uint8Array(total);
-      for (let i = 0; i < tiles.length; i++) {
-        const r = await onTile(tiles[i], i, { op: 'sor_cut', knn: args.knn ?? args.k ?? 6, cut });
-        scatter(tiles[i], r.data, full);
-      }
-      out.kind = 'mask'; out.data = full; out.mean = mean; out.cut = cut;
-      out.params = { knn: args.knn ?? args.k ?? 6, nSigma: Number(args.sigma ?? 1) };
-    } else {
-      let full: any = null;
-      for (let i = 0; i < tiles.length; i++) {
-        const r = await onTile(tiles[i], i, { op, ...args });
-        if (!full) {
-          out.kind = r.kind;
-          full = r.kind === 'mask' ? new Uint8Array(total)
-            : r.kind === 'normals' ? new Int8Array(total * 3)
-            : new Float32Array(total);
-          for (const k of ['mean', 'cut', 'params', 'components', 'refStride']) if (r[k] !== undefined) out[k] = r[k];
+  // SOR is the one operation whose threshold belongs to the whole cloud. Each tile hands back
+  // its own points' mean neighbour distances, the sums are added up here, and the one cut-off
+  // is applied afterwards. That is a single pass over the cloud: the old two-pass version
+  // searched every neighbourhood twice, once for the statistic and once for the mask.
+  const isSor = op === 'sor';
+  const knn = args.knn ?? args.k ?? 6;
+  const runMsg = isSor ? { op: 'sor_means', knn } : { op, ...args };
+  const out: any = { op, points: total, counts, tiles: tiles.length, pool };
+  const means: Float32Array[] = new Array(tiles.length);
+  let full: any = null;
+  let kind = '';
+
+  const workers: Ana[] = [];
+  for (let i = 0; i < Math.min(pool, tiles.length); i++) workers.push(makeAna(i));
+  anaPoolLive = workers;
+  let next = 0, done = 0, active = 0;
+  let stop: string | null = null;
+  const phase = opPhase(op);
+  const note = () => busy(
+    tiles.length > 1 ? `${phase}… tile ${done} of ${tiles.length}${active > 1 ? `, ${active} running` : ''}` : `${phase}…`,
+    done / tiles.length);
+  note();
+  if (tiles.length > 1) $('busy-stop').classList.remove('hidden');
+  const pump = async (a: Ana) => {
+    while (!stop && !anaCancelled) {
+      const i = next++;
+      if (i >= tiles.length) return;
+      active++;
+      try {
+        const r = await onTile(a, tiles[i], runMsg);
+        if (isSor) means[i] = r.data as Float32Array;
+        else {
+          if (!full) {
+            kind = r.kind;
+            full = r.kind === 'mask' ? new Uint8Array(total)
+              : r.kind === 'normals' ? new Int8Array(total * 3)
+              : new Float32Array(total);
+          }
+          scatter(tiles[i], r.data, full, r.kind === 'normals' ? 3 : 1);
+          // what the operation reports about itself: the noise filter's settings, the number
+          // of clusters, the mean and cut-off of a one-tile SOR. Every tile says the same
+          // thing, so the first one to finish is as good as any.
+          for (const k of ['params', 'components', 'mean', 'cut']) if (out[k] === undefined && r[k] !== undefined) out[k] = r[k];
         }
-        scatter(tiles[i], r.data, full, r.kind === 'normals' ? 3 : 1);
-      }
-      out.data = full;
+      } catch (e: any) { stop ??= String(e?.message ?? e); }
+      active--; done++;
+      note();
+      await tick();
     }
-    out.ms = performance.now() - t0;
-    out.heap = anaHeap;
-    if (ref) out.refStride = refStride;
-    return out;
-  } finally { anaTile = ''; }
+  };
+  try {
+    await Promise.all(workers.map(pump));
+  } finally {
+    for (const a of workers) { anaHeap += a.heap; a.kill(); }
+    anaPoolLive = [];
+    $('busy-stop').classList.add('hidden');
+  }
+  if (anaCancelled) throw new Error('cancelled');
+  if (stop) throw new Error(stop);
+
+  if (isSor) {
+    let sum = 0, sum2 = 0, cnt = 0;
+    for (const m of means) {
+      if (!m) continue;
+      for (let i = 0; i < m.length; i++) { const d = m[i]; sum += d; sum2 += d * d; cnt++; }
+    }
+    const avg = sum / Math.max(cnt, 1);
+    const sd = Math.sqrt(Math.abs(sum2 / Math.max(cnt, 1) - avg * avg));
+    const cut = avg + Number(args.sigma ?? 1) * sd;
+    full = new Uint8Array(total);
+    for (let t = 0; t < tiles.length; t++) {
+      const m = means[t];
+      if (!m) continue;
+      const keep = new Uint8Array(m.length);
+      for (let i = 0; i < m.length; i++) keep[i] = m[i] <= cut ? 1 : 0;
+      scatter(tiles[t], keep, full);
+      means[t] = null as any;                       // 4 bytes a point; let it go as we finish
+    }
+    kind = 'mask';
+    out.mean = avg; out.cut = cut;
+    out.params = { knn, nSigma: Number(args.sigma ?? 1) };
+  }
+  out.kind = kind;
+  out.data = full;
+  out.ms = performance.now() - t0;
+  out.heap = anaHeap;
+  if (ref) out.refStride = refStride;
+  anaProfile = {
+    ms: Math.round(out.ms), tiles: tiles.length, pool, pointsFed: prof.fed,
+    readbackMs: Math.round(prof.readback), decodeMs: Math.round(prof.feed),
+    indexMs: Math.round(prof.build), computeMs: Math.round(prof.run),
+    heapMB: Math.round(anaHeap / 1048576),
+  };
+  return out;
 }
 
 /** Run one operation, whole or a tile at a time, whichever this cloud needs. */
@@ -5518,7 +5680,8 @@ if (DESKTOP) startDesktop().catch(e => { agentNote('desktop shell: ' + (e?.messa
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; },
   agentRun: (cmd: string, args: any) => agent.run(cmd, args), runScript,
   set anaMaxPoints(v: number) { anaMaxPoints = v; }, get anaMaxPoints() { return anaCap(); },
-  get anaHeap() { return anaHeap; }, noiseArgs, get anaUi() { return anaUi; },
+  get anaHeap() { return anaHeap; }, get anaProfile() { return anaProfile; }, anaCancel,
+  set anaPoolMax(v: number) { anaPoolMax = v; }, get anaPoolMax() { return anaPool(); }, noiseArgs, get anaUi() { return anaUi; },
   mcpBlocks, mcpTarget, mcpDesktopTarget, renderMcpSetup, get mcpClients() { return MCP_CLIENTS.map(c => ({ id: c.id, name: c.name })); },
   importMesh, measureActiveMesh, smoothActiveMesh, decimateActiveMesh, sampleMeshPoints, distanceToMesh,
   replaceMesh, flipMesh, meshEntities, meshBlob, saveMesh, refreshMeshUI, setDisplay,

@@ -436,3 +436,6 @@ body.desktop .tabpane .step{grid-template-columns:1fr}
 .logdetail pre{margin:0 0 6px;white-space:pre-wrap;word-break:break-word;max-height:190px;
   overflow:auto;font-size:10px;color:var(--dim);background:#070f12;border:1px solid var(--line);
   border-radius:4px;padding:6px}
+
+/* A tiled analysis on a big scan runs for minutes. It is allowed to be stopped. */
+#busy-stop{margin-top:10px;font-size:11px}

@@ -220,16 +220,16 @@ fn main() {
     // A perfectly flat patch has lambda0 = 0, so planarity reduces to lambda1/lambda2. The
     // k-nearest set on a square grid is diamond shaped rather than circular, which puts that
     // ratio near 0.92 and not 1.0. What matters is that planarity dominates linearity.
-    let mut pl = a.feature(Feature::Planarity, 16, 0.3, |_| {});
-    let mut li = a.feature(Feature::Linearity, 16, 0.3, |_| {});
+    let mut pl = a.feature(Feature::Planarity, 16, 0.3, 0, |_| {});
+    let mut li = a.feature(Feature::Linearity, 16, 0.3, 0, |_| {});
     let (mp, ml) = (med(&mut pl), med(&mut li));
     ck("plane reads as planar", mp > 0.90, format!("planarity median {:.3}", mp));
     ck("plane is not linear", ml < 0.10 && mp > ml * 8.0, format!("linearity median {:.3}, {:.0}x less than planarity", ml, mp / ml.max(1e-6)));
-    let mut f = a.feature(Feature::Roughness, 16, 0.3, |_| {});
+    let mut f = a.feature(Feature::Roughness, 16, 0.3, 0, |_| {});
     ck("plane roughness is ~0", med(&mut f) < 0.002, format!("median {:.5} m", med(&mut f)));
-    let mut f = a.feature(Feature::Curvature, 16, 0.3, |_| {});
+    let mut f = a.feature(Feature::Curvature, 16, 0.3, 0, |_| {});
     ck("plane curvature is ~0", med(&mut f) < 0.01, format!("median {:.5}", med(&mut f)));
-    let mut f = a.feature(Feature::Verticality, 16, 0.3, |_| {});
+    let mut f = a.feature(Feature::Verticality, 16, 0.3, 0, |_| {});
     ck("horizontal plane verticality ~0", med(&mut f) < 0.06, format!("median {:.3}", med(&mut f)));
 
     // a wall should read as vertical
@@ -238,13 +238,13 @@ fn main() {
         wall.push([10.0 + i as f32 * 0.05, 20.0, 10.0 + j as f32 * 0.05]);
     }}
     let mut w = mk(&wall, 0.2);
-    let mut f = w.feature(Feature::Verticality, 16, 0.3, |_| {});
+    let mut f = w.feature(Feature::Verticality, 16, 0.3, 0, |_| {});
     ck("wall verticality ~1", med(&mut f) > 0.94, format!("median {:.3}", med(&mut f)));
 
     // ---------------------------------------------------------------- line
     let line: Vec<[f32; 3]> = (0..900).map(|i| [10.0 + i as f32 * 0.01, 10.0, 10.0]).collect();
     let mut l = mk(&line, 0.2);
-    let mut f = l.feature(Feature::Linearity, 12, 0.3, |_| {});
+    let mut f = l.feature(Feature::Linearity, 12, 0.3, 0, |_| {});
     ck("line linearity is ~1", med(&mut f) > 0.95, format!("median {:.3}", med(&mut f)));
 
     // ---------------------------------------------------------------- sphere, normals + orientation
@@ -346,11 +346,11 @@ fn main() {
         ]).collect()
     };
     let mut t_raw = mk(&tilted, 0.2);
-    let mut f = t_raw.feature(Feature::Verticality, 16, 0.3, |_| {});
+    let mut f = t_raw.feature(Feature::Verticality, 16, 0.3, 0, |_| {});
     let v_raw = med(&mut f);
     let inv = rot_x(-30.0, tilt_c);
     let mut t_lev = mk_m(&tilted, 0.2, Some(&inv));
-    let mut f = t_lev.feature(Feature::Verticality, 16, 0.3, |_| {});
+    let mut f = t_lev.feature(Feature::Verticality, 16, 0.3, 0, |_| {});
     let v_lev = med(&mut f);
     // verticality is 1 - |nz| of the surface normal, so a 30 degree tilt reads 1 - cos(30)
     ck("tilted plane reads tilted raw", (v_raw - 0.134).abs() < 0.02, format!("verticality {:.3}, 1-cos(30) = 0.134", v_raw));
@@ -472,7 +472,7 @@ fn main() {
             let p = NoiseParams { use_knn, knn, radius, use_absolute_error: abs_err, absolute_error: abs_val, n_sigma: nsig, remove_isolated: rip };
             let mut a = mk(&cloud, sp * 3.0);
             let pts = points_of(&a);
-            let keep = a.noise_filter(p, |_| {});
+            let keep = a.noise_filter(p, 0, |_| {});
             let want = cc_noise(&pts, use_knn, knn, radius as f64, abs_err, abs_val as f64, nsig as f64, rip);
             let diff = (0..total).filter(|&i| keep[i] != want[i]).count();
             let what = if use_knn { format!("knn={knn}") } else { format!("radius={:.3} m", radius) };
@@ -570,10 +570,10 @@ fn main() {
         // ---- noise filter, whose threshold is local and needs no agreement between tiles
         let p = NoiseParams { use_knn: false, knn: 6, radius: sp * 3.0, use_absolute_error: false,
                               absolute_error: 0.0, n_sigma: 1.0, remove_isolated: true };
-        let whole = mk(&cloud, cell).noise_filter(p, |_| {});
+        let whole = mk(&cloud, cell).noise_filter(p, 0, |_| {});
         let mut ts = tiles(&cloud, cell, halo, 4);
         let parts: Vec<(Vec<u8>, &Vec<usize>)> = ts.iter_mut()
-            .map(|(a, core)| { let m = a.noise_filter(p, |_| {}); let k = core.len(); (m[..k].to_vec(), &*core) }).collect();
+            .map(|(a, core)| { let m = a.noise_filter(p, 0, |_| {}); let k = core.len(); (m[..k].to_vec(), &*core) }).collect();
         let got = scatter(&parts);
         ck("tiled noise filter matches the whole cloud", diff(&whole, &got) == 0,
            format!("{} of {} points differ, {} removed", diff(&whole, &got), n, whole.iter().filter(|&&k| k == 0).count()));
@@ -601,11 +601,11 @@ fn main() {
 
         // ---- a per-point measure: nothing to agree on, but the halo has to be fed or the
         // points at a tile edge would see a surface that stops
-        let whole = mk(&cloud, cell).feature(Feature::Verticality, 12, 0.0, |_| {});
+        let whole = mk(&cloud, cell).feature(Feature::Verticality, 12, 0.0, 0, |_| {});
         let mut ts = tiles(&cloud, cell, halo, 4);
         let mut got = vec![f32::NAN; n];
         for (a, core) in ts.iter_mut() {
-            let f = a.feature(Feature::Verticality, 12, 0.0, |_| {});
+            let f = a.feature(Feature::Verticality, 12, 0.0, 0, |_| {});
             for (k, &g) in core.iter().enumerate() { got[g] = f[k]; }
         }
         let worst = (0..n).fold(0.0f32, |m, i| m.max((whole[i] - got[i]).abs()));

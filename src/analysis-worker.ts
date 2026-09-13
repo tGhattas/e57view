@@ -39,6 +39,8 @@ let coreLen = 0;
  *  "Cannot read properties of null" instead of why the run was refused. Once something has
  *  gone wrong this worker says nothing further until the next `start`. */
 let armed = false;
+/** Milliseconds spent decoding records into the analyser, for the profile in the reply. */
+let msFeed = 0;
 
 const post = (m: any, t: Transferable[] = []) => (self as any).postMessage(m, t);
 /** "73.8M" reads better than "73757292", and "5,000" reads better than "0.0M". */
@@ -63,7 +65,7 @@ self.onmessage = async (ev: MessageEvent) => {
       model = m.model && m.model.length === 16 ? new Float32Array(m.model) : new Float32Array(0);
       cell = m.cell;
       refStarted = false; refFed = 0;
-      fed = 0; coreLen = 0;
+      fed = 0; coreLen = 0; msFeed = 0;
       armed = true;
       post({ type: 'ready' });
       return;
@@ -105,7 +107,9 @@ self.onmessage = async (ev: MessageEvent) => {
       const recs = new Uint8Array(m.recs);
       // `base` is where this leaf's first point sits in the whole cloud. Rules of the form
       // "the first one wins" are settled on it, so a tile decides the way the cloud would.
+      const tf = performance.now();
       a.add_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs, model, (m.base ?? 0) >>> 0);
+      msFeed += performance.now() - tf;
       fed++;
       const n = a.len();
       if (!m.context) coreLen = n;
@@ -125,7 +129,9 @@ self.onmessage = async (ev: MessageEvent) => {
       // how many of them this run answers for: all of them unless leaves came in as context
       const own = Math.min(m.outLen ?? (coreLen || n), n);
       post({ type: 'progress', phase: 'Indexing', done: 0, total: n });
+      const tb = performance.now();
       a.build();
+      const msBuild = performance.now() - tb;
       const t0 = performance.now();
       const op = m.op;
       let out: any = { type: 'result', op, points: own, fed: n };
@@ -146,9 +152,15 @@ self.onmessage = async (ev: MessageEvent) => {
       } else if (op === 'invert') {
         a.invert_normals();
       } else if (op === 'feature') {
-        const f = a.feature(m.name, m.k, m.radius, prog('Computing ' + m.name, n));
+        const f = a.feature(m.name, m.k, m.radius, own, prog('Computing ' + m.name, n));
         out.kind = 'field';
         out.data = f;
+      } else if (op === 'sor_means') {
+        // Every point's mean neighbour distance, handed back rather than reduced here. The
+        // main thread adds the tiles up, works out one threshold for the whole cloud and
+        // applies it, so each neighbourhood is searched once instead of once per pass.
+        out.kind = 'means';
+        out.data = a.sor_means(m.knn ?? m.k ?? 6, own, prog('Measuring neighbourhoods', n));
       } else if (op === 'sor_stats') {
         // first pass of a tiled SOR: this tile's contribution to the cloud's mean and
         // standard deviation, so the second pass can use one threshold everywhere
@@ -174,7 +186,7 @@ self.onmessage = async (ev: MessageEvent) => {
         const radius = m.radius !== undefined ? Number(m.radius) : cell * 1.2;
         out.data = a.noise(useKnn, m.knn ?? m.k ?? 6, radius,
           !!m.useAbsoluteError, Number(m.absoluteError ?? 0), Number(m.sigma ?? 1),
-          !!m.removeIsolated, prog('Fitting local surfaces', n));
+          !!m.removeIsolated, own, prog('Fitting local surfaces', n));
         out.params = {
           neighbourhood: useKnn ? 'knn' : 'radius', knn: m.knn ?? m.k ?? 6, radius,
           threshold: m.useAbsoluteError ? 'absolute' : 'relative',
@@ -243,6 +255,8 @@ self.onmessage = async (ev: MessageEvent) => {
         out.data = out.data.subarray(0, own);
       }
       out.ms = performance.now() - t0;
+      out.msFeed = msFeed;
+      out.msBuild = msBuild;
       out.heap = heapBytes();
       post(out, out.data ? [out.data.buffer] : []);
       return;

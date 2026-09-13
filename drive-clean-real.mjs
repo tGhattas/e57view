@@ -47,36 +47,60 @@ ok('the whole scan is loaded, not a subsample', loaded > 20e6, `${loaded.toLocal
 // E57VIEW_CLEAN_OPS picks which filters to run, because SOR alone takes twelve minutes on
 // this scan and there is no sense repeating it to re-measure the other two.
 const WANT = (process.env.E57VIEW_CLEAN_OPS || 'sor,noise,duplicates').split(',').map(s => s.trim());
+// which of them to run twice, once on a single worker and once on the pool
+const PAIR = (process.env.E57VIEW_CLEAN_PAIR || 'sor').split(',').map(s => s.trim()).filter(Boolean);
 const rows = [];
+/** Run one filter, wait for it to settle, take the numbers, and undo it. */
+const runOp = async (args, poolMax) => {
+  const t = Date.now();
+  const r = await p.evaluate(async ([a, pm]) => {
+    window.__app.anaPoolMax = pm;
+    try { return await window.__app.agentRun('analysis', a); }
+    catch (e) { return { error: String(e?.message ?? e) }; }
+    finally { window.__app.anaPoolMax = 0; }
+  }, [args, poolMax]);
+  await idle();
+  const secs = (Date.now() - t) / 1000;
+  const extra = await p.evaluate(() => ({ heap: window.__app.anaHeap, profile: window.__app.anaProfile }));
+  await p.evaluate(() => window.__app.undoEdit());
+  await p.waitForTimeout(2000);
+  await idle();
+  return { ...r, secs, heap: extra.heap, profile: extra.profile };
+};
 for (const args of [
   { op: 'sor', neighbours: 6, nSigma: 1 },
   { op: 'noise', neighbourhood: 'radius', removeIsolated: false },
   { op: 'duplicates', tolerance: 0.001 },
 ]) {
   if (!WANT.includes(args.op)) continue;
-  const t = Date.now();
-  const r = await p.evaluate(async (a) => {
-    try { return await window.__app.agentRun('analysis', a); }
-    catch (e) { return { error: String(e?.message ?? e) }; }
-  }, args);
-  await idle();
-  const secs = (Date.now() - t) / 1000;
-  const heap = await p.evaluate(() => window.__app.anaHeap);
-  ok(`${args.op} finishes on the whole scan`, !r.error, r.error ?? `${secs.toFixed(1)}s`);
+  // one tile at a time first, then the pool, so the two can be compared on this machine on
+  // this scan rather than against a remembered number
+  const one = PAIR.includes(args.op) ? await runOp(args, 1) : null;
+  if (one) {
+    ok(`${args.op} finishes with one worker`, !one.error, one.error ?? `${one.secs.toFixed(1)}s`);
+    if (!one.error) console.log(`  ${args.op} (1 worker): ${one.secs.toFixed(1)}s · ${one.tiles ?? 1} tiles · removed ${one.removed.toLocaleString('en-GB')} · wasm heap ${(one.heap / 1048576).toFixed(0)} MB`);
+  }
+  const r = await runOp(args, 0);
+  ok(`${args.op} finishes on the whole scan`, !r.error, r.error ?? `${r.secs.toFixed(1)}s`);
   if (!r.error) {
-    rows.push({ op: args.op, secs, removed: r.removed, kept: r.kept, tiles: r.tiles ?? 1, heapMB: Math.round(heap / 1048576) });
-    console.log(`  ${args.op}: ${secs.toFixed(1)}s · ${r.tiles ?? 1} tiles · removed ${r.removed.toLocaleString('en-GB')} of ${r.of.toLocaleString('en-GB')} · wasm heap ${(heap / 1048576).toFixed(0)} MB`
+    rows.push({ op: args.op, secs: r.secs, was: one && !one.error ? one.secs : null, removed: r.removed,
+                kept: r.kept, tiles: r.tiles ?? 1, pool: r.profile?.pool ?? 1, heapMB: Math.round(r.heap / 1048576) });
+    console.log(`  ${args.op}: ${r.secs.toFixed(1)}s · ${r.tiles ?? 1} tiles on ${r.profile?.pool ?? 1} workers · removed ${r.removed.toLocaleString('en-GB')} of ${r.of.toLocaleString('en-GB')} · wasm heap ${(r.heap / 1048576).toFixed(0)} MB`
       + (r.cutOff !== undefined ? ` · mean ${r.meanNeighbourDistance} m, cut ${r.cutOff} m` : ''));
+    console.log(`  ${args.op} profile: ${JSON.stringify(r.profile)}`);
     ok(`${args.op} removed something but not everything`, r.removed > 0 && r.kept > loaded * 0.5,
        `${r.removed.toLocaleString('en-GB')} removed, ${r.kept.toLocaleString('en-GB')} kept`);
     ok(`${args.op} was tiled`, (r.tiles ?? 1) > 1, `${r.tiles ?? 1} tiles`);
+    if (one && !one.error) {
+      ok(`${args.op} on a pool removes exactly what one worker removes`, one.removed === r.removed,
+         `${one.removed.toLocaleString('en-GB')} against ${r.removed.toLocaleString('en-GB')}`);
+      ok(`${args.op} is faster on the pool`, r.secs < one.secs,
+         `${one.secs.toFixed(1)}s to ${r.secs.toFixed(1)}s, ${(one.secs / Math.max(r.secs, 0.001)).toFixed(1)} times`);
+    }
   }
-  await p.evaluate(() => window.__app.undoEdit());
-  await p.waitForTimeout(2000);
-  await idle();
 }
 console.log('\nFINDINGS ROWS');
-for (const r of rows) console.log(`  ${r.op} · ${r.secs.toFixed(0)} s · ${r.tiles} tiles · ${r.removed.toLocaleString('en-GB')} removed · ${r.heapMB} MB wasm heap`);
+for (const r of rows) console.log(`  ${r.op} · ${r.secs.toFixed(0)} s${r.was ? ` (was ${r.was.toFixed(0)} s on one worker)` : ''} · ${r.tiles} tiles on ${r.pool} workers · ${r.removed.toLocaleString('en-GB')} removed · ${r.heapMB} MB wasm heap`);
 await p.screenshot({ path: 'shots/clean-real.png' });
 console.log(fails ? `\n${fails} CHECK(S) FAILED` : '\nALL CHECKS PASSED');
 await b.close();

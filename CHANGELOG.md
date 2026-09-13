@@ -75,6 +75,8 @@ been released yet, so everything is unreleased.
   index in one go, each tile fed a halo of its neighbours' points so the tile edges come out the
   same as the middle. The answer is identical to the whole-cloud one, point for point, and the
   reply to an agent says how many tiles it took.
+- **Tiles run in parallel** on a pool of workers sized from the machine's cores and capped by
+  memory, and a long run can be cancelled from the progress dialog.
 - **Connected components**, so a cluster can be isolated and kept or dropped. This is the one
   analysis that still needs every point in one index, and it says so when a cloud is past what
   the device can hold.

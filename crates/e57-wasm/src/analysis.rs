@@ -814,11 +814,16 @@ impl Analyzer {
         }
     }
 
-    /// One scalar per point.
-    pub fn feature(&mut self, f: Feature, k: usize, radius: f32, mut progress: impl FnMut(usize)) -> Vec<f32> {
+    /// One scalar per point, for the first `upto` of them (0 for all).
+    ///
+    /// A tile is fed its neighbours' points as well as its own, and they are there to be found
+    /// by the search rather than answered for. Computing a value for them too was a third of
+    /// the work on a tile with a thick halo.
+    pub fn feature(&mut self, f: Feature, k: usize, radius: f32, upto: usize, mut progress: impl FnMut(usize)) -> Vec<f32> {
         use Feature::*;
         self.build();
         let n = self.len();
+        let n = if upto == 0 { n } else { upto.min(n) };
         let mut out = vec![f32::NAN; n];
         let mut scratch: Vec<(f32, u32)> = Vec::with_capacity(256);
         for i in 0..n {
@@ -978,6 +983,13 @@ impl Analyzer {
     /// A tile holds the points it is responsible for first and its neighbours' points after
     /// them, so it asks for the prefix: the rest are there to be found by the search and are
     /// answered for by the tile that owns them.
+    ///
+    /// This is the whole cost of SOR. The caller keeps the numbers rather than a summary of
+    /// them, works out one threshold over every tile, and compares against it afterwards,
+    /// which is why the filter searches each neighbourhood once instead of twice.
+    pub fn sor_means(&mut self, knn: usize, upto: usize, mut progress: impl FnMut(usize)) -> Vec<f32> {
+        self.mean_distances(knn, upto, &mut progress)
+    }
     fn mean_distances(&mut self, knn: usize, upto: usize, progress: &mut impl FnMut(usize)) -> Vec<f32> {
         self.build();
         let n = self.len();
@@ -1058,9 +1070,11 @@ impl Analyzer {
     /// * the query point's own distance is compared as an absolute value, and the test is
     ///   `≤`, inclusive;
     /// * too few neighbours means the point is kept unless `remove_isolated` is set.
-    pub fn noise_filter(&mut self, p: NoiseParams, mut progress: impl FnMut(usize)) -> Vec<u8> {
+    pub fn noise_filter(&mut self, p: NoiseParams, upto: usize, mut progress: impl FnMut(usize)) -> Vec<u8> {
         self.build();
         let n = self.len();
+        // a tile answers for its own points; its halo is there to be found, not judged
+        let n = if upto == 0 { n } else { upto.min(n) };
         let mut keep = vec![0u8; n];
         let mut scratch: Vec<(f32, u32)> = Vec::with_capacity(256);
         let mut nb: Vec<(f32, u32)> = Vec::with_capacity(256);

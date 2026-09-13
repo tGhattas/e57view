@@ -42,7 +42,10 @@ export class CloudAnalysis {
     distance_to_mesh(pos: Float32Array, idx: Uint32Array, signed: boolean, max_r: number, progress?: Function | null): Float32Array;
     distance_to_reference(signed: boolean, max_r: number, progress?: Function | null): Float32Array;
     duplicates(tol: number): Uint8Array;
-    feature(name: string, k: number, radius: number, progress?: Function | null): Float32Array;
+    /**
+     * `upto` is how many of the points fed this call answers for, 0 for all of them.
+     */
+    feature(name: string, k: number, radius: number, upto: number, progress?: Function | null): Float32Array;
     /**
      * Run ICP and report what it did, as JSON. `max_dist` is the starting rejection gate
      * in metres; it tightens to 15% of that as the fit settles.
@@ -56,7 +59,7 @@ export class CloudAnalysis {
      * neighbourhood, a relative (n sigma) or absolute distance threshold, and whether
      * points with too few neighbours to fit a plane are dropped or kept.
      */
-    noise(use_knn: boolean, knn: number, radius: number, use_absolute_error: boolean, absolute_error: number, n_sigma: number, remove_isolated: boolean, progress?: Function | null): Uint8Array;
+    noise(use_knn: boolean, knn: number, radius: number, use_absolute_error: boolean, absolute_error: number, n_sigma: number, remove_isolated: boolean, upto: number, progress?: Function | null): Uint8Array;
     /**
      * Normals interleaved as x,y,z signed bytes, for the viewer to patch into its records.
      */
@@ -76,6 +79,12 @@ export class CloudAnalysis {
      * The second pass: this tile's keep mask against a cut-off decided over the cloud.
      */
     sor_cut(k: number, cut: number, upto: number, progress?: Function | null): Uint8Array;
+    /**
+     * Every one of this tile's own points' mean neighbour distance. The caller adds up
+     * the tiles, works out one threshold for the cloud, and compares against these,
+     * which searches each neighbourhood once rather than twice.
+     */
+    sor_means(k: number, upto: number, progress?: Function | null): Float32Array;
     /**
      * The first pass of a tiled SOR over this tile's own points: `[sum, sum of squares,
      * count]` of their mean neighbour distances. The caller adds the tiles up to get the
@@ -278,13 +287,13 @@ export interface InitOutput {
     readonly cloudanalysis_distance_to_mesh: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
     readonly cloudanalysis_distance_to_reference: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_duplicates: (a: number, b: number) => [number, number];
-    readonly cloudanalysis_feature: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
+    readonly cloudanalysis_feature: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
     readonly cloudanalysis_icp: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly cloudanalysis_invert_normals: (a: number) => void;
     readonly cloudanalysis_len: (a: number) => number;
     readonly cloudanalysis_mean_distance: (a: number) => number;
     readonly cloudanalysis_new: (a: number) => number;
-    readonly cloudanalysis_noise: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+    readonly cloudanalysis_noise: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number];
     readonly cloudanalysis_normals_bytes: (a: number) => [number, number];
     readonly cloudanalysis_orient_normals: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly cloudanalysis_orient_to_viewpoints: (a: number, b: number, c: number) => void;
@@ -293,6 +302,7 @@ export interface InitOutput {
     readonly cloudanalysis_rewind: (a: number) => void;
     readonly cloudanalysis_sor: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_sor_cut: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly cloudanalysis_sor_means: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_sor_stats: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_start_reference: (a: number, b: number) => void;
     readonly cloudanalysis_subsample: (a: number, b: number) => [number, number];

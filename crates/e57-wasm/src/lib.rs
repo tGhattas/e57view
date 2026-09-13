@@ -840,9 +840,10 @@ mod wasm_analysis {
         }
         pub fn rewind(&mut self) { self.cursor = 0; }
 
-        pub fn feature(&mut self, name: &str, k: u32, radius: f32, progress: Option<js_sys::Function>) -> Vec<f32> {
+        /// `upto` is how many of the points fed this call answers for, 0 for all of them.
+        pub fn feature(&mut self, name: &str, k: u32, radius: f32, upto: u32, progress: Option<js_sys::Function>) -> Vec<f32> {
             match Feature::from_str(name) {
-                Some(f) => self.inner.feature(f, k as usize, radius, |i| tick(&progress, i)),
+                Some(f) => self.inner.feature(f, k as usize, radius, upto as usize, |i| tick(&progress, i)),
                 None => Vec::new(),
             }
         }
@@ -852,6 +853,12 @@ mod wasm_analysis {
             self.last_mean = mu;
             self.last_cut = cut;
             keep
+        }
+        /// Every one of this tile's own points' mean neighbour distance. The caller adds up
+        /// the tiles, works out one threshold for the cloud, and compares against these,
+        /// which searches each neighbourhood once rather than twice.
+        pub fn sor_means(&mut self, k: u32, upto: u32, progress: Option<js_sys::Function>) -> Vec<f32> {
+            self.inner.sor_means(k as usize, upto as usize, |i| tick(&progress, i))
         }
         /// The first pass of a tiled SOR over this tile's own points: `[sum, sum of squares,
         /// count]` of their mean neighbour distances. The caller adds the tiles up to get the
@@ -870,12 +877,12 @@ mod wasm_analysis {
         #[allow(clippy::too_many_arguments)]
         pub fn noise(&mut self, use_knn: bool, knn: u32, radius: f32,
                      use_absolute_error: bool, absolute_error: f32, n_sigma: f32,
-                     remove_isolated: bool, progress: Option<js_sys::Function>) -> Vec<u8> {
+                     remove_isolated: bool, upto: u32, progress: Option<js_sys::Function>) -> Vec<u8> {
             let p = NoiseParams {
                 use_knn, knn: knn as usize, radius,
                 use_absolute_error, absolute_error, n_sigma, remove_isolated,
             };
-            self.inner.noise_filter(p, |i| tick(&progress, i))
+            self.inner.noise_filter(p, upto as usize, |i| tick(&progress, i))
         }
         pub fn duplicates(&mut self, tol: f32) -> Vec<u8> { self.inner.duplicates(tol) }
         pub fn subsample(&mut self, spacing: f32) -> Vec<u8> { self.inner.spatial_subsample(spacing) }

@@ -150,16 +150,18 @@ export class CloudAnalysis {
         return v1;
     }
     /**
+     * `upto` is how many of the points fed this call answers for, 0 for all of them.
      * @param {string} name
      * @param {number} k
      * @param {number} radius
+     * @param {number} upto
      * @param {Function | null} [progress]
      * @returns {Float32Array}
      */
-    feature(name, k, radius, progress) {
+    feature(name, k, radius, upto, progress) {
         const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.cloudanalysis_feature(this.__wbg_ptr, ptr0, len0, k, radius, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+        const ret = wasm.cloudanalysis_feature(this.__wbg_ptr, ptr0, len0, k, radius, upto, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
         var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v2;
@@ -222,11 +224,12 @@ export class CloudAnalysis {
      * @param {number} absolute_error
      * @param {number} n_sigma
      * @param {boolean} remove_isolated
+     * @param {number} upto
      * @param {Function | null} [progress]
      * @returns {Uint8Array}
      */
-    noise(use_knn, knn, radius, use_absolute_error, absolute_error, n_sigma, remove_isolated, progress) {
-        const ret = wasm.cloudanalysis_noise(this.__wbg_ptr, use_knn, knn, radius, use_absolute_error, absolute_error, n_sigma, remove_isolated, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+    noise(use_knn, knn, radius, use_absolute_error, absolute_error, n_sigma, remove_isolated, upto, progress) {
+        const ret = wasm.cloudanalysis_noise(this.__wbg_ptr, use_knn, knn, radius, use_absolute_error, absolute_error, n_sigma, remove_isolated, upto, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v1;
@@ -304,6 +307,21 @@ export class CloudAnalysis {
         const ret = wasm.cloudanalysis_sor_cut(this.__wbg_ptr, k, cut, upto, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Every one of this tile's own points' mean neighbour distance. The caller adds up
+     * the tiles, works out one threshold for the cloud, and compares against these,
+     * which searches each neighbourhood once rather than twice.
+     * @param {number} k
+     * @param {number} upto
+     * @param {Function | null} [progress]
+     * @returns {Float32Array}
+     */
+    sor_means(k, upto, progress) {
+        const ret = wasm.cloudanalysis_sor_means(this.__wbg_ptr, k, upto, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
         return v1;
     }
     /**
