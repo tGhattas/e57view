@@ -10,6 +10,10 @@ been released yet, so everything is unreleased.
 
 ## Unreleased
 
+_Nothing yet._
+
+## 0.1.0 (2026-09-13)
+
 ### Reading and writing files
 
 - **E57**, with a columnar decoder written for this project (`crates/e57-wasm/src/fast.rs`):
@@ -158,3 +162,4 @@ been released yet, so everything is unreleased.
   uploads your scan to a third party is a different product with a different threat model, and
   the cleaning was better served by the deterministic filters above. The agent interface, which
   those were built alongside, stayed.
+
