@@ -47,6 +47,27 @@ console.log('default Detail:', await p.textContent('#v-mvox'), '(from the scan\'
 const t0 = Date.now();
 const st = await p.evaluate(() => window.__app.buildMesh({ voxel: 5, smooth: 2, trunc: 2, confirm: false }));
 console.log(`BUILD ${((Date.now() - t0) / 1000).toFixed(1)}s ·`, await p.textContent('#v-mesh'));
+
+// The build result belongs to one line. It used to be printed under Build and again above
+// Import, a few centimetres apart, which reads as two facts and is one.
+const lines = await p.evaluate(() => ({
+  build: document.getElementById('v-mesh').textContent.trim(),
+  info: document.getElementById('v-meshinfo').textContent.trim(),
+  infoHidden: document.getElementById('v-meshinfo').classList.contains('hidden'),
+}));
+ok('the build result is on the line under Build', /triangles/.test(lines.build), lines.build);
+ok('and is not repeated further down', lines.info === '' && lines.infoHidden,
+   lines.info || '(empty and hidden)');
+// a mesh operation does have something of its own to say, and saying it shows the line
+await p.evaluate(() => window.__app.measureActiveMesh());
+await p.waitForTimeout(200);
+const after = await p.evaluate(() => ({
+  info: document.getElementById('v-meshinfo').textContent.trim(),
+  hidden: document.getElementById('v-meshinfo').classList.contains('hidden'),
+}));
+ok('a measurement writes that line and shows it', /area/.test(after.info) && !after.hidden,
+   after.info.slice(0, 70));
+
 ok('surface built', st && st.triangles > 5000, `${st?.triangles?.toLocaleString()} triangles`);
 ok('reconstructed from normals', st && st.oriented > st.unoriented, `${st?.oriented?.toLocaleString()} oriented points`);
 

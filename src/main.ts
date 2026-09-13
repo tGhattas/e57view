@@ -2739,7 +2739,7 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
     const st0 = done.stats;
     viewer.setMesh(meshData, builtWith);
     document.body.classList.toggle('has-mesh', viewer.anyMesh);
-    $('v-meshinfo').textContent = 'no mesh yet';      // so refreshMeshUI rewrites it
+    meshNote('');                                     // the build result is the line above
     refreshMeshUI();
     dirtyMark.surface = done.stats.triangles || 0;
     meshInfo = {
@@ -2766,7 +2766,7 @@ $('k-mclear').addEventListener('click', () => {
   dirtyMark.surface = 0; refreshMeshUI(); renderLayers();
   sfName = ''; dirtyMark.field = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
   ($('k-color-sf') as HTMLOptionElement).disabled = true;
-  setDisplay('points'); $('v-mesh').textContent = '—'; $('v-meshinfo').textContent = 'no mesh yet';
+  setDisplay('points'); $('v-mesh').textContent = '—'; meshNote('');
 });
 
 
@@ -2779,6 +2779,13 @@ $('k-mclear').addEventListener('click', () => {
 let meshFile = '';
 const meshSettings = { iterations: 5, taubin: true, cellCm: 10, sampleMode: 'count' as 'count' | 'density', sampleVal: 200000 };
 
+/** Write the mesh line, and show it. Only `refreshMeshUI` hides it, and only when it has
+ *  nothing to say, so every other writer goes through here or its text never appears. */
+function meshNote(text: string, kind: '' | 'ok' | 'err' = '') {
+  const el = $('v-meshinfo');
+  el.textContent = text;
+  el.className = 'statusline' + (kind ? ' ' + kind : '') + (text.trim() ? '' : ' hidden');
+}
 /** Every layer that has triangles. */
 function meshEntities(): Entity[] { return viewer.entities.filter(e => e.mesh.hasMesh); }
 /** The world matrix the active layer's triangles are drawn through. */
@@ -2797,15 +2804,12 @@ function refreshMeshUI() {
   const have = !!meshData?.idx.length;
   for (const id of ['k-meshmeasure', 'k-meshflip', 'k-meshsmooth', 'k-meshdecim', 'k-meshsample', 'k-meshsave'])
     ($(id) as HTMLButtonElement).disabled = !have;
+  // This line reports the last thing done to a mesh, and where an imported one came from. It
+  // does not repeat the triangle count: that is the build line under Build from points, and
+  // the same numbers twice a few centimetres apart is not two pieces of information.
   const info = $('v-meshinfo');
-  if (!have && !list.length) { info.textContent = 'no mesh yet'; info.className = 'statusline'; }
-  else if (have && /^no mesh yet$/.test(info.textContent ?? '')) {
-    // a mesh has appeared since this line was last written, so say what it is rather than
-    // leaving the placeholder contradicting the controls that just became available
-    const st = meshData!;
-    info.textContent = `${fmt(st.idx.length / 3)} triangles · ${fmt(st.pos.length / 3)} vertices`;
-    info.className = 'statusline ok';
-  }
+  if (!have && !list.length) meshNote('no mesh yet');
+  else if (have && !(info.textContent ?? '').trim()) meshNote(meshFile ? `from ${meshFile}` : '');
 }
 function syncMeshOpLabels() {
   $('v-meshiter').textContent = String(meshSettings.iterations);
@@ -2888,8 +2892,8 @@ async function importMesh(f: File): Promise<Entity | null> {
     afterEntitySwitch();
     viewer.applyZRange(); syncZLabels(); viewer.fit();
     const note = raw.badIndices ? ` · ${fmt(raw.badIndices)} faces dropped for indices past the end` : '';
-    $('v-meshinfo').textContent = `${f.name} · ${fmt(st.triangles)} triangles · ${fmt(st.vertices)} vertices`
-      + ` · ${hadNormals ? 'normals from the file' : 'normals computed'}${d.some(v => Math.abs(v) > 1e-9) ? ` · placed ${d.map(v => v.toFixed(2)).join(', ')} m from ${layerName(viewer.entities[0])}` : ''}${note}`;
+    meshNote(`${f.name} · ${fmt(st.triangles)} triangles · ${fmt(st.vertices)} vertices`
+      + ` · ${hadNormals ? 'normals from the file' : 'normals computed'}${d.some(v => Math.abs(v) > 1e-9) ? ` · placed ${d.map(v => v.toFixed(2)).join(', ')} m from ${layerName(viewer.entities[0])}` : ''}${note}`);
     $('tb-points').textContent = `${fmt(st.triangles)} triangles · ${kind.toUpperCase()}`;
     return e;
   } finally { hideBusy(); }
@@ -2936,16 +2940,16 @@ function measureActiveMesh(): MeshMeasure | null {
   const vol = st.closed
     ? `volume ${st.volume.toFixed(3)} m³`
     : `volume ${st.volume.toFixed(3)} m³ (open: ${fmt(st.boundaryEdges)} boundary edges, so this is only what the divergence sum gives)`;
-  $('v-meshinfo').textContent = `${fmt(st.triangles)} triangles · ${fmt(st.vertices)} vertices · area ${st.area.toFixed(3)} m² · ${vol}`
+  meshNote(`${fmt(st.triangles)} triangles · ${fmt(st.vertices)} vertices · area ${st.area.toFixed(3)} m² · ${vol}`
     + (st.nonManifoldEdges ? ` · ${fmt(st.nonManifoldEdges)} non-manifold edges` : '')
-    + (st.degenerate ? ` · ${fmt(st.degenerate)} zero-area triangles` : '');
+    + (st.degenerate ? ` · ${fmt(st.degenerate)} zero-area triangles` : ''));
   return st;
 }
 $('k-meshmeasure').addEventListener('click', () => measureActiveMesh());
 $('k-meshflip').addEventListener('click', () => {
   if (!meshData?.idx.length) return;
   const st = replaceMesh(flipMesh(meshData));
-  $('v-meshinfo').textContent = `flipped ${fmt(st.triangles)} triangles · the other side is now the front`;
+  meshNote(`flipped ${fmt(st.triangles)} triangles · the other side is now the front`);
 });
 $('k-meshsmooth').addEventListener('click', () => smoothActiveMesh());
 function smoothActiveMesh(opts: { iterations?: number; taubin?: boolean } = {}) {
@@ -2956,8 +2960,8 @@ function smoothActiveMesh(opts: { iterations?: number; taubin?: boolean } = {}) 
   const t0 = performance.now();
   const st = replaceMesh(smoothMesh(meshData, it, 0.5, taubin ? -0.53 : 0));
   const dv = before.volume > 1e-9 ? ((st.volume - before.volume) / before.volume) * 100 : 0;
-  $('v-meshinfo').textContent = `${taubin ? 'Taubin' : 'Laplacian'} × ${it} · area ${before.area.toFixed(3)} → ${st.area.toFixed(3)} m²`
-    + ` · volume ${dv >= 0 ? '+' : ''}${dv.toFixed(2)}% · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+  meshNote(`${taubin ? 'Taubin' : 'Laplacian'} × ${it} · area ${before.area.toFixed(3)} → ${st.area.toFixed(3)} m²`
+    + ` · volume ${dv >= 0 ? '+' : ''}${dv.toFixed(2)}% · ${((performance.now() - t0) / 1000).toFixed(1)}s`);
   return { ...st, volumeChangePct: dv, iterations: it, taubin };
 }
 $('k-meshdecim').addEventListener('click', () => decimateActiveMesh());
@@ -2969,9 +2973,9 @@ function decimateActiveMesh(opts: { cellCm?: number } = {}) {
   // the cell is given in world centimetres; the vertices live in the layer's local frame
   const scale = viewer.cells.modelScale || 1;
   const st = replaceMesh(decimateMesh(meshData, (cm / 100) / scale));
-  $('v-meshinfo').textContent = `vertex clustering at ${cm.toFixed(1)} cm · ${fmt(before.triangles)} → ${fmt(st.triangles)} triangles`
+  meshNote(`vertex clustering at ${cm.toFixed(1)} cm · ${fmt(before.triangles)} → ${fmt(st.triangles)} triangles`
     + ` (${((st.triangles / Math.max(before.triangles, 1)) * 100).toFixed(1)}%) · area ${before.area.toFixed(3)} → ${st.area.toFixed(3)} m²`
-    + ` · ${((performance.now() - t0) / 1000).toFixed(1)}s`;
+    + ` · ${((performance.now() - t0) / 1000).toFixed(1)}s`);
   return { ...st, before: before.triangles, cellCm: cm };
 }
 
@@ -3031,7 +3035,7 @@ function enqueueWorldPoints(cells: typeof viewer.cells, xyz: Float64Array, rgb: 
   return made;
 }
 
-$('k-meshsample').addEventListener('click', () => sampleMeshPoints().catch(e => { $('v-meshinfo').textContent = 'sampling failed: ' + (e?.message ?? e); }));
+$('k-meshsample').addEventListener('click', () => sampleMeshPoints().catch(e => { meshNote('sampling failed: ' + (e?.message ?? e)); }));
 /** Scatter points over the active layer's triangles into a new point layer. */
 async function sampleMeshPoints(opts: { count?: number; density?: number } = {}) {
   if (!meshData?.idx.length) throw new Error('the active layer has no mesh');
@@ -3057,14 +3061,14 @@ async function sampleMeshPoints(opts: { count?: number; density?: number } = {})
     afterEntitySwitch();
     viewer.applyZRange(); syncZLabels();
     const dens = s.count / Math.max(s.area, 1e-9);
-    $('v-meshinfo').textContent = `sampled ${fmt(s.count)} points over ${s.area.toFixed(3)} m² · ${dens.toFixed(1)} points per m²`
-      + ` · mean spacing ${(Math.sqrt(1 / dens) * 100).toFixed(1)} cm`;
+    meshNote(`sampled ${fmt(s.count)} points over ${s.area.toFixed(3)} m² · ${dens.toFixed(1)} points per m²`
+      + ` · mean spacing ${(Math.sqrt(1 / dens) * 100).toFixed(1)} cm`);
     $('tb-points').textContent = `${fmt(s.count)} pts · sampled from a mesh`;
     return { points: s.count, area: r6(s.area), density: r6(dens), layer: e.id, name: e.name };
   } finally { hideBusy(); }
 }
 
-$('k-meshdist').addEventListener('click', () => distanceToMesh().catch(e => { $('v-meshinfo').textContent = 'distance failed: ' + (e?.message ?? e); }));
+$('k-meshdist').addEventListener('click', () => distanceToMesh().catch(e => { meshNote('distance failed: ' + (e?.message ?? e)); }));
 /** Distance from every point of the active cloud to the nearest triangle of a mesh layer.
  *
  *  Point-to-triangle, not point-to-nearest-vertex: on a coarse mesh those differ by most of a
@@ -3092,9 +3096,9 @@ async function distanceToMesh(opts: { mesh?: string; signed?: boolean } = {}) {
     hideBusy();
     setScalarField(`Distance to ${layerName(target)}`, r.data as Float32Array, r.counts);
     const s = viewer.cells.scalarStats();
-    $('v-meshinfo').textContent = `distance to ${layerName(target)}${signed ? ' (signed)' : ''} · `
+    meshNote(`distance to ${layerName(target)}${signed ? ' (signed)' : ''} · `
       + (s ? `${(s.min * 1000).toFixed(1)} to ${(s.max * 1000).toFixed(1)} mm over ${fmt(s.n)} values` : 'no values')
-      + ` · ${fmt(r.points)} points`;
+      + ` · ${fmt(r.points)} points`);
     return { points: r.points, mesh: target.id, meshName: target.name, signed, stats: s ? { min: r6(s.min), max: r6(s.max), values: s.n } : null };
   } finally { hideBusy(); }
 }
@@ -3112,7 +3116,7 @@ function meshBlob(fmtSel: 'ply' | 'obj' | 'stl'): Blob {
     out[0] = v.x + t[0]; out[1] = v.y + t[1]; out[2] = v.z + t[2];
   })], { type: 'application/octet-stream' });
 }
-$('k-meshsave').addEventListener('click', () => saveMesh().catch(e => { $('v-meshinfo').textContent = 'save failed: ' + (e?.message ?? e); }));
+$('k-meshsave').addEventListener('click', () => saveMesh().catch(e => { meshNote('save failed: ' + (e?.message ?? e)); }));
 async function saveMesh(fmtIn?: 'ply' | 'obj' | 'stl') {
   if (!meshData?.idx.length) throw new Error('the active layer has no mesh');
   const fmtSel = fmtIn ?? ($<HTMLSelectElement>('k-meshfmt').value as 'ply' | 'obj' | 'stl');
@@ -3129,7 +3133,7 @@ async function saveMesh(fmtIn?: 'ply' | 'obj' | 'stl') {
     const file = new File([blob], `${base}.${fmtSel}`);
     await writeOutFile({ file, name: file.name, scratch: '' }, handle);
     dirtyMark.surface = 0; captureActive();
-    $('v-meshinfo').textContent = `saved ${file.name} · ${mb(blob.size)} · ${fmt(meshData.idx.length / 3)} triangles`;
+    meshNote(`saved ${file.name} · ${mb(blob.size)} · ${fmt(meshData.idx.length / 3)} triangles`);
     return { name: file.name, bytes: blob.size, triangles: meshData.idx.length / 3 };
   } finally { hideBusy(); }
 }
