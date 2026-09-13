@@ -1482,3 +1482,139 @@ The one thing outside the repository: **Firebase Auth's authorised-domain list**
 sessions are built on. `e57view.web.app` is on it now, added through the Identity Toolkit admin
 API. Anyone deploying their own copy has to do the same for their own domain, and the README
 says so next to the deploy commands.
+
+## A cloud that will not fit in one index
+
+The bug report was one line from the Clean panel: `failed: Cannot read properties of null
+(reading 'add_leaf')`. Two separate things had to be wrong for that to be the message anyone
+saw.
+
+**The message was not the reason.** The analysis worker holds one `CloudAnalysis`, and the
+main thread posts leaves at it without waiting for each one to be taken. When a run was
+refused part-way through the feed, the worker freed the analyser and posted the refusal, and
+the leaves already in flight then arrived at a null pointer. Each of those threw, and the
+last error to be posted won, so the reason was replaced by one of its own consequences. The
+worker now arms itself on `start` and disarms on the first failure, and says nothing further
+until the next run. The refusal that reaches the panel is the first one, which is the only one
+that ever meant anything.
+
+**The reason was a cap.** The analyser held every point of the cloud in one spatial index, and
+past 30M points on a desktop, 8M on a phone, it refused. On a 73.8M point scan that meant
+Remove outliers, Remove noise and Remove duplicates did not run at all. The cap was not
+arbitrary: the index is a `Vec` per coordinate plus a grid, in a 32-bit address space.
+
+### The cloud is cut into tiles, and the tiles overlap
+
+Everything in the Clean group decides what happens to a point from the points within a few
+centimetres of it. That is also true of the per-point features, of normal estimation, of
+thinning, and of measuring the distance to another cloud. None of them needs the far side of
+the scan in memory.
+
+So the cloud is cut into spatial tiles, each small enough to index. A tile is fed its own
+leaves first and then every leaf within a halo of them, flagged as context. The context points
+are searched like any other, and the answers for them are thrown away, because the tile that
+owns them will answer for them itself. That is what makes the middle of a tile and the edge of
+a tile come out the same.
+
+Tiles are cut by splitting the leaves recursively across the longest side of the group, at the
+place that puts half the **points** on each side rather than half the leaves. A terrestrial
+scan is enormously denser near the scanner, and splitting by leaf count gives one tile with
+everything in it. The split repeats while the group's own points are more than 60% of the
+budget, and again if the halo pushes the total over the budget.
+
+The halo is sized per operation, because the reach differs: sixteen tolerances for duplicate
+removal, two spacings for thinning, three radii for the noise filter in sphere mode, and about
+twenty point spacings for anything that asks for k nearest neighbours. Measuring to a mesh or
+to another cloud needs no halo at all, because the thing being measured against is not the
+cloud being tiled.
+
+### Three things have to agree between tiles
+
+A rule of the form "the first one wins" is a rule about order, and a tile has its own order.
+Duplicate removal keeps the first point of a pair. Thinning keeps the first point in each
+voxel. Both would keep a different point in every voxel that straddles a tile edge, and the
+two tiles would disagree about the same pair of points.
+
+The analyser now carries `gid`, the point's index in the whole cloud, alongside its
+coordinates. Both rules are decided on that, so a tile decides what the whole cloud would have
+decided. It costs four bytes a point in the tile that is loaded, which is the cheapest thing in
+this section.
+
+The third is the tie-break between two neighbours that are exactly the same distance away.
+The radius search already ranked in f64 and broke ties by index. The k-nearest search did not:
+it partitioned on an f32 distance with no tie-break at all, so which of two equidistant
+neighbours survived depended on the order the grid happened to visit its cells in. That was
+invisible while every run held the whole cloud, and it showed up immediately under tiling.
+Both searches now rank in f64 and break ties on `gid`. The verticality field went from a worst
+difference of 0.0013 between the tiled and whole routes to exactly zero.
+
+### SOR needs a number that only the whole cloud has
+
+The statistical outlier filter compares each point's mean neighbour distance against the mean
+and standard deviation of that quantity over the cloud. A per-tile threshold is a different
+filter, and the seams would be visible as bands of survivors.
+
+It runs in two passes. `sor_stats` returns each tile's sum, sum of squares and count over its
+own points, the main thread adds them up and works out one threshold, and `sor_cut` applies
+that threshold tile by tile. Every point is counted exactly once, so the mean and the cut-off
+come out bit-identical to the whole-cloud numbers. It costs a second pass over the cloud,
+which is the honest price of a global statistic.
+
+### What still needs the cloud whole
+
+Connected components, because a cluster can run the length of the scan and no halo bounds it.
+It keeps the cap and now says why when it refuses: the message names the operation's need, not
+just the number.
+
+Orienting normals also stays whole when there is nothing to orient towards. Propagation over
+the neighbour graph plus a per-component vote is a global decision, and two tiles can vote
+differently. With a viewpoint, or with the scan's own station positions, the decision is made
+per point and tiles cannot disagree, so that case tiles like everything else.
+
+### Checking that the two routes agree
+
+`anatest` builds an 8,600-point cloud with a jittered surface, planted outliers and 200 exact
+repeats, runs each operation over the whole thing, then again as four strips with a halo, and
+compares point for point. Duplicates, thinning, the noise filter, SOR and verticality all come
+out identical, and the two-pass mean and cut-off match the whole-cloud ones to the last bit.
+
+`drive-analysis.mjs` does the same in the browser on a 1.54M point fixture written as binary
+PLY. The octree splits a leaf at 400,000 points, so a fixture has to be a few million before
+there are enough leaves to tile at all. With the cap lowered to a third of the cloud it runs
+in ten tiles and every mask is identical to the whole-cloud run, checked by a checksum over
+the quantised coordinates of every surviving point.
+
+<!--REALSCAN-->
+
+## A record of what the agent did
+
+Three ways into this tab and no record of any of them. The panel showed what was happening
+while it happened, and afterwards the only evidence an agent had done anything was the point
+count and the undo stack. "What did it just run?" was not answerable.
+
+The Agent group has a fourth tab, **Log**, listing every command that has come in over any
+path, newest first: the time, where it came from, the command, a one-line summary of its
+arguments, whether it succeeded and how long it took. Clicking an entry opens the full
+arguments and a trimmed copy of the reply, with a Copy button, and there is a Copy log that
+puts the whole list on the clipboard as plain text for pasting into a bug report.
+
+The hook is the wrapper that was already counting calls. Both transports end up calling the
+same handler map, the WebSocket bridge directly and the HTTP relay through `dispatchAgent`, so
+wrapping the map catches every path including the steps inside a script. Nothing else had to
+be touched.
+
+Where a call came from is the one thing the handler cannot see, because by then every path
+looks the same. Each entry point sets it immediately before it calls: the bridge to `MCP`
+plus the client's own name, the relay to `HTTP`, the script runner to `script` for each step.
+The MCP client's name comes from the initialize handshake, forwarded with every command by
+the Node server. The name is the agent's own claim about itself, so it is truncated and
+inserted as text, never as markup.
+
+Entries that needed the edit permission carry an `edit` tag, using the same `agentNeedsEdit`
+the permission gate uses, so the tag and the gate cannot disagree. The list holds 500 entries
+and drops the oldest. Nothing is persisted: this is a record of what happened in this tab, and
+it goes when the tab does.
+
+`viewer_log` reads the same list, which turns out to be the more useful half. An agent that
+has just been handed a session can ask what has already been done to the cloud rather than
+inferring it, and an agent that ran a script can read back what each step actually received.

@@ -9,7 +9,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="Licence: GPL-3.0-only" src="https://img.shields.io/badge/licence-GPL--3.0--only-14707d"></a>
   <a href=".github/workflows/build.yml"><img alt="Build" src="https://img.shields.io/badge/build-web%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-14707d"></a>
-  <a href="#the-agent-interface"><img alt="MCP: 31 tools" src="https://img.shields.io/badge/MCP-31%20tools-14707d"></a>
+  <a href="#the-agent-interface"><img alt="MCP: 32 tools" src="https://img.shields.io/badge/MCP-32%20tools-14707d"></a>
   <a href="https://e57view.web.app"><img alt="Live" src="https://img.shields.io/badge/try%20it-e57view.web.app-2b7a84"></a>
 </p>
 
@@ -61,7 +61,7 @@ levelling a scan is instant, lossless and undoable. Only a written file bakes it
 It was built for an AI agent to drive. An orthographic render comes back with the mapping that
 turns any of its pixels into a world point. `probe` re-establishes a past render's camera so it
 can answer exactly. `recommendedSource` says whether to measure the points or the surface, and
-why. There are 31 MCP tools, and they work offline in the desktop build.
+why. There are 32 MCP tools, and they work offline in the desktop build.
 
 Everything is measured. A unit cube reads 6.000 m² and 1.000 m³. A volume comes out 0.11% from
 arithmetic. A cylinder fit lands 0.0000° off the axis. ICP recovers a known offset to 0.000 mm.
@@ -135,6 +135,12 @@ against CloudCompare read from its source, 190 rows, kept current.
   against its own neighbours' spread, with a sphere or kNN neighbourhood, a relative or
   absolute threshold, and a choice about points too sparse to judge. Spatial subsampling and
   connected components stay in Analysis.
+- **No size limit on the local operations.** A cloud too big to index in one go is analysed one
+  spatial tile at a time, each tile fed its own points plus a halo of its neighbours' so the
+  edges come out the same as the middle. Cleaning, thinning, normals, the features and the
+  distance to another cloud all work this way and give the same answer they would give whole,
+  checked point for point in the drivers. Connected components still needs every point in one
+  index, and says so if the cloud is past what the device can hold.
 - A field gets a ramp, a histogram, a display range and a value filter that can delete what
   falls outside it in one undoable step.
 
@@ -195,9 +201,9 @@ against CloudCompare read from its source, 190 rows, kept current.
 <details open>
 <summary><strong>The agent interface</strong></summary>
 
-- 31 MCP tools over a localhost bridge: state, calibrated views, sections, probe, contour,
+- 32 MCP tools over a localhost bridge: state, calibrated views, sections, probe, contour,
   fit, detect, regions, analysis, transform, register, distance, volume, mesh, cache, export,
-  script.
+  script, log.
 - **A calibrated modelling kit**, not screenshots: every orthographic render returns
   `metresPerPixel` and a `topLeft`, and `probe` turns pixels of a past render back into world
   points exactly.
@@ -205,6 +211,10 @@ against CloudCompare read from its source, 190 rows, kept current.
   the next, because the round trip is the expensive part.
 - A hosted HTTP session for driving a browser tab from anywhere. It is opt-in, uses a bearer
   token, is read-only by default, and is revoked when the tab closes.
+- **A log of what the agent did**, in the tab it did it to: the Agent panel's fourth tab lists
+  every command that came in over any path, with its arguments, whether it needed the edit
+  permission, what came back and how long it took. `viewer_log` reads the same list. It holds
+  the last 500 calls and nothing is written to disk.
 - [`public/llms.txt`](public/llms.txt) documents the whole surface with worked examples.
 
 </details>

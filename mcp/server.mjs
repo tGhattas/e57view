@@ -10,7 +10,7 @@
 //
 // The desktop build serves the same tools from Rust with no Node at all. Neither server
 // describes a tool itself: mcp/tools.json holds every name, description, argument schema,
-// timeout and reply shape, and both read it. Two descriptions of the same 29 tools in two
+// timeout and reply shape, and both read it. Two descriptions of the same 32 tools in two
 // languages drift the week after they are written; one file cannot.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -50,7 +50,9 @@ function call(cmd, args = {}, timeoutMs = 60000) {
     const id = nextId++;
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`viewer did not answer ${cmd} within ${timeoutMs / 1000}s`)); }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
-    app.send(JSON.stringify({ id, cmd, args }));
+    // the viewer's log says which agent ran each command, and this is the only place that
+    // knows: the MCP client tells us its name when it connects
+    app.send(JSON.stringify({ id, cmd, args, client: clientName() }));
   });
 }
 
@@ -165,6 +167,10 @@ async function run(def, args) {
 }
 
 const server = new McpServer({ name: 'e57view', version: '0.1.0' });
+/** Whatever the agent called itself in the MCP handshake, or nothing before it has spoken. */
+function clientName() {
+  try { return server.server.getClientVersion()?.name ?? ''; } catch { return ''; }
+}
 for (const def of TOOLS) server.tool(def.name, def.description, shape(def.inputSchema), (a) => run(def, a));
 
 const transport = new StdioServerTransport();

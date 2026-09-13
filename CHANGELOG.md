@@ -70,7 +70,14 @@ been released yet, so everything is unreleased.
   has all of CloudCompare's options: a sphere or kNN neighbourhood, a relative or absolute
   threshold, and whether points with too few neighbours to fit a plane are dropped. Plus
   duplicate removal and spatial subsampling.
-- **Connected components**, so a cluster can be isolated and kept or dropped.
+- **No size limit on the neighbourhood operations.** Cleaning, thinning, normals, the geometric
+  features and the distance to another cloud run a spatial tile at a time on a cloud too big to
+  index in one go, each tile fed a halo of its neighbours' points so the tile edges come out the
+  same as the middle. The answer is identical to the whole-cloud one, point for point, and the
+  reply to an agent says how many tiles it took.
+- **Connected components**, so a cluster can be isolated and kept or dropped. This is the one
+  analysis that still needs every point in one index, and it says so when a cloud is past what
+  the device can hold.
 - **Fit primitives**: plane, sphere, cylinder and circle, each reporting an RMS, because a
   cylinder fitted to a flat wall has a radius and an axis and means nothing without one.
   Validated to 0.008° on a plane normal, 0.01 mm on a sphere, 0.0000° on a cylinder axis.
@@ -114,7 +121,7 @@ been released yet, so everything is unreleased.
 
 ### The agent interface
 
-- **30 MCP tools** over a localhost bridge, and a **calibrated modelling kit**: orthographic
+- **32 MCP tools** over a localhost bridge, and a **calibrated modelling kit**: orthographic
   views whose pixel-to-metre mapping is exact, `probe` to turn any pixel of a past render back
   into a world point, sections, contours, plane fits with residuals, height maps, exact
   point-in-box counts, and a `recommendedSource` that says whether to measure the points or the
@@ -124,6 +131,10 @@ been released yet, so everything is unreleased.
 - **Scripts**: a list of `{cmd, args}` steps run in order with each step's result available to
   the next, because the round trip is the expensive part and most steps are decided entirely by
   the previous answer.
+- **A log of every command an agent has run in the tab**, as the Agent panel's fourth tab and
+  as `viewer_log`: the time, where it came from, the command, its arguments, whether it needed
+  the edit permission, the outcome and the duration, with the full arguments and a trimmed
+  reply behind a click. The last 500 calls, held in memory only.
 - **`llms.txt`** describing the whole surface, with worked examples.
 
 ### The desktop app

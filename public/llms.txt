@@ -329,6 +329,15 @@ Arguments you leave out take CloudCompare's defaults, not whatever the viewer's 
 to be showing: `neighbours` 8, `nSigma` 1.0, a sphere neighbourhood, a relative threshold, and
 isolated points kept.
 
+**Size is no longer a reason for these to refuse.** A cloud too big to index in one go is
+analysed one spatial tile at a time: each tile holds its own points and a halo of its
+neighbours', which are searched but answered for by the tile that owns them, so the result is
+the same as it would be if the cloud were held whole. The reply carries `tiles` when that
+happened, and a run over tens of millions of points takes minutes rather than seconds. `sor`
+makes two passes over the tiles, because its threshold is a statistic of the whole cloud.
+`components` is the one operation that still needs every point in one index, and it refuses
+with a message that says so.
+
 ## Meshes are layers
 
 {"session":"S","cmd":"mesh","args":{"op":"list"}}

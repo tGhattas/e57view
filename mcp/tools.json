@@ -1212,7 +1212,7 @@
   {
     "name": "viewer_analysis",
     "cmd": "analysis",
-    "description": "Neighbourhood analysis and cleaning on the ACTIVE layer. Every op is one undoable step.\n\nnormals estimates a normal per point from its neighbours and, unless orient:false, turns each one toward the nearest scanner station \u2014 the only orientation that is right for something scanned from the inside. invert flips them. feature writes one of fifteen geometric measures as a scalar field: roughness, curvature, planarity, linearity, sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume_density, surface_density, neighbours, eig1, eig2, eig3. components labels groups of points that touch within radius, as a field, so one cluster can be isolated with the value filter.\n\nThe four that remove points: sor and noise are CloudCompare's SOR and noise filters, reimplemented so the same settings remove the same points. sor measures each point's mean distance to its knn nearest neighbours and drops those beyond mean + nSigma standard deviations, over the whole cloud \u2014 one global threshold, so be aware that a few very distant points raise it far enough to let nearer outliers through. noise fits a plane to the points AROUND each point and drops the point if it sits further off that plane than its neighbours' own spread allows, so the threshold is local: smooth areas are judged strictly and rough ones loosely. Its neighbourhood is a sphere of radius (CloudCompare's default) or the knn nearest; its threshold is relative (nSigma of the local spread) or an absolute distance; and points with fewer than three neighbours are kept unless removeIsolated is set, because \"too few points to judge\" is not the same as \"noise\". duplicates drops points within tolerance of an earlier one. subsample keeps one point per cube of spacing.",
+    "description": "Neighbourhood analysis and cleaning on the ACTIVE layer. Every op is one undoable step.\n\nnormals estimates a normal per point from its neighbours and, unless orient:false, turns each one toward the nearest scanner station \u2014 the only orientation that is right for something scanned from the inside. invert flips them. feature writes one of fifteen geometric measures as a scalar field: roughness, curvature, planarity, linearity, sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume_density, surface_density, neighbours, eig1, eig2, eig3. components labels groups of points that touch within radius, as a field, so one cluster can be isolated with the value filter.\n\nThe four that remove points: sor and noise are CloudCompare's SOR and noise filters, reimplemented so the same settings remove the same points. sor measures each point's mean distance to its knn nearest neighbours and drops those beyond mean + nSigma standard deviations, over the whole cloud \u2014 one global threshold, so be aware that a few very distant points raise it far enough to let nearer outliers through. noise fits a plane to the points AROUND each point and drops the point if it sits further off that plane than its neighbours' own spread allows, so the threshold is local: smooth areas are judged strictly and rough ones loosely. Its neighbourhood is a sphere of radius (CloudCompare's default) or the knn nearest; its threshold is relative (nSigma of the local spread) or an absolute distance; and points with fewer than three neighbours are kept unless removeIsolated is set, because \"too few points to judge\" is not the same as \"noise\". duplicates drops points within tolerance of an earlier one. subsample keeps one point per cube of spacing.\n\nSize: a cloud too big to index in one go is analysed one spatial tile at a time, each tile holding its own points plus a halo of its neighbours', so the answer is the same as it would be whole. The reply carries tiles when that happened. sor takes two passes over the tiles, because its threshold is the mean and standard deviation of the whole cloud. components is the one op that still needs every point in one index, and it says so if the cloud is past what this device can hold.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1435,6 +1435,30 @@
     "ui": {
       "shot": "always",
       "onlyShotWhenPresent": "enter"
+    }
+  },
+  {
+    "name": "viewer_log",
+    "cmd": "log",
+    "description": "What has been run against this viewer tab, newest first, over every path: this MCP bridge, an HTTP session, or a script. Each entry carries the time, where the call came from, the command, its arguments, whether it needed the edit permission, whether it succeeded, how long it took and a trimmed copy of the reply. Read-only, and nothing is stored anywhere but the tab's memory: the last 500 calls, gone when the tab closes. Useful for picking up a session someone else started, for seeing what a script actually did, and for putting the sequence that led to a problem into a bug report.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "description": "How many of the most recent entries to return. Default 20."
+        },
+        "replies": {
+          "type": "boolean",
+          "description": "Include each entry's reply. Default false, because the replies are much larger than the calls."
+        }
+      }
+    },
+    "timeoutMs": 30000,
+    "ui": {
+      "shot": "never"
     }
   }
 ]
