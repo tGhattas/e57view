@@ -29,10 +29,12 @@ await p.waitForTimeout(900);
 try { await p.click('#modal-btns button:has-text("Not now")', { timeout: 3000 }); } catch {}
 await p.evaluate(() => document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed')));
 await p.bringToFront();
+// the session controls live on the HTTP tab of the Agent group; a hidden tab is not clickable
+await p.click('#tab-http');
 await p.click('#k-agenturl');
-await p.waitForFunction(() => /copied with its token/.test(document.getElementById('v-agenturl')?.textContent || ''), null, { timeout: 25000 });
-// the Allow edits box only unlocks once a session exists; surface build needs it
-await p.click('#k-agentedits');
+await p.waitForFunction(() => /^Copied/.test((document.getElementById('v-agenturl')?.textContent || '').trim()), null, { timeout: 25000 });
+// mesh building and every other edit needs Allow edits; the live block carries the toggle
+await p.click('#http-live #k-agentedits2');
 await p.waitForTimeout(1500);
 const blob = await p.evaluate(() => navigator.clipboard.readText());
 const sid = blob.match(/"session":"([a-z0-9]+)"/)[1];
