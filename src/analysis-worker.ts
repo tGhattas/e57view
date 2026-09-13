@@ -20,8 +20,18 @@ let maxPoints = 30e6;
 let model = new Float32Array(0);
 let cell = 0.05;
 let refStarted = false, refFed = 0;
+/** True between a `start` and the first failure.
+ *
+ *  The main thread posts leaves without waiting for each one, so when a run is refused
+ *  part-way through the feed there are already more leaves in flight. Answering those with a
+ *  null analyser threw, and the second error overwrote the first: the user was told
+ *  "Cannot read properties of null" instead of why the run was refused. Once something has
+ *  gone wrong this worker says nothing further until the next `start`. */
+let armed = false;
 
 const post = (m: any, t: Transferable[] = []) => (self as any).postMessage(m, t);
+/** "73.8M" reads better than "73757292", and "5,000" reads better than "0.0M". */
+const big = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n.toLocaleString('en-GB');
 const prog = (phase: string, total: number) => {
   let last = 0;
   return (i: number) => {
@@ -43,6 +53,7 @@ self.onmessage = async (ev: MessageEvent) => {
       cell = m.cell;
       refStarted = false; refFed = 0;
       fed = 0;
+      armed = true;
       post({ type: 'ready' });
       return;
     }
@@ -67,24 +78,27 @@ self.onmessage = async (ev: MessageEvent) => {
     }
 
     if (m.type === 'ref') {
+      if (!armed || !a) return;      // a failure already reported; stay quiet until the next start
       // a leaf of the reference cloud, read through its own model matrix
-      if (!refStarted) { a!.start_reference(cell); refStarted = true; }
+      if (!refStarted) { a.start_reference(cell); refStarted = true; }
       const recs = new Uint8Array(m.recs);
-      a!.add_reference_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs,
+      a.add_reference_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs,
         m.model && m.model.length === 16 ? new Float32Array(m.model) : new Float32Array(0), Math.max(1, m.stride | 0));
       refFed++;
-      if ((refFed & 15) === 0) post({ type: 'progress', phase: 'Reading the reference', done: a!.reference_len, total: 0 });
+      if ((refFed & 15) === 0) post({ type: 'progress', phase: 'Reading the reference', done: a.reference_len, total: 0 });
       return;
     }
 
     if (m.type === 'leaf') {
+      if (!armed || !a) return;      // a failure already reported; stay quiet until the next start
       const recs = new Uint8Array(m.recs);
-      a!.add_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs, model);
+      a.add_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs, model);
       fed++;
-      const n = a!.len();
+      const n = a.len();
       if (n > maxPoints) {
-        a!.free(); a = null;
-        post({ type: 'error', message: `${(n / 1e6).toFixed(1)}M points is past the ${(maxPoints / 1e6).toFixed(0)}M this device can analyse at once. Crop to a smaller area, or reload at a coarser sampling.` });
+        armed = false;
+        a.free(); a = null;
+        post({ type: 'error', message: `${big(n)} points is past the ${big(maxPoints)} this device can analyse at once. Crop to a smaller area, or reload at a coarser sampling.` });
         return;
       }
       if ((fed & 15) === 0) post({ type: 'progress', phase: 'Reading cells', done: n, total: 0 });
@@ -92,37 +106,38 @@ self.onmessage = async (ev: MessageEvent) => {
     }
 
     if (m.type === 'run') {
-      const n = a!.len();
+      if (!armed || !a) return;      // a failure already reported; stay quiet until the next start
+      const n = a.len();
       post({ type: 'progress', phase: 'Indexing', done: 0, total: n });
-      a!.build();
+      a.build();
       const t0 = performance.now();
       const op = m.op;
       let out: any = { type: 'result', op, points: n };
 
       if (op === 'normals') {
-        a!.compute_normals(m.k, prog('Computing normals', n));
+        a.compute_normals(m.k, prog('Computing normals', n));
         if (m.orient) {
           const vps: Float32Array | null = m.viewpoints && m.viewpoints.length >= 3 ? new Float32Array(m.viewpoints) : null;
           const v = m.viewpoint;
           // Propagation first: it makes neighbouring normals agree, which is a local
           // decision and the only one the neighbour graph can make. Then the global sign.
-          a!.orient_normals(m.k, v ? v[0] : 0, v ? v[1] : 0, v ? v[2] : 0, !!v && !vps, prog('Orienting normals', n));
+          a.orient_normals(m.k, v ? v[0] : 0, v ? v[1] : 0, v ? v[2] : 0, !!v && !vps, prog('Orienting normals', n));
           // With the scanner's own stations known, the outward direction is "toward the
           // nearest station", decided per point. That overrides the per-component vote,
           // which is wrong for anything scanned from the inside.
-          if (vps) { post({ type: 'progress', phase: 'Facing the stations', done: 0, total: n }); a!.orient_to_viewpoints(vps); }
+          if (vps) { post({ type: 'progress', phase: 'Facing the stations', done: 0, total: n }); a.orient_to_viewpoints(vps); }
         }
       } else if (op === 'invert') {
-        a!.invert_normals();
+        a.invert_normals();
       } else if (op === 'feature') {
-        const f = a!.feature(m.name, m.k, m.radius, prog('Computing ' + m.name, n));
+        const f = a.feature(m.name, m.k, m.radius, prog('Computing ' + m.name, n));
         out.kind = 'field';
         out.data = f;
       } else if (op === 'sor') {
         out.kind = 'mask';
-        out.data = a!.sor(m.knn ?? m.k ?? 6, Number(m.sigma ?? 1), prog('Measuring neighbourhoods', n));
-        out.mean = a!.mean_distance;
-        out.cut = a!.cut_distance;
+        out.data = a.sor(m.knn ?? m.k ?? 6, Number(m.sigma ?? 1), prog('Measuring neighbourhoods', n));
+        out.mean = a.mean_distance;
+        out.cut = a.cut_distance;
         out.params = { knn: m.knn ?? m.k ?? 6, nSigma: Number(m.sigma ?? 1) };
       } else if (op === 'noise') {
         // CloudCompare's own defaults, so the same settings mean the same thing there:
@@ -132,7 +147,7 @@ self.onmessage = async (ev: MessageEvent) => {
         out.kind = 'mask';
         const useKnn = !!m.useKnn;
         const radius = m.radius !== undefined ? Number(m.radius) : cell * 1.2;
-        out.data = a!.noise(useKnn, m.knn ?? m.k ?? 6, radius,
+        out.data = a.noise(useKnn, m.knn ?? m.k ?? 6, radius,
           !!m.useAbsoluteError, Number(m.absoluteError ?? 0), Number(m.sigma ?? 1),
           !!m.removeIsolated, prog('Fitting local surfaces', n));
         out.params = {
@@ -143,47 +158,47 @@ self.onmessage = async (ev: MessageEvent) => {
         };
       } else if (op === 'duplicates') {
         out.kind = 'mask';
-        out.data = a!.duplicates(m.tol);
+        out.data = a.duplicates(m.tol);
       } else if (op === 'subsample') {
         out.kind = 'mask';
-        out.data = a!.subsample(m.spacing);
+        out.data = a.subsample(m.spacing);
       } else if (op === 'components') {
         out.kind = 'field';
-        out.data = a!.components(m.radius, m.minPts, prog('Growing clusters', n));
-        out.components = a!.component_count;
+        out.data = a.components(m.radius, m.minPts, prog('Growing clusters', n));
+        out.components = a.component_count;
       } else if (op === 'distance_to_mesh') {
         // The mesh arrives already in world coordinates, and the analyser's points are read
         // through the cloud's model as they are fed, so both are in the same frame here.
         const reach = Math.max(cell * 200, 2);
         out.kind = 'field';
-        out.data = a!.distance_to_mesh(new Float32Array(m.meshPos), new Uint32Array(m.meshIdx),
+        out.data = a.distance_to_mesh(new Float32Array(m.meshPos), new Uint32Array(m.meshIdx),
           !!m.signed, reach, prog('Measuring to the mesh', n));
       } else if (op === 'distance_to' || op === 'icp') {
-        if (!refStarted || !a!.reference_len) throw new Error('no reference cloud was fed');
-        post({ type: 'progress', phase: 'Indexing the reference', done: 0, total: a!.reference_len });
-        a!.build_reference();
+        if (!refStarted || !a.reference_len) throw new Error('no reference cloud was fed');
+        post({ type: 'progress', phase: 'Indexing the reference', done: 0, total: a.reference_len });
+        a.build_reference();
         if (op === 'distance_to') {
           // A nearest-point query is only worth answering out to a sane range; beyond that the
           // honest answer is "nothing near", which comes back as NaN and draws as "no value".
           const reach = Math.max(cell * 200, 2);
           out.kind = 'field';
-          out.data = a!.distance_to_reference(!!m.signed, reach, prog('Measuring the distance', n));
+          out.data = a.distance_to_reference(!!m.signed, reach, prog('Measuring the distance', n));
         } else {
           // point-to-plane needs planes: a reference with no usable normals gets them here
-          if (a!.reference_normals < 0.5) {
-            post({ type: 'progress', phase: 'The reference has no normals, computing them', done: 0, total: a!.reference_len });
-            a!.compute_reference_normals(16, prog('Reference normals', a!.reference_len));
+          if (a.reference_normals < 0.5) {
+            post({ type: 'progress', phase: 'The reference has no normals, computing them', done: 0, total: a.reference_len });
+            a.compute_reference_normals(16, prog('Reference normals', a.reference_len));
           }
           // the gate starts at three point spacings times the caller's multiplier
           const gate = Math.max(cell * 0.4 * 3 * (m.maxDist ?? 6), cell * 0.5);
           let last = -1;
-          const r = JSON.parse(a!.icp(Math.max(1, m.maxIter ?? 30), gate, Math.max(1000, m.sample ?? 200000), (it: number, rms: number) => {
+          const r = JSON.parse(a.icp(Math.max(1, m.maxIter ?? 30), gate, Math.max(1000, m.sample ?? 200000), (it: number, rms: number) => {
             if (it === last) return; last = it;
             post({ type: 'progress', phase: `ICP iteration ${it + 1} · RMS ${(rms * 1000).toFixed(2)} mm`, done: it, total: m.maxIter ?? 30 });
           }));
           Object.assign(out, r);
           out.kind = 'icp';
-          out.referenceNormals = a!.reference_normals;
+          out.referenceNormals = a.reference_normals;
         }
       } else {
         throw new Error('unknown analysis: ' + op);
@@ -192,7 +207,7 @@ self.onmessage = async (ev: MessageEvent) => {
       if (op === 'normals' || op === 'invert') {
         // hand back only the normals; the viewer patches its own records with them
         const nrm = new Int8Array(n * 3);
-        const src = a!.normals_bytes();
+        const src = a.normals_bytes();
         nrm.set(src);
         out.kind = 'normals';
         out.data = nrm;
@@ -209,8 +224,11 @@ self.onmessage = async (ev: MessageEvent) => {
       return;
     }
   } catch (e: any) {
+    const first = armed;
+    armed = false;
     try { a?.free(); } catch {}
     a = null;
-    post({ type: 'error', message: String(e?.message ?? e) });
+    // only the first failure is worth reporting; anything after it is a consequence
+    if (first) post({ type: 'error', message: String(e?.message ?? e) });
   }
 };

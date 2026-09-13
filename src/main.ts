@@ -873,7 +873,7 @@ async function runRegister(op: 'icp' | 'distance_to', args: Record<string, any> 
   busy('Starting the analyser…'); await tick();
   anaAlive = true; anaError = null;
   const cell = Math.max(viewer.cells.medianSpacing * 2.5, 0.01);
-  const cap = isTouch ? 8e6 : 30e6;
+  const cap = anaCap();
   anaWorker.postMessage({ type: 'start', cell, maxPoints: cap, model: rowMajor(viewer.cells.model) });
   await anaOnce('ready');
   const counts: number[] = [];
@@ -1797,6 +1797,10 @@ $('k-segment').addEventListener('click', () => setTool(viewer.tool === 'segment'
 // ------------------------------------------------------------------ neighbourhood analysis
 const anaWorker = new Worker(new URL('./analysis-worker.ts', import.meta.url), { type: 'module' });
 const anaWaiters = new Map<string, (m: any) => void>();
+/** How many points the analyser will hold at once. A driver lowers it to provoke the refusal
+ *  on a cloud small enough to build in a test. */
+let anaMaxPoints = 0;
+const anaCap = () => anaMaxPoints || (isTouch ? 8e6 : 30e6);
 let anaError: string | null = null;
 let anaAlive = true;
 let sfName = '';
@@ -1808,7 +1812,9 @@ anaWorker.onmessage = (ev: MessageEvent) => {
     return;
   }
   if (m.type === 'error') {
-    anaError = m.message ?? 'analysis failed';
+    // Keep the first one. A refusal part-way through the feed is followed by whatever the
+    // leaves still in flight do, and those are consequences, not the reason.
+    anaError ??= m.message ?? 'analysis failed';
     anaAlive = false;
     const rej = anaWaiters.get('error');
     anaWaiters.clear();
@@ -1834,7 +1840,7 @@ async function runAnalysis(op: string, args: Record<string, any> = {}): Promise<
   anaAlive = true; anaError = null;
   // one grid cell per few points keeps the neighbour search in the 27 cells around a point
   const cell = Math.max(viewer.cells.medianSpacing * 2.5, 0.01);
-  anaWorker.postMessage({ type: 'start', cell, maxPoints: isTouch ? 8e6 : 30e6, model: rowMajor(viewer.cells.model) });
+  anaWorker.postMessage({ type: 'start', cell, maxPoints: anaCap(), model: rowMajor(viewer.cells.model) });
   await anaOnce('ready');
   let n = 0;
   const total = viewer.cells.leafCount;
@@ -5034,7 +5040,8 @@ if (DESKTOP) startDesktop().catch(e => { agentNote('desktop shell: ' + (e?.messa
   matchCentres, matchScales, runIcp, distanceToReference, removeLayer, addFile,
   get entities() { return viewer.entities; }, get activeId() { return viewer.activeId; },
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; },
-  agentRun: (cmd: string, args: any) => agent.run(cmd, args), runScript, noiseArgs, get anaUi() { return anaUi; },
+  agentRun: (cmd: string, args: any) => agent.run(cmd, args), runScript,
+  set anaMaxPoints(v: number) { anaMaxPoints = v; }, get anaMaxPoints() { return anaCap(); }, noiseArgs, get anaUi() { return anaUi; },
   mcpBlocks, mcpTarget, mcpDesktopTarget, renderMcpSetup, get mcpClients() { return MCP_CLIENTS.map(c => ({ id: c.id, name: c.name })); },
   importMesh, measureActiveMesh, smoothActiveMesh, decimateActiveMesh, sampleMeshPoints, distanceToMesh,
   replaceMesh, flipMesh, meshEntities, meshBlob, saveMesh, refreshMeshUI, setDisplay,

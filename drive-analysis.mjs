@@ -296,6 +296,45 @@ const tool = await p.evaluate(async () => {
 ok('viewer_analysis is in the shipped MCP server', tool.hasTool, '');
 ok('with the noise filter options', tool.hasNoiseOpts, '');
 
+// ---------------------------------------------------------------- refusing honestly
+// The analyser holds the whole cloud, and past its cap it refuses. The main thread posts
+// leaves without waiting, so more arrive after the refusal; those used to throw on a null
+// analyser and the second error overwrote the first, leaving the user with "Cannot read
+// properties of null (reading 'add_leaf')" instead of the reason.
+const loadedNow = await p.evaluate(() => window.__viewer.loaded);
+const refusal = await p.evaluate(async (cap) => {
+  window.__app.anaMaxPoints = cap;
+  try {
+    await window.__app.agentRun('analysis', { op: 'sor' });
+    return { message: null };
+  } catch (e) {
+    return { message: String(e?.message ?? e), clean: document.getElementById('v-clean')?.textContent?.trim() ?? '' };
+  } finally { window.__app.anaMaxPoints = 0; }
+}, Math.floor(loadedNow / 3));
+console.log('REFUSAL', JSON.stringify(refusal));
+ok('an oversized run is refused', !!refusal.message, refusal.message ?? 'it was not refused');
+ok('and never with the null-analyser message', !/Cannot read properties of null/.test(refusal.message ?? ''),
+   (refusal.message ?? '').slice(0, 80));
+ok('the message names the cap and the point count',
+   /[\d,.]+M? points is past the [\d,.]+M? this device/.test(refusal.message ?? ''), refusal.message ?? '');
+
+// the same refusal through the panel, where it has to reach the Clean status line
+const panelMsg = await p.evaluate(async (cap) => {
+  window.__app.anaMaxPoints = cap;
+  document.getElementById('k-ansor').click();
+  // the confirmation modal never appears, because it fails before counting anything
+  for (let i = 0; i < 80; i++) {
+    await new Promise(r => setTimeout(r, 100));
+    const t = document.getElementById('v-clean')?.textContent?.trim() ?? '';
+    if (/failed/.test(t)) { window.__app.anaMaxPoints = 0; return t; }
+  }
+  window.__app.anaMaxPoints = 0;
+  return document.getElementById('v-clean')?.textContent?.trim() ?? '';
+}, Math.floor(loadedNow / 3));
+console.log('CLEAN LINE', JSON.stringify(panelMsg));
+ok('the Clean status line carries the reason', /points is past/.test(panelMsg), panelMsg);
+ok('and not the null message', !/Cannot read properties of null/.test(panelMsg), '');
+
 await p.waitForTimeout(400); await p.screenshot({ path: 'shots/analysis-done.png' });
 console.log(fails ? `\n${fails} CHECK(S) FAILED` : '\nALL CHECKS PASSED');
 await b.close();
