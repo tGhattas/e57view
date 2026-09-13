@@ -90,8 +90,9 @@ bumpCargo('crates/e57-wasm/Cargo.toml');
 for (const dir of ['desktop', 'crates/e57-wasm']) {
   const r = spawnSync('cargo', ['metadata', '--format-version', '1', '--manifest-path', `${dir}/Cargo.toml`],
     { stdio: 'ignore', env: { ...process.env, PATH: `${process.env.HOME}/.cargo/bin:${process.env.PATH}` } });
-  if (r.status === 0 && existsSync(`${dir}/Cargo.lock`)) edits.push(`${dir}/Cargo.lock`);
-  else if (r.status !== 0) console.error(`Note: cargo did not run, so ${dir}/Cargo.lock may still say the old version.`);
+  if (r.status !== 0) { console.error(`Note: cargo did not run, so ${dir}/Cargo.lock may still say the old version.`); continue; }
+  // only an edit if cargo actually rewrote it
+  if (git('status', '--porcelain', `${dir}/Cargo.lock`)) edits.push(`${dir}/Cargo.lock`);
 }
 
 // ---------------------------------------------------------------- they must all agree
@@ -129,9 +130,11 @@ edits.push(CL);
 const summary = `Release ${tag}\n\n${body.split('\n').slice(0, 400).join('\n')}\n`;
 writeFileSync('.git/RELEASE_MSG', summary);
 if (dry) {
-  console.log(`Dry run. Would commit ${edits.length} files and tag ${tag}:`);
+  console.log(`Dry run. Would commit ${edits.length} file${edits.length === 1 ? '' : 's'} and tag ${tag}:`);
   for (const f of [...new Set(edits)]) console.log('  ' + f);
-  console.log('\nRun without --dry-run to do it. Revert with: git checkout -- .');
+  // put the tree back: a dry run that leaves edits behind is a trap for the next real one
+  if (edits.length) execFileSync('git', ['checkout', '--', ...new Set(edits)], { stdio: 'inherit' });
+  console.log('\nThe tree has been restored. Run without --dry-run to do it for real.');
   process.exit(0);
 }
 if (!edits.length) { console.error('Nothing to commit, which should not happen: the changelog is always edited.'); process.exit(1); }
