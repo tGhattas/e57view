@@ -159,20 +159,28 @@ const spaced = await p.evaluate(() =>
   window.__app.mcpBlocks('claude-code', window.__app.mcpDesktopTarget('/Users/a b/e57view'))[0].text);  // scrub-ok: a fixture, not anybody's home
 ok('a path with a space is quoted for the shell', spaced.includes('"/Users/a b/e57view"'), spaced);     // scrub-ok: the same fixture
 
-// ---------------------------------------------------------------- three tabs
-console.log('\n--- three tabs, one at a time ---');
+// ---------------------------------------------------------------- four tabs
+console.log('\n--- four tabs, one at a time ---');
 const tabs = await p.evaluate(() => Array.from(document.querySelectorAll('#agent-tabs .tab'))
   .map(t => ({ id: t.id, name: t.textContent.trim(), visible: !!t.offsetParent })));
-ok('there is a tab for each way in', tabs.length === 3, tabs.map(t => t.name).join(', '));
-ok('and they are MCP, HTTP and Scripts', tabs.map(t => t.name).join(',') === 'MCP,HTTP,Scripts',
+ok('there is a tab for each way in, and one for the record of them', tabs.length === 4, tabs.map(t => t.name).join(', '));
+ok('and they are MCP, HTTP, Scripts and Log',
+   tabs.map(t => t.name.replace(/\d+$/, '')).join(',') === 'MCP,HTTP,Scripts,Log',
    tabs.map(t => t.name).join(','));
 
-for (const [tab, pane] of [['mcp', 'pane-mcp'], ['http', 'pane-http'], ['script', 'pane-script']]) {
+for (const [tab, pane] of [['mcp', 'pane-mcp'], ['http', 'pane-http'], ['script', 'pane-script'], ['log', 'pane-log']]) {
   await agentTab(tab);
-  const vis = await p.evaluate(() => ['pane-mcp', 'pane-http', 'pane-script']
+  const vis = await p.evaluate(() => ['pane-mcp', 'pane-http', 'pane-script', 'pane-log']
     .filter(id => !document.getElementById(id).classList.contains('hidden')));
   ok(`${tab}: only its own pane is showing`, vis.length === 1 && vis[0] === pane, vis.join(', '));
 }
+// the log names every tool, so a tool that is in tools.json but not in the viewer would show
+// up as an unknown command rather than silently
+const logTool = await p.evaluate(() => {
+  const t = (window.__tools ?? []).find?.(x => x.name === 'viewer_log');
+  return { has: !!document.getElementById('pane-log'), clear: !!document.getElementById('k-logclear') };
+});
+ok('the Log tab has a Clear and a Copy log', logTool.has && logTool.clear, '');
 await agentTab('mcp');
 ok('the connect switch and the picker are in the MCP tab',
    await p.evaluate(() => !!document.querySelector('#pane-mcp #k-agent') && !!document.querySelector('#pane-mcp #mcp-clients')), '');
