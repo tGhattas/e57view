@@ -12,7 +12,8 @@
     "desktop:build": "npm run build:desktop && node desktop/build.mjs",
     "build:desktop": "npm run build:mcp && vite build --mode desktop",
     "test:mcp": "node test-mcp.mjs",
-    "dev:desktop": "vite --mode desktop"
+    "dev:desktop": "vite --mode desktop",
+    "release": "node tools/release.mjs"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.11.1",

@@ -11,9 +11,16 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-const out = 'desktop/target/release/bundle';
-const args = ['tauri', 'build', '--config', 'desktop/tauri.conf.json', ...process.argv.slice(2)];
-const r = spawnSync('npx', args, { stdio: 'inherit' });
+const passed = process.argv.slice(2);
+// `cargo build --target <triple>` puts everything under target/<triple>/, and CI always names
+// a target so the artefact paths are predictable. Look where the build actually put things
+// rather than where it puts them when no target is given.
+const ti = passed.indexOf('--target');
+const triple = ti >= 0 ? passed[ti + 1] : null;
+const out = triple ? `desktop/target/${triple}/release/bundle` : 'desktop/target/release/bundle';
+const args = ['tauri', 'build', '--config', 'desktop/tauri.conf.json', ...passed];
+// npx is a .cmd on Windows, which spawnSync will not find without a shell
+const r = spawnSync('npx', args, { stdio: 'inherit', shell: process.platform === 'win32' });
 
 const found = [];
 for (const [dir, what] of [['macos', '.app'], ['dmg', '.dmg'], ['nsis', '.exe'], ['deb', '.deb'], ['appimage', '.AppImage'], ['msi', '.msi']]) {
@@ -36,7 +43,7 @@ function dirSize(p) {
 }
 
 if (!found.length) {
-  console.error('\nNo bundle was produced.');
+  console.error(`\nNo bundle was produced under ${out}.`);
   process.exit(r.status || 1);
 }
 console.log('\nBundled:');

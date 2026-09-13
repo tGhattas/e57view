@@ -4289,10 +4289,143 @@ $('k-mcpget').addEventListener('click', () => {
   document.body.appendChild(a); a.click(); a.remove();
   $('v-agent').textContent = 'downloaded e57view-mcp.mjs · register it with the command below';
 });
-$('k-mcpcopy').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText($('v-mcp').textContent ?? ''); $('v-agent').textContent = 'install commands copied'; }
-  catch { $('v-agent').textContent = 'select the text below and copy it'; }
+
+// ------------------------------------------------------------------ MCP client setup
+//
+// One MCP server, six ways of being told about it. Every client here speaks the same
+// protocol to the same binary; what differs is a command line or the path of a JSON file, and
+// getting that wrong is the whole of most people's first hour. So the panel asks which client
+// and writes the exact thing to paste, for whichever build is running.
+//
+// The command being registered differs between the two builds, and that is the only place the
+// difference shows: the desktop app registers *itself* (`e57view --mcp`, no Node anywhere),
+// while the web build registers the one-file Node server it hands you.
+type McpSnippet = { label: string; text: string };
+type McpClient = { id: string; name: string; snippets: (t: McpTarget) => McpSnippet[] };
+interface McpTarget { command: string; args: string[]; shell: string; download: string | null }
+
+/** The path of the thing to register. On the desktop that is this binary — taken from the
+ *  shell rather than assumed, because it is under /Applications on macOS, Program Files on
+ *  Windows and /usr/bin on a Linux package. */
+function mcpTarget(): McpTarget {
+  if (DESKTOP) {
+    const exe = bridgeExe || defaultExePath();
+    return { command: exe, args: ['--mcp'], shell: `${q(exe)} --mcp`, download: null };
+  }
+  // The page cannot know where you will save the file, so the shell form uses $PWD and the
+  // JSON and TOML forms carry a path to replace. Saying so beats a snippet that silently
+  // points at nothing.
+  const abs = '/absolute/path/to/e57view-mcp.mjs';
+  return {
+    command: 'node',
+    args: [abs],
+    shell: `node "$PWD/e57view-mcp.mjs"`,
+    download: `curl -fsSL ${location.origin}/mcp.mjs -o e57view-mcp.mjs`,
+  };
+}
+function defaultExePath(): string {
+  const p = navigator.platform || '';
+  const ua = navigator.userAgent || '';
+  if (/Win/i.test(p) || /Windows/i.test(ua)) return 'C:\\Program Files\\e57view\\e57view.exe';
+  if (/Linux/i.test(p) && !/Android/i.test(ua)) return '/usr/bin/e57view';
+  return '/Applications/e57view.app/Contents/MacOS/e57view';
+}
+/** Quote a path for the shell the user is going to paste into, and only when it needs it.
+ *
+ *  The Windows case is not a detail: `cmd` and PowerShell do **not** treat a backslash inside
+ *  a quoted string as an escape, so the POSIX habit of doubling them turns
+ *  `C:\Program Files\e57view\e57view.exe` into a path that does not exist. A path with a
+ *  backslash in it is therefore quoted verbatim, with only a literal quote doubled. */
+const q = (s: string) => {
+  if (!/[\s"'\\$`]/.test(s)) return s;
+  if (s.includes('\\')) return `"${s.replace(/"/g, '""')}"`;
+  return `"${s.replace(/(["\\$`])/g, '\\$1')}"`;
+};
+/** The `mcpServers` object Claude Desktop, Cursor, Gemini CLI and Windsurf all take. */
+const mcpJsonFor = (t: McpTarget) =>
+  JSON.stringify({ mcpServers: { e57view: { command: t.command, args: t.args } } }, null, 2);
+/** A TOML basic string takes the same escapes as JSON, so this is right on Windows too. */
+const tomlStr = (s: string) => JSON.stringify(s);
+
+const MCP_CLIENTS: McpClient[] = [
+  {
+    id: 'claude-code', name: 'Claude Code',
+    snippets: (t) => [{ label: 'In a terminal', text: `claude mcp add e57view -- ${t.shell}` }],
+  },
+  {
+    // `codex mcp add` arrived in Codex CLI 0.36.0; before that the config file was the only way,
+    // so both forms are shown rather than assuming which one someone can use.
+    id: 'codex', name: 'Codex CLI',
+    snippets: (t) => [
+      { label: 'In a terminal — Codex CLI 0.36 or newer', text: `codex mcp add e57view -- ${t.shell}` },
+      {
+        label: 'Or by hand, in ~/.codex/config.toml',
+        text: `[mcp_servers.e57view]\ncommand = ${tomlStr(t.command)}\nargs = [${t.args.map(tomlStr).join(', ')}]`,
+      },
+    ],
+  },
+  { id: 'cursor', name: 'Cursor', snippets: (t) => [{ label: 'In .cursor/mcp.json (or ~/.cursor/mcp.json for every project)', text: mcpJsonFor(t) }] },
+  { id: 'claude-desktop', name: 'Claude Desktop', snippets: (t) => [{ label: 'In claude_desktop_config.json', text: mcpJsonFor(t) }] },
+  { id: 'gemini', name: 'Gemini CLI', snippets: (t) => [{ label: 'In ~/.gemini/settings.json (or .gemini/settings.json in a project)', text: mcpJsonFor(t) }] },
+  { id: 'windsurf', name: 'Windsurf', snippets: (t) => [{ label: 'In ~/.codeium/windsurf/mcp_config.json', text: mcpJsonFor(t) }] },
+];
+
+/** Every block shown for one client and one target. Pure, so a driver can check the desktop
+ *  forms without a desktop window — the snippets are the thing that has to be right, and they
+ *  do not depend on which build is rendering them. */
+function mcpBlocks(clientId: string, t: McpTarget): McpSnippet[] {
+  const client = MCP_CLIENTS.find(c => c.id === clientId) ?? MCP_CLIENTS[0];
+  const blocks: McpSnippet[] = [];
+  if (t.download) blocks.push({ label: 'Download the server (one file, Node 20)', text: t.download });
+  blocks.push(...client.snippets(t));
+  return blocks;
+}
+/** A target for an arbitrary executable path, which is what the desktop build has. */
+function mcpDesktopTarget(exe: string): McpTarget {
+  return { command: exe, args: ['--mcp'], shell: `${q(exe)} --mcp`, download: null };
+}
+
+function renderMcpSetup() {
+  const sel = $<HTMLSelectElement>('k-mcpclient');
+  const t = mcpTarget();
+  const blocks = mcpBlocks(sel.value, t);
+  const host = $('mcp-snips');
+  host.innerHTML = '';
+  blocks.forEach((b, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'snipwrap';
+    const label = document.createElement('p');
+    label.className = 'hint sniplabel';
+    label.textContent = b.label;
+    const pre = document.createElement('pre');
+    pre.className = 'snip';
+    pre.id = i === 0 ? 'v-mcp' : `v-mcp-${i}`;
+    pre.dataset.snip = String(i);
+    pre.textContent = b.text;
+    const copy = document.createElement('button');
+    copy.className = 'ghost snipcopy';
+    copy.id = i === 0 ? 'k-mcpcopy' : `k-mcpcopy-${i}`;
+    copy.dataset.copy = String(i);
+    copy.textContent = 'Copy';
+    // exactly what is shown, not a regenerated approximation of it
+    copy.addEventListener('click', async () => {
+      const text = pre.textContent ?? '';
+      try { await navigator.clipboard.writeText(text); $('v-agent').textContent = `copied · ${b.label.toLowerCase()}`; }
+      catch { $('v-agent').textContent = 'could not reach the clipboard; select the text and copy it'; }
+    });
+    wrap.append(label, pre, copy);
+    host.appendChild(wrap);
+  });
+}
+$('k-mcpclient').addEventListener('change', () => {
+  localStorage.setItem('mcp-client', $<HTMLSelectElement>('k-mcpclient').value);
+  renderMcpSetup();
 });
+{
+  const saved = localStorage.getItem('mcp-client');
+  if (saved && MCP_CLIENTS.some(c => c.id === saved)) $<HTMLSelectElement>('k-mcpclient').value = saved;
+}
+renderMcpSetup();
 $('k-agent').addEventListener('change', e => { const on = (e.target as HTMLInputElement).checked; localStorage.setItem('agent', on ? '1' : '0'); on ? agent.start() : agent.stop(); });
 if (!DESKTOP && (new URLSearchParams(location.search).get('agent') === '1' || localStorage.getItem('agent') === '1')) { $<HTMLInputElement>('k-agent').checked = true; agent.start(); }
 
@@ -4590,7 +4723,8 @@ async function startDesktop() {
   refreshBridge();
   setInterval(refreshBridge, 4000);
 }
-/** What the Agent panel says about the built-in MCP server. */
+/** The running binary's own path, from the shell. Empty until the bridge first answers, which
+ *  is why `mcpTarget` has a per-platform fallback rather than a macOS path. */
 let bridgeExe = '';
 async function refreshBridge() {
   if (!shell) return;
@@ -4599,21 +4733,10 @@ async function refreshBridge() {
     bridgeExe = b.exe ?? bridgeExe;
     $('v-agent').textContent = `MCP: on · port ${b.port} · ${b.viewer ? 'viewer connected' : 'waiting for the viewer'}`
       + (b.agents ? ` · ${b.agents} agent${b.agents > 1 ? 's' : ''} attached` : '');
-    $('v-mcpdesk').textContent = mcpAddLine();
+    // the real path of the running binary, which is what every snippet has to name
+    if (b.exe) renderMcpSetup();
   } catch { $('v-agent').textContent = 'MCP: the bridge did not answer'; }
 }
-const mcpAddLine = () => `claude mcp add e57view -- "${bridgeExe || '/Applications/e57view.app/Contents/MacOS/e57view'}" --mcp`;
-const mcpJson = () => JSON.stringify({
-  mcpServers: { e57view: { command: bridgeExe || '/Applications/e57view.app/Contents/MacOS/e57view', args: ['--mcp'] } },
-}, null, 2);
-$('k-mcpdeskcopy')?.addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(mcpAddLine()); $('v-agent').textContent = 'copied — paste it in a terminal, then restart the agent'; }
-  catch { $('v-agent').textContent = 'could not reach the clipboard; select the line above'; }
-});
-$('k-mcpjson')?.addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(mcpJson()); $('v-agent').textContent = 'copied the JSON — paste it into claude_desktop_config.json'; }
-  catch { $('v-agent').textContent = 'could not reach the clipboard'; }
-});
 if (DESKTOP) startDesktop().catch(e => { $('v-agent').textContent = 'desktop shell: ' + (e?.message ?? e); });
 
 (window as any).__app = { openFile, openCached, writeCache, applyKeep, applyCrop, setCropRole, get cropState() { return cropState; }, addSection, undoEdit, redoEdit, saveCurrent, hist,
@@ -4630,6 +4753,7 @@ if (DESKTOP) startDesktop().catch(e => { $('v-agent').textContent = 'desktop she
   get entities() { return viewer.entities; }, get activeId() { return viewer.activeId; },
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; },
   agentRun: (cmd: string, args: any) => agent.run(cmd, args), runScript,
+  mcpBlocks, mcpTarget, mcpDesktopTarget, renderMcpSetup, get mcpClients() { return MCP_CLIENTS.map(c => ({ id: c.id, name: c.name })); },
   importMesh, measureActiveMesh, smoothActiveMesh, decimateActiveMesh, sampleMeshPoints, distanceToMesh,
   replaceMesh, flipMesh, meshEntities, meshBlob, saveMesh, refreshMeshUI, setDisplay,
   get meshFile() { return meshFile; }, get meshInfo() { return meshInfo; } };

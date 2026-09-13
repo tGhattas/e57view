@@ -116,6 +116,42 @@ message has numbers.
 - **A new dependency?** `node tools/third-party.mjs` regenerates `THIRD_PARTY.md` and fails if
   the licence cannot be combined with GPL-3.0.
 
+## Cutting a release
+
+Versions live in five files. `npm run release` sets all of them, so you never have to remember
+which:
+
+```sh
+npm run release -- 0.1.0        # add --dry-run to see what it would touch
+```
+
+That sets the version in `package.json`, `mcp/package.json`, `desktop/tauri.conf.json`,
+`desktop/Cargo.toml` and `crates/e57-wasm/Cargo.toml` (plus the lock files), checks they agree,
+moves the `## Unreleased` section of `CHANGELOG.md` under a dated heading for the version,
+commits, and creates the annotated tag. It stops there. Pushing a tag publishes binaries, so
+you type that yourself:
+
+```sh
+git push origin main v0.1.0
+```
+
+That starts `.github/workflows/release.yml`: the same checks any commit gets, then the same
+desktop matrix `build.yml` uses, then a GitHub Release with the `.dmg`, the Windows installer,
+the `.deb`, the `.AppImage` and a `SHA256SUMS.txt`, with the release notes taken from the
+CHANGELOG section the tag names.
+
+To undo before pushing: `git tag -d v0.1.0 && git reset --hard HEAD~1`.
+
+Two things to know:
+
+- **Actions has to be able to run.** On a private repository, GitHub bills Actions minutes and
+  refuses the run until billing is set up — the message is *"recent account payments have
+  failed or your spending limit needs to be increased"*. On a public repository it is free.
+- **The first release is unsigned.** macOS refuses the first open of an unsigned app and
+  Windows SmartScreen warns once; the release notes say so, and the sums are how somebody
+  checks their download. `.github/workflows/build.yml` lists the secrets to add when there are
+  certificates.
+
 ## Licence
 
 By contributing you agree that your contribution is licensed under **GPL-3.0-only**, the same

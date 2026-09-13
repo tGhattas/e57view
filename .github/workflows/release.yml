@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Publish a release when a v* tag is pushed.
+#
+# Cut the tag with `npm run release -- 1.2.3`, which sets the version in all five places that
+# carry one, moves the CHANGELOG's Unreleased section under a dated heading, commits and tags.
+# Then `git push origin main v1.2.3` starts this.
+#
+# The desktop matrix is not repeated here: it is desktop.yml, which build.yml also calls, so a
+# release is built exactly the way every commit is.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing v* tag to (re)publish.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  checks:
+    name: the same checks as any commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: npm ci --prefix mcp
+      - run: npx tsc --noEmit -p tsconfig.json
+      - run: npm run build
+      - run: npm run build:desktop && node tools/check-offline.mjs
+      - run: npm run test:mcp
+      - run: node tools/spdx.mjs --check
+      - run: cargo run --release --bin anatest --manifest-path crates/e57-wasm/Cargo.toml
+      - name: the tag matches the version in the tree
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          node -e '
+            const fs = require("fs");
+            const tag = process.argv[1].replace(/^v/, "");
+            const got = {
+              "package.json": JSON.parse(fs.readFileSync("package.json")).version,
+              "desktop/tauri.conf.json": JSON.parse(fs.readFileSync("desktop/tauri.conf.json")).version,
+              "desktop/Cargo.toml": /\[package\][\s\S]*?\nversion = "([^"]+)"/.exec(fs.readFileSync("desktop/Cargo.toml", "utf8"))[1],
+            };
+            const bad = Object.entries(got).filter(([, v]) => v !== tag);
+            if (bad.length) {
+              console.error(`tag ${tag} does not match:`);
+              for (const [f, v] of bad) console.error(`  ${f}: ${v}`);
+              process.exit(1);
+            }
+            console.log(`tag ${tag} matches every manifest`);
+          ' "$TAG"
+
+  desktop:
+    name: desktop
+    needs: checks
+    uses: ./.github/workflows/desktop.yml
+    with:
+      artifact-prefix: e57view-release
+      retention-days: 30
+
+  publish:
+    name: publish the release
+    needs: desktop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: e57view-release-*
+          merge-multiple: true
+          path: artifacts
+      - name: list what was built
+        run: ls -la artifacts
+
+      # One file of sums, so somebody downloading over a flaky connection can tell.
+      - name: SHA256SUMS.txt
+        working-directory: artifacts
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: release notes from CHANGELOG.md
+        id: notes
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          node tools/release-notes.mjs "$TAG" > NOTES.md
+          echo "--- notes ---"
+          cat NOTES.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: e57view ${{ github.event.inputs.tag || github.ref_name }}
+          body_path: NOTES.md
+          draft: false
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.dmg
+            artifacts/*.exe
+            artifacts/*.msi
+            artifacts/*.deb
+            artifacts/*.AppImage
+            artifacts/SHA256SUMS.txt

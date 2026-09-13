@@ -218,8 +218,23 @@ behaves identically in both. Two differences are worth knowing:
   it in as another layer. A browser tab has no file system, so there it is `cached:<key>` or
   `cloud:<id>` and the file itself has to be chosen in the page.
 - **The desktop app serves MCP itself**, from the same tool definitions, with no Node and no
-  network: `claude mcp add e57view -- /Applications/e57view.app/Contents/MacOS/e57view --mcp`.
-  The hosted HTTP session described at the top of this file is the browser build's way in.
+  network. The Agent panel has a client picker that writes the exact snippet; the forms are:
+
+      claude mcp add e57view -- /Applications/e57view.app/Contents/MacOS/e57view --mcp
+      codex mcp add e57view -- /Applications/e57view.app/Contents/MacOS/e57view --mcp
+
+  Codex can also be configured by hand in `~/.codex/config.toml`:
+
+      [mcp_servers.e57view]
+      command = "/Applications/e57view.app/Contents/MacOS/e57view"
+      args = ["--mcp"]
+
+  Cursor (`.cursor/mcp.json`), Claude Desktop (`claude_desktop_config.json`), Gemini CLI
+  (`~/.gemini/settings.json`) and Windsurf (`~/.codeium/windsurf/mcp_config.json`) all take
+  `{"mcpServers":{"e57view":{"command":"…","args":["--mcp"]}}}`. On Windows and Linux the
+  binary lives elsewhere; the panel reads its real path. For the browser build the command is
+  `node /absolute/path/to/e57view-mcp.mjs` instead, and the hosted HTTP session described at
+  the top of this file is that build's other way in.
 
 {"session":"S","cmd":"cache","args":{"op":"write"}}
 

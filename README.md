@@ -326,28 +326,52 @@ CI builds macOS, Windows and Linux on every push.
 
 ### Driving it from an agent
 
-**Claude Code, Cursor, or anything else that speaks MCP — desktop app** (no Node, no network):
+The Agent panel has a **client picker** — Claude Code, Codex CLI, Cursor, Claude Desktop,
+Gemini CLI, Windsurf — that writes the exact snippet for whichever build you are running, with
+a Copy button. What follows is the same thing, written out.
+
+There is one MCP server and two ways to reach it. **The desktop app is the server** (no Node,
+no install, no network); the **browser build** is driven by a one-file Node server it hands
+you. Everything below is the desktop form — for the browser build, first
 
 ```sh
-claude mcp add e57view -- "/Applications/e57view.app/Contents/MacOS/e57view" --mcp
+curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
 ```
 
-**Claude Desktop**, in `claude_desktop_config.json`:
+then replace `/Applications/e57view.app/Contents/MacOS/e57view --mcp` with
+`node /absolute/path/to/e57view-mcp.mjs`, and tick **Local MCP** in the Agent panel. On Windows
+and Linux the binary is under `C:\Program Files\e57view\` and `/usr/bin/` — the panel reads
+the running binary's real path, so take it from there rather than from here.
+
+**Claude Code**
+
+```sh
+claude mcp add e57view -- /Applications/e57view.app/Contents/MacOS/e57view --mcp
+```
+
+**Codex CLI** — `codex mcp add` arrived in Codex 0.36.0; before that, use the config file.
+
+```sh
+codex mcp add e57view -- /Applications/e57view.app/Contents/MacOS/e57view --mcp
+```
+
+or by hand in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.e57view]
+command = "/Applications/e57view.app/Contents/MacOS/e57view"
+args = ["--mcp"]
+```
+
+**Cursor** (`.cursor/mcp.json`, or `~/.cursor/mcp.json` for every project), **Claude Desktop**
+(`claude_desktop_config.json`), **Gemini CLI** (`~/.gemini/settings.json`) and **Windsurf**
+(`~/.codeium/windsurf/mcp_config.json`) all take the same object — only the file differs:
 
 ```json
 { "mcpServers": { "e57view": {
     "command": "/Applications/e57view.app/Contents/MacOS/e57view",
     "args": ["--mcp"] } } }
 ```
-
-**Browser build** — one file, Node 20, nothing else:
-
-```sh
-curl -fsSL https://opensketch.web.app/mcp.mjs -o e57view-mcp.mjs
-claude mcp add e57view -- node "$PWD/e57view-mcp.mjs"
-```
-
-then open the viewer and tick **Local MCP** in the Agent panel.
 
 **Over HTTP, no MCP** — press *Copy agent URL* in the Agent panel and POST to the endpoint it
 gives you. Read-only until you tick *Allow edits*; the token is shown once and the session dies
@@ -384,6 +408,21 @@ node drive-fit.mjs        # and the other thirty drive-*.mjs
 
 A few drivers need a real multi-gigabyte scan, which cannot live in this repository. They read
 `E57VIEW_TEST_FILE` and skip with an explanation when it is not set.
+
+### Cutting a release
+
+```sh
+npm run release -- 0.1.0        # sets the version in all five manifests, moves the
+                                # CHANGELOG's Unreleased section, commits and tags
+git push origin main v0.1.0     # starts the release workflow
+```
+
+`.github/workflows/release.yml` runs the same checks and the same desktop matrix as every
+commit, then publishes a GitHub Release with the `.dmg`, the Windows installer, the `.deb`,
+the `.AppImage` and `SHA256SUMS.txt`, using the CHANGELOG section for that version as the
+notes. The workflows only run if Actions can run at all: a private repository bills Actions
+minutes and refuses until billing is set up, a public one is free. The first release is
+unsigned — see the note under [Quick start](#as-a-desktop-app).
 
 | | |
 |---|---|

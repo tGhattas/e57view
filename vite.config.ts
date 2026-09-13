@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import { defineConfig, type Plugin } from 'vite';
+import { rmSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 /** The desktop build must not reach the network at all.
  *
@@ -44,6 +46,16 @@ function offline(): Plugin {
         .replace(/<pre class="snip web-only" id="v-mcp">[\s\S]*?<\/pre>/,
                  '<pre class="snip web-only" id="v-mcp"></pre>')
         .replace('<title>e57view</title>', '<title>e57view</title>\n<meta name="e57view-build" content="desktop">');
+    },
+    /** Two files in `public/` exist only for the hosted build and only make the desktop one
+     *  bigger and less honest: `mcp.mjs` is the Node MCP server this app replaces (the app is
+     *  the server), and `llms.txt` documents an HTTP endpoint a desktop app does not have.
+     *  Both carry the hosted URL, which `tools/check-offline.mjs` then reports as a network
+     *  dependency, and it is right to. */
+    closeBundle() {
+      for (const f of ['mcp.mjs', 'llms.txt']) {
+        rmSync(resolve('dist-desktop', f), { force: true });
+      }
     },
   };
 }

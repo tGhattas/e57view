@@ -320,3 +320,10 @@ body.has-region button.region-active{display:block}
 body.desktop .desktop-only{display:block}
 body.desktop label.desktop-only,body.desktop .seg.desktop-only{display:flex}
 body.desktop .web-only{display:none!important}
+
+/* MCP setup snippets: one block per form, each with its own Copy, because two forms of the
+   same thing (a shell command and a config file) are not one thing to paste. */
+#mcp-snips{display:flex;flex-direction:column;gap:6px;margin:6px 0}
+#mcp-snips .snipwrap{display:flex;flex-direction:column;gap:4px}
+#mcp-snips .sniplabel{font-size:11px;color:var(--dim);margin:2px 0 0}
+#mcp-snips .snipcopy{align-self:flex-start;font-size:11px;padding:3px 9px}

@@ -44,7 +44,13 @@ function session(cmd, args) {
     req(method, params, timeoutMs = 25000) {
       const myId = ++id;
       return new Promise((res, rej) => {
-        const t = setTimeout(() => rej(new Error(`${method} timed out after ${timeoutMs / 1000}s${err ? ' · stderr: ' + err.slice(-300) : ''}`)), timeoutMs);
+        const t = setTimeout(() => {
+          // by far the commonest cause, and the message the server prints does not say it
+          const busy = /EADDRINUSE|address already in use|WebSocketServer/i.test(err);
+          rej(new Error(busy
+            ? `${method} timed out: something is already listening on the bridge port. The desktop app or another MCP server is probably running. Stop it, or set E57VIEW_PORT.`
+            : `${method} timed out after ${timeoutMs / 1000}s${err ? ' · stderr: ' + err.slice(-300) : ''}`));
+        }, timeoutMs);
         waiting.set(myId, m => { clearTimeout(t); m.error ? rej(new Error(`${method}: ${m.error.message}`)) : res(m.result); });
         p.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: myId, method, params }) + '\n');
       });

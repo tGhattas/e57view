@@ -8,7 +8,7 @@
 // finish if it meets a licence that is not on the compatible list, so a new dependency with an
 // awkward licence is a build failure rather than a discovery years later.
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, existsSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 
 // Every one of these may be combined into a GPL-3.0-only work. Apache-2.0 is on the list
 // because the one-way incompatibility runs the other way: GPLv3 may absorb Apache-2.0, not
@@ -75,12 +75,43 @@ const cargoTrees = [
   ['crates/e57-wasm — the decoder, octree and analysis, compiled to WebAssembly', 'crates/e57-wasm'],
   ['desktop — the Tauri shell, the agent bridge and the Rust MCP server', 'desktop'],
 ];
+/** The crate tables already in THIRD_PARTY.md, so a machine without cargo-license regenerates
+ *  the npm half without silently deleting the Rust half — which would then fail the "is this
+ *  file up to date" check in CI for a reason that has nothing to do with the change. */
+function previousCargoTables() {
+  if (!existsSync('THIRD_PARTY.md')) return new Map();
+  const md = readFileSync('THIRD_PARTY.md', 'utf8');
+  const out = new Map();
+  for (const m of md.matchAll(/^## Cargo — (.+)\n\n\| Licence \| Packages \| Names \|\n\|---\|---:\|---\|\n((?:\|.*\n)+)/gm)) {
+    const counts = new Map();
+    for (const row of m[2].trim().split('\n')) {
+      const c = /^\| `(.+?)` \| (\d+) \| (.*) \|$/.exec(row);
+      if (c) counts.set(c[1], { n: Number(c[2]), names: c[3] });
+    }
+    out.set(m[1], counts);
+  }
+  return out;
+}
 const cargo = [];
 const CARGO = cargoBin();
-if (!CARGO) console.error('cargo not found — the crate tables will be missing; install Rust and cargo-license');
+// Whenever fresh crate data cannot be had — no cargo, no cargo-license, a network-less
+// runner — reuse what is already in the file rather than deleting those tables. Dropping them
+// would fail CI's "is this file up to date" check for a reason that has nothing to do with
+// the change being reviewed, which is the worst kind of red build.
+let kept = null;
+const previous = () => (kept ??= previousCargoTables());
 for (const [label, cwd] of cargoTrees) {
   const raw = CARGO ? sh(CARGO, ['license'], cwd) : '';
-  if (!raw) { console.error(`no cargo licence data for ${cwd} (cargo install cargo-license)`); continue; }
+  if (!raw) {
+    const old = previous().get(label);
+    if (old?.size) {
+      console.error(`no fresh crate data for ${cwd} — keeping the table already in THIRD_PARTY.md`);
+      cargo.push({ label, counts: null, verbatim: old });
+      continue;
+    }
+    console.error(`no cargo licence data for ${cwd} (cargo install cargo-license)`);
+    continue;
+  }
   const counts = new Map();
   for (const line of raw.split('\n')) {
     const m = /^(.*?) \((\d+)\): (.*)$/.exec(line.trim());
@@ -128,7 +159,18 @@ packages — \`Apache-2.0 OR MIT\` and friends — are used under whichever opti
 for (const { label, counts } of npm) {
   md += `## npm — ${label}\n\n${table(counts, 'npm')}\n`;
 }
-for (const { label, counts } of cargo) {
+for (const { label, counts, verbatim } of cargo) {
+  if (verbatim) {
+    // reproduced from the last run on a machine that had cargo-license
+    let t = '| Licence | Packages | Names |\n|---|---:|---|\n';
+    for (const [lic, row] of verbatim) {
+      total.cargo += row.n;
+      if (!acceptable(lic)) bad.push(`${lic}: ${row.names}`);
+      t += `| \`${lic}\` | ${row.n} | ${row.names} |\n`;
+    }
+    md += `## Cargo — ${label}\n\n${t}\n`;
+    continue;
+  }
   md += `## Cargo — ${label}\n\n${table(counts, 'cargo')}\n`;
 }
 md += `## Things that are not dependencies but are worth naming
