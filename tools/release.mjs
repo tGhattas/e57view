@@ -43,6 +43,7 @@ function bumpJson(path) {
   const raw = readFileSync(path, 'utf8');
   const d = JSON.parse(raw);
   if (d.version === undefined) return;
+  if (d.version === version) return;
   d.version = version;
   writeFileSync(path, JSON.stringify(d, null, 2) + '\n');
   edits.push(path);
@@ -50,21 +51,26 @@ function bumpJson(path) {
 /** A lock file records its own package's version in two places. */
 function bumpLock(path) {
   if (!existsSync(path)) return;
-  const d = JSON.parse(readFileSync(path, 'utf8'));
+  const before = readFileSync(path, 'utf8');
+  const d = JSON.parse(before);
   if (d.version === undefined && !d.packages?.['']?.version) return;
   if (d.version !== undefined) d.version = version;
   if (d.packages?.['']?.version !== undefined) d.packages[''].version = version;
-  writeFileSync(path, JSON.stringify(d, null, 2) + '\n');
+  const after = JSON.stringify(d, null, 2) + '\n';
+  if (after === before) return;
+  writeFileSync(path, after);
   edits.push(path);
 }
 /** The first `version = "…"` under [package], and nothing else in the file. */
 function bumpCargo(path) {
   if (!existsSync(path)) return;
   const s = readFileSync(path, 'utf8');
-  const out = s.replace(/(\[package\][\s\S]*?\nversion = ")[^"]*(")/, `$1${version}$2`);
-  if (out === s) { console.error(`could not find a [package] version in ${path}`); process.exit(1); }
-  writeFileSync(path, out);
-  edits.push(path);
+  const re = /(\[package\][\s\S]*?\nversion = ")[^"]*(")/;
+  // "no change" is not "not found": the first release of 0.1.0 bumps 0.1.0 to 0.1.0, and that
+  // has to be allowed or you can never cut the version the tree already says.
+  if (!re.test(s)) { console.error(`could not find a [package] version in ${path}`); process.exit(1); }
+  const out = s.replace(re, `$1${version}$2`);
+  if (out !== s) { writeFileSync(path, out); edits.push(path); }
 }
 
 bumpJson('package.json'); bumpLock('package-lock.json');
@@ -73,10 +79,11 @@ bumpCargo('desktop/Cargo.toml');
 bumpCargo('crates/e57-wasm/Cargo.toml');
 {
   const p = 'desktop/tauri.conf.json';
-  const d = JSON.parse(readFileSync(p, 'utf8'));
+  const before = readFileSync(p, 'utf8');
+  const d = JSON.parse(before);
   d.version = version;
-  writeFileSync(p, JSON.stringify(d, null, 2) + '\n');
-  edits.push(p);
+  const after = JSON.stringify(d, null, 2) + '\n';
+  if (after !== before) { writeFileSync(p, after); edits.push(p); }
 }
 // Cargo.lock records the workspace crate's own version, and cargo rewrites it on any command
 // that reads the manifest. Doing it here keeps the commit self-consistent.
@@ -127,6 +134,7 @@ if (dry) {
   console.log('\nRun without --dry-run to do it. Revert with: git checkout -- .');
   process.exit(0);
 }
+if (!edits.length) { console.error('Nothing to commit, which should not happen: the changelog is always edited.'); process.exit(1); }
 execFileSync('git', ['add', ...new Set(edits)], { stdio: 'inherit' });
 execFileSync('git', ['commit', '-m', `Release ${tag}`], { stdio: 'inherit' });
 execFileSync('git', ['tag', '-a', tag, '-F', '.git/RELEASE_MSG'], { stdio: 'inherit' });
