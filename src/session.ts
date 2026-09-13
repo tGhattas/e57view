@@ -53,9 +53,10 @@ export function watchAgentSession(sid: string, dispatch: (cmd: string, args: any
   const beat = window.setInterval(() => { setDoc(ref, { viewerAt: Date.now() }, { merge: true }).catch(() => {}); }, 8000);
   const off = onSnapshot(ref, async snap => {
     const d = snap.data(); if (!d) { onStatus?.('session ended'); return; }
-    const left = Math.max(0, ((d.expiresAt ?? 0) - Date.now()) / 3600e3);
-    const tail = `${d.allowEdits ? 'edits allowed' : 'read-only'} · expires in ${left.toFixed(1)} h`;
-    onStatus?.(d.cmd && d.res?.n !== d.cmd.n ? `running ${d.cmd.name}…` : `listening · ${tail}`);
+    // The panel writes the "live, access level, time left" line itself. This callback used to
+    // write the same facts in its own wording, so the tab showed them twice. It now reports
+    // only what the session is doing, and an empty string means it is waiting again.
+    onStatus?.(d.cmd && d.res?.n !== d.cmd.n ? `running ${d.cmd.name}…` : '');
     const cmd = d.cmd; if (!cmd || cmd.n === handling || d.res?.n === cmd.n) return;
     handling = cmd.n;
     try {

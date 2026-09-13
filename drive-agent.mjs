@@ -41,15 +41,21 @@ const access = () => p.evaluate(() => ({
   live: !document.getElementById('http-live').classList.contains('hidden'),
   idle: !document.getElementById('http-idle').classList.contains('hidden'),
   dot: document.getElementById('tab-http').className,
-  left: document.getElementById('v-agentexp')?.textContent.trim() ?? '',
+  // one status line now, carrying the state; a confirmation sits on the button instead
+  left: document.querySelector('#http-live .statusline')?.textContent.trim() ?? '',
 }));
 const before = await access();
 ok('before a session the HTTP tab shows the choice, not a state', before.idle && !before.live, JSON.stringify(before.idle));
 ok('and the tab carries no dot', !/live|warn/.test(before.dot), before.dot);
+ok('with no copy button, because there is nothing to copy yet',
+   !(await p.evaluate(() => !!document.getElementById('k-agentcopy')?.offsetParent)), '');
 
 await p.click('#k-agenturl');
 try { await p.waitForFunction(() => /^Copied/.test((document.getElementById('v-agenturl')?.textContent || '').trim()), null, { timeout: 25000 }); }
 catch { console.log('  status was:', await p.textContent('#v-agenturl')); throw new Error('Copy agent URL did not complete'); }
+// the confirmation is read now, while it is up; four seconds later the line goes back to
+// saying what the session is, which is the next check
+const toast = (await p.textContent('#v-agenturl')).trim();
 const blob = await p.evaluate(() => navigator.clipboard.readText());
 const sid = blob.match(/"session":"([a-z0-9]+)"/)[1];
 const token = blob.match(/Bearer ([a-f0-9]+)/)[1];
@@ -59,11 +65,35 @@ console.log('ACCESS', JSON.stringify({ badge: live.badge, left: live.left }));
 ok('starting a session swaps in the live block', live.live && !live.idle, '');
 ok('the access level is stated in full', live.badge === 'READ-ONLY', live.badge);
 ok('with a line saying what that means', /cannot change or save/.test(live.note), live.note);
-ok('and the time left is shown', /expires in \d+ h/.test(live.left), live.left);
+// the start confirmation holds the line for four seconds, then it says what the session is
+await p.waitForTimeout(4600);
+const settled = await access();
+ok('and the one status line then says live, the access level and the time left',
+   /^live · read-only · expires in \d+ h/.test(settled.left), settled.left);
 ok('the tab carries a dot', /live/.test(live.dot), live.dot);
 ok('the copied text leads with the access level', /^# READ-ONLY/m.test(blob), blob.split('\n')[0]);
-const toast = await p.textContent('#v-agenturl');
-ok('and the confirmation says which kind of session', /read-only session/.test(toast), toast);
+ok('and the confirmation said which kind of session', /read-only session/.test(toast), toast);
+
+// the instructions must be gettable again, because a confirmation people miss is how the
+// first copy gets lost
+const conn = await p.evaluate(() => ({
+  hasButton: !!document.getElementById('k-agentcopy')?.offsetParent,
+  preview: document.getElementById('v-agentconn')?.textContent?.trim() ?? '',
+  lines: document.querySelectorAll('#http-live .statusline').length,
+}));
+ok('a live session offers Copy connection details', conn.hasButton, '');
+ok('the box shows the URL with the token masked', /session=/.test(conn.preview) && /Bearer \.\.\.\w{4}$/.test(conn.preview),
+   conn.preview.replace('\n', ' | '));
+ok('and the token itself is not on screen', !conn.preview.includes(token), `token is ${token.length} chars`);
+ok('there is one status line in the tab, not two', conn.lines === 1, `${conn.lines}`);
+
+await p.click('#k-agentcopy');
+await p.waitForTimeout(400);
+const copied1 = await p.evaluate(() => navigator.clipboard.readText());
+ok('copying again gives the read-only text', /^# READ-ONLY/.test(copied1) && copied1.includes(token),
+   copied1.split('\n')[0]);
+ok('and the button says so next to itself',
+   /Copied/.test(await p.textContent('#k-agentcopy')), await p.textContent('#k-agentcopy'));
 console.log('URL in the clipboard has no token:', !blob.split('\n').find(l => l.startsWith('Viewer page:'))?.includes(token));
 
 const call = async (body, hdr = {}) => {
@@ -90,6 +120,21 @@ const hot = await access();
 ok('and the badge flips to EDITS ALLOWED', hot.badge === 'EDITS ALLOWED', hot.badge);
 ok('with a line saying what that means', /crop, delete/.test(hot.note), hot.note);
 ok('and the tab dot turns to a warning', /warn/.test(hot.dot), hot.dot);
+// a session flipped to edits must copy as edits, not as what it was when it started
+await p.click('#k-agentcopy');
+await p.waitForTimeout(400);
+const copied2 = await p.evaluate(() => navigator.clipboard.readText());
+ok('copying after the flip gives the edits-allowed text', /^# EDITS ALLOWED/.test(copied2),
+   copied2.split('\n')[0]);
+// a command was just run over the session, and the line reports that while it runs; give it
+// the couple of seconds that takes before reading the settled state
+try { await p.waitForFunction(() => /^live/.test((document.querySelector('#http-live .statusline')?.textContent || '').trim()), null, { timeout: 6000 }); } catch {}
+const oneLine = await p.evaluate(() => {
+  const el = document.querySelector('#http-live .statusline');
+  return { n: document.querySelectorAll('#http-live .statusline').length, text: el?.textContent?.trim() ?? '' };
+});
+ok('and the single status line says live, the access level and the time left',
+   oneLine.n === 1 && /^live · edits allowed · expires in \d+ h/.test(oneLine.text), `${oneLine.n} line: ${oneLine.text}`);
 await p.click('#http-live #k-agentedits2');
 await p.waitForTimeout(1200);
 
@@ -124,6 +169,8 @@ ok('stopped session revoked', r.status === 401, `http ${r.status}`);
 const gone = await access();
 ok('and the tab goes back to offering a new session', gone.idle && !gone.live, '');
 ok('with no dot on it', !/live|warn/.test(gone.dot), gone.dot);
+ok('and the copy button is gone with it',
+   !(await p.evaluate(() => !!document.getElementById('k-agentcopy')?.offsetParent)), '');
 
 // closing the window must kill the token by itself
 const p2 = await ctx.newPage();

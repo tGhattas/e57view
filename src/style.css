@@ -402,3 +402,4 @@ body.desktop .tabpane .step{grid-template-columns:1fr}
 .grp details.sub .hint:first-of-type{margin-top:6px}
 /* a fold that belongs to the button above it should not look like a new section */
 .grp button.wide + details.sub{border-top:none;margin-top:-2px}
+.snipcopy.copied{background:#12333a;border-color:var(--teal-dim);color:var(--teal);font-weight:600}

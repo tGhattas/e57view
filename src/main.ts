@@ -4699,9 +4699,42 @@ let agentSticky = 0;                                   // hold a message the wat
 function agentStatus(text: string, sticky = 0, kind: '' | 'ok' | 'busy' | 'err' = '') {
   if (!sticky && Date.now() < agentSticky) return;
   agentSticky = sticky ? Date.now() + sticky : 0;
+  // when it expires, put the line back to whatever the state is; nothing else was going to
+  if (sticky) setTimeout(refreshAgentState, sticky + 60);
   const el = $('v-agenturl');
   el.textContent = text;
   el.className = 'statusline' + (kind ? ' ' + kind : '');
+}
+/** The connection text for the running session, written fresh each time so a session flipped
+ *  to edits copies as edits allowed. The token lives in `agentToken` for the life of the
+ *  session, because this page owns the session and there is no other way to hand the
+ *  instructions over a second time. Stop and pagehide clear it. */
+function connectionText(): string {
+  if (!agentSid || !agentToken) return '';
+  const edits = editsAllowed();
+  const page = new URL(location.origin + location.pathname);
+  page.searchParams.set('session', agentSid);
+  return [
+    `# ${edits ? 'EDITS ALLOWED: this session may crop, delete, transform and save.' : 'READ-ONLY: this session may look and measure, and nothing else.'}`,
+    `# Change that with "Allow edits" on the HTTP tab of the viewer's Agent panel.`,
+    `#`,
+    `# e57view agent session, expires ${new Date(agentExpires).toLocaleString()}`,
+    `# Keep this tab open. The token below is the credential. It is shown once and is not in the URL.`,
+    '',
+    `Viewer page: ${page}`,
+    '',
+    `curl -s ${location.origin}/agent \\`,
+    `  -H 'Authorization: Bearer ${agentToken}' \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -d '${JSON.stringify({ session: agentSid, cmd: 'state' })}'`,
+  ].join('\n');
+}
+/** The same thing with the token reduced to its last four characters, for the screen. */
+function connectionPreview(): string {
+  if (!agentSid || !agentToken) return '';
+  const page = new URL(location.origin + location.pathname);
+  page.searchParams.set('session', agentSid);
+  return `${page}\nBearer ...${agentToken.slice(-4)}`;
 }
 function updateAgentUI() {
   const live = !!agentSid;
@@ -4760,11 +4793,14 @@ function refreshAgentState() {
   // ---- the hosted HTTP session
   const live = !!agentSid;
   const edits = live && editsAllowed();
-  if (live) {
-    const left = agentExpires ? `expires in ${hms(agentExpires - Date.now())}` : 'no expiry known';
-    const note = $('v-agentexp');
-    if (note) note.textContent = left;
+  // One line, one format. It used to say "expires in 8 h 0 m" and, underneath, "listening ·
+  // edits allowed · expires in 8.0 h": the same facts twice.
+  if (live && Date.now() >= agentSticky) {
+    const left = agentExpires ? ` · expires in ${hms(agentExpires - Date.now())}` : '';
+    agentStatus(`live · ${edits ? 'edits allowed' : 'read-only'}${left}`, 0, edits ? 'err' : 'busy');
   }
+  const conn = $('v-agentconn');
+  if (conn) conn.textContent = connectionPreview();
 
   // ---- a dot on each tab, so a live path shows without opening it
   $('tab-mcp')?.classList.toggle('live', mcp === 'on');
@@ -4780,7 +4816,13 @@ async function startRemoteSession(sid: string) {
   stopSession?.();
   agentSid = sid;
   if (!agentToken) { try { agentToken = sessionStorage.getItem('agent-token:' + sid); } catch {} }
-  stopSession = m.watchAgentSession(sid, dispatchAgent, s => agentStatus(s));
+  stopSession = m.watchAgentSession(sid, dispatchAgent, s => {
+    // back to waiting: repaint from the state, but do not push aside a confirmation that is
+    // still up. The first snapshot lands a moment after the session starts, and clearing the
+    // hold here ate the "Copied" line every time.
+    if (!s) { refreshAgentState(); return; }
+    agentStatus(s, /^session /.test(s) ? 8000 : 2000, /^session /.test(s) ? 'err' : 'busy');
+  });
   updateAgentUI();
 }
 $('k-agenturl').addEventListener('click', async () => {
@@ -4796,23 +4838,25 @@ $('k-agenturl').addEventListener('click', async () => {
     // leaked link (history, referrer, analytics) grants nothing.
     const page = new URL(location.origin + location.pathname);
     page.searchParams.set('session', sid);
-    const blob = [
-      `# ${edits ? 'EDITS ALLOWED: this session may crop, delete, transform and save.' : 'READ-ONLY: this session may look and measure, and nothing else.'}`,
-      `# Change that with "Allow edits" on the HTTP tab of the viewer's Agent panel.`,
-      `#`,
-      `# e57view agent session, expires ${new Date(expiresAt).toLocaleString()}`,
-      `# Keep this tab open. The token below is the credential. It is shown once and is not in the URL.`,
-      '',
-      `Viewer page: ${page}`,
-      '',
-      `curl -s ${location.origin}/agent \\`,
-      `  -H 'Authorization: Bearer ${token}' \\`,
-      `  -H 'Content-Type: application/json' \\`,
-      `  -d '${JSON.stringify({ session: sid, cmd: 'state' })}'`,
-    ].join('\n');
+    const blob = connectionText();
     await navigator.clipboard.writeText(blob);
-    agentStatus(`Copied · ${edits ? 'edits allowed' : 'read-only session'}`, 8000, edits ? 'busy' : 'ok');
+    agentStatus(`Copied · ${edits ? 'edits allowed' : 'read-only session'}`, 4000, edits ? 'err' : 'ok');
   } catch (e: any) { agentStatus('failed: ' + (e?.message ?? e), 8000, 'err'); }
+});
+$('k-agentcopy')?.addEventListener('click', async () => {
+  const text = connectionText();
+  if (!text) return;
+  const btn = $('k-agentcopy');
+  try {
+    await navigator.clipboard.writeText(text);
+    // next to the button, not only in the status line: a confirmation somewhere else on the
+    // screen is a confirmation people miss, which is how this button came to be needed
+    btn.textContent = 'Copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy connection details'; btn.classList.remove('copied'); }, 2500);
+  } catch {
+    agentStatus('could not reach the clipboard, so select the text and copy it', 6000, 'err');
+  }
 });
 $('k-agentstop').addEventListener('click', async () => {
   if (!agentSid) return;
@@ -4831,10 +4875,9 @@ function setEditsAllowed(on: boolean) {
   $<HTMLInputElement>('k-agentedits').checked = on;
   const two = $<HTMLInputElement>('k-agentedits2');
   if (two) two.checked = on;
-  // The "Copied, read-only session" confirmation is wrong the moment the level changes, and
-  // it is sticky for eight seconds, so replace it rather than let it sit there contradicting
-  // the badge above it.
-  if (agentSid) agentStatus(on ? 'changed to edits allowed' : 'changed to read-only', 6000, on ? 'busy' : 'ok');
+  // A confirmation from before the change contradicts the badge that just flipped, so drop
+  // whatever is being held and repaint from the state.
+  agentSticky = 0;
   refreshAgentState();
 }
 $('k-agentedits').addEventListener('change', async e => {
@@ -4860,6 +4903,8 @@ addEventListener('pagehide', (e) => {
       navigator.sendBeacon('/agent', new Blob([body], { type: 'application/json' }));
     } else sessionMod?.stopAgentSession(sid);
   } catch {}
+  // the plaintext token does not outlive the page that owned it
+  agentToken = null; agentSid = null; agentExpires = 0;
 });
 const sessionParam = DESKTOP ? null : new URLSearchParams(location.search).get('session');
 if (sessionParam) import('./session').then(m => { sessionMod = m; startRemoteSession(sessionParam); }).catch(e => agentStatus('session: ' + ((e as any)?.message ?? e)));

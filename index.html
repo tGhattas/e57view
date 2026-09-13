@@ -630,7 +630,11 @@
           <div class="badge" id="v-access">READ-ONLY</div>
           <p class="badge-note" id="v-accessnote">The agent can look and measure. It cannot change or save anything.</p>
           <label class="row"><span>Allow edits</span><input type="checkbox" id="k-agentedits2"></label>
-          <p class="statusline" id="v-agentexp">expires in 8 h</p>
+          <div class="snipwrap">
+            <p class="sniplabel">Connection details, token masked</p>
+            <pre class="snip" id="v-agentconn"></pre>
+            <button id="k-agentcopy" class="ghost snipcopy">Copy connection details</button>
+          </div>
           <p class="statusline" id="v-agenturl">—</p>
           <button id="k-agentstop" class="ghost wide">Stop session</button>
         </div>

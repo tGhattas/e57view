@@ -42,8 +42,15 @@ This is the one that crosses a network, so it is the one with a threat model wor
 - **Opt-in per tab.** Nothing exists until you press *Copy agent URL*, and the tab revokes its
   own token as it closes.
 - **The token is the credential; the session id is only an address.** The id may travel in a
-  URL. The token is shown once, kept in memory and `sessionStorage`, and never put in the
-  page's URL. The server stores only a SHA-256 of it and compares in constant time.
+  URL. The token never appears in the page's URL. The server stores only a SHA-256 of it and
+  compares in constant time.
+- **Where the plaintext token lives.** In the tab that created the session, for as long as
+  that session lasts: a module variable and `sessionStorage`. That is deliberate. The page
+  owns the session, and *Copy connection details* has to be able to hand the instructions over
+  a second time, because a confirmation people miss is how the first copy gets lost. It is
+  cleared on **Stop session** and on **pagehide**, so it does not outlive the tab. It is never
+  written to `localStorage`, never sent anywhere except the `Authorization` header of the
+  revoke beacon, and never rendered on screen: the panel shows the last four characters.
 - **Read-only by default**, and the viewer says so in full: a live session shows a
   `READ-ONLY` or `EDITS ALLOWED` badge across the HTTP tab of its Agent panel
   ([what that looks like](docs/ui/agent-web-http-readonly.png)). A session cannot crop, delete, save, transform, open another file
