@@ -1999,6 +1999,9 @@ function leafPlan() {
 const POOL_MAX = 6;
 /** A driver pins this to 1 to measure the parallel run against the one-at-a-time run. */
 let anaPoolMax = 0;
+/** And pins this so both runs cut the cloud the same way, since the budget otherwise follows
+ *  the pool size and the two would not be comparing the same tiles. */
+let anaTileFixed = 0;
 const anaPool = () => Math.max(1, Math.min((navigator.hardwareConcurrency || 4) - 1, anaPoolMax || POOL_MAX));
 /** Roughly what a point costs in the analyser's heap: three f32 coordinates, three normal
  *  bytes, a global index, and the grid's order and key arrays, with the high-water mark of a
@@ -2098,7 +2101,8 @@ async function runTiled(op: string, args: Record<string, any> = {}, ref: Entity 
   // A tile has to fit in its own worker, and the pool has to fit in this machine. The second
   // is the binding one: six workers each holding thirty million points would ask for ten
   // gigabytes of WebAssembly heap.
-  const tileBudget = whole ? total : Math.max(1.2e6, Math.min(cap, Math.floor(POOL_BYTES / (pool * BYTES_PER_POINT))));
+  const tileBudget = whole ? total
+    : anaTileFixed || Math.max(1.2e6, Math.min(cap, Math.floor(POOL_BYTES / (pool * BYTES_PER_POINT))));
   const tiles: Tile[] = whole
     ? [{ core: leaves.map((_, i) => i), halo: [], points: total, fed: total }]
     : planTiles(boxes, tileBudget, haloFor(op, args, cell) / scale);
@@ -2236,11 +2240,27 @@ async function runTiled(op: string, args: Record<string, any> = {}, ref: Entity 
   if (stop) throw new Error(stop);
 
   if (isSor) {
-    let sum = 0, sum2 = 0, cnt = 0;
+    // Compensated summation, because this threshold is a statistic of every point in the
+    // cloud and the tiles are added up in whatever order they were cut. Plain addition gave a
+    // cut-off that differed in its last bit between a nineteen-tile run and a four-hundred
+    // tile one, and seventy-one points of seventy-three million sat close enough to the
+    // threshold to change sides with it.
+    let sum = 0, sumC = 0, sum2 = 0, sum2C = 0, cnt = 0;
     for (const m of means) {
       if (!m) continue;
-      for (let i = 0; i < m.length; i++) { const d = m[i]; sum += d; sum2 += d * d; cnt++; }
+      for (let i = 0; i < m.length; i++) {
+        const d = m[i];
+        let t = sum + d;
+        sumC += Math.abs(sum) >= Math.abs(d) ? (sum - t) + d : (d - t) + sum;
+        sum = t;
+        const q = d * d;
+        t = sum2 + q;
+        sum2C += Math.abs(sum2) >= Math.abs(q) ? (sum2 - t) + q : (q - t) + sum2;
+        sum2 = t;
+        cnt++;
+      }
     }
+    sum += sumC; sum2 += sum2C;
     const avg = sum / Math.max(cnt, 1);
     const sd = Math.sqrt(Math.abs(sum2 / Math.max(cnt, 1) - avg * avg));
     const cut = avg + Number(args.sigma ?? 1) * sd;
@@ -5689,7 +5709,9 @@ if (DESKTOP) startDesktop().catch(e => { agentNote('desktop shell: ' + (e?.messa
   agentRun: (cmd: string, args: any) => agent.run(cmd, args), runScript,
   set anaMaxPoints(v: number) { anaMaxPoints = v; }, get anaMaxPoints() { return anaCap(); },
   get anaHeap() { return anaHeap; }, get anaProfile() { return anaProfile; }, anaCancel,
-  set anaPoolMax(v: number) { anaPoolMax = v; }, get anaPoolMax() { return anaPool(); }, noiseArgs, get anaUi() { return anaUi; },
+  set anaPoolMax(v: number) { anaPoolMax = v; }, get anaPoolMax() { return anaPool(); },
+  set anaTileBudget(v: number) { anaTileFixed = v; },
+  get anaTileBudget() { return anaTileFixed || Math.max(1.2e6, Math.min(anaCap(), Math.floor(POOL_BYTES / (anaPool() * BYTES_PER_POINT)))); }, noiseArgs, get anaUi() { return anaUi; },
   mcpBlocks, mcpTarget, mcpDesktopTarget, renderMcpSetup, get mcpClients() { return MCP_CLIENTS.map(c => ({ id: c.id, name: c.name })); },
   importMesh, measureActiveMesh, smoothActiveMesh, decimateActiveMesh, sampleMeshPoints, distanceToMesh,
   replaceMesh, flipMesh, meshEntities, meshBlob, saveMesh, refreshMeshUI, setDisplay,

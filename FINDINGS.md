@@ -1584,7 +1584,45 @@ there are enough leaves to tile at all. With the cap lowered to a third of the c
 in eight tiles and every mask is identical to the whole-cloud run, checked by a checksum over
 the quantised coordinates of every surviving point.
 
-<!--REALSCAN-->
+### On the real scan
+
+`drive-clean-real.mjs` opens `1973-registered.e57`, 3.23 GB, at full resolution: 73,757,292
+points in 702 octree leaves, 12.7 s to decode. Then it runs each filter over all of them, once
+with a single worker and once on the pool, and checks that the two agree.
+
+| filter | one worker | pool of six | tiles | points removed | peak wasm heap |
+|---|---|---|---|---|---|
+| outliers, SOR, 6 neighbours at 1 sigma | 324 s | **87 s** | 437 | 6,550,079 (8.9%) | 1,701 MB |
+| noise, sphere neighbourhood at 1 sigma | | **105 s** | 429 | 27,182,838 (36.9%) | 1,513 MB |
+| duplicates within 1 mm | 387 s | **317 s** | 426 | 4,522 | 1,511 MB |
+
+The SOR row is the same 437-tile plan run both ways, so the two columns differ only in how many
+workers were on it. The duplicates row is not: its one-worker run was cut into 19 larger tiles,
+which is what a single worker would choose for itself.
+
+SOR's mean neighbour distance over the whole cloud came out 0.013314 m and its cut-off
+0.020236 m. Before any of this the same filter did not run at all: it refused at 30M points.
+The first tiled version, one tile at a time and two passes, took 713 s.
+
+Where SOR's 87 s goes: 7.6 s of the main thread reading records back out of GPU buffers, and
+across the six workers 28.5 s decoding those records through the cloud's model matrix, 58.1 s
+building the grids and 316.2 s in the neighbour search itself. The compute is 79% of the
+worker time and it is spread over six cores, which is why the wall clock is 87 s.
+
+The awkward number in that profile is 997.9M points fed to answer for 73.8M. A halo is made of
+whole leaves, because a leaf is the unit the viewer can hand over, and a tile of two or three
+leaves is surrounded by a ring of ten or twenty. Bigger tiles would waste less, and bigger
+tiles need more memory per worker, and the pool is what fixes the memory. The waste falls on
+decoding and indexing, which are 21% of the worker time, so it is worth about fifteen seconds
+of the eighty-seven.
+
+Duplicate removal is the one that barely gained, 387 s to 317 s. It is the one operation that
+has to run over the halo points as well as its own, because a point is removed by an earlier
+point that has not itself been removed, and that chain has to be resolved for the neighbours
+too. Nearly a billion radius searches at a millimetre tolerance in a grid sized for
+sixteen-neighbour searches is the cost, and a grid sized for the tolerance is the fix. That
+is not written yet.
+
 
 ## A record of what the agent did
 
@@ -1645,4 +1683,26 @@ computing a value for every point a tile held, then throwing away the ones belon
 neighbours. Both now answer for a prefix, which is the tile's own points. On a tile whose halo
 is as big as its core, that is half the work gone.
 
-<!--POOLNUMBERS-->
+The numbers, on the 73.8M point scan, are in the table above: SOR went from 713 s when it was
+first tiled to 324 s on one worker once the second pass was gone, and to 87 s on six.
+
+**The tile size is part of the answer, and the worker count is not.** The first version of the
+driver's comparison ran the same filter with one worker and with six and expected the same
+points to be removed. It got 6,550,150 against 6,550,079, a difference of 71 points in 6.55M,
+and the cut-off differed in its sixth decimal. The cause was not the parallelism. The per-tile
+budget is derived from the pool size, so the one-worker run was cutting the cloud into 19
+tiles and the six-worker run into 437, and at a tile edge the nearest neighbours that exist
+are the ones inside the tile and its halo. In a sparse corner of a scan, a smaller tile means
+a slightly longer mean distance for a handful of points, which moves the cloud's mean and
+standard deviation in the sixth decimal, which moves about seventy points across the
+threshold.
+
+So the comparison pins the tile plan and varies only the number of workers, which is the
+property worth asserting: the pool removes exactly what one worker removes, tile for tile.
+How much the tile size itself matters is the separate number above, and it is 0.001% of the
+removals.
+
+The sums are also compensated (Neumaier) now. That was the first suspicion and it was wrong,
+but a mean and a standard deviation over 73.8M floats accumulated in whatever order the tiles
+finished is worth a few lines of insurance.
+

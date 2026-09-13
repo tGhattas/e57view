@@ -80,7 +80,7 @@ viewer_volume,
 viewer_state, viewer_screenshot, viewer_view, viewer_section, viewer_probe,
 viewer_heightmap, viewer_contour, viewer_fitplane, viewer_distance, viewer_inside,
 viewer_set_view, viewer_set, viewer_regions, viewer_pick, viewer_measure, viewer_transform,
-viewer_export, viewer_open, viewer_surface, viewer_history, viewer_stations.
+viewer_export, viewer_open, viewer_surface, viewer_history, viewer_stations, viewer_log.
 
 ## 3D modelling workflow
 
@@ -330,13 +330,28 @@ to be showing: `neighbours` 8, `nSigma` 1.0, a sphere neighbourhood, a relative 
 isolated points kept.
 
 **Size is no longer a reason for these to refuse.** A cloud too big to index in one go is
-analysed one spatial tile at a time: each tile holds its own points and a halo of its
-neighbours', which are searched but answered for by the tile that owns them, so the result is
-the same as it would be if the cloud were held whole. The reply carries `tiles` when that
-happened, and a run over tens of millions of points takes minutes rather than seconds. `sor`
-makes two passes over the tiles, because its threshold is a statistic of the whole cloud.
-`components` is the one operation that still needs every point in one index, and it refuses
-with a message that says so.
+analysed one spatial tile at a time, in parallel across a pool of workers: each tile holds its
+own points and a halo of its neighbours', which are searched but answered for by the tile that
+owns them, so the result is the same as it would be if the cloud were held whole. The reply
+carries `tiles` when that happened. Expect a minute or two rather than seconds on tens of
+millions of points: on a 73.8M point scan `sor` takes 87 s, `noise` 105 s and `duplicates`
+317 s. `components` is the one operation that still needs every point in one index, and it
+refuses with a message that says so.
+
+## What has already been done to this tab
+
+{"session":"S","cmd":"log","args":{"limit":20}}
+
+`log` is the record of every command that has come in over any path: this bridge, an HTTP
+session, or a script. Newest first, with the time, where the call came from, the command, its
+arguments, whether it needed the edit permission, whether it succeeded, how long it took and
+(with `replies:true`) a trimmed copy of what it answered. It is read-only and nothing is
+stored anywhere but the tab's memory: the last 500 calls, gone when the tab closes.
+
+Worth asking first when you are handed a session someone else started, because it tells you
+what has already been removed, transformed or saved, and the undo stack only tells you how
+many steps there were. Also the quickest way to see what a `script` actually received once
+its arguments have been substituted.
 
 ## Meshes are layers
 

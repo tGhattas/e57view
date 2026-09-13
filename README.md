@@ -137,10 +137,13 @@ against CloudCompare read from its source, 190 rows, kept current.
   connected components stay in Analysis.
 - **No size limit on the local operations.** A cloud too big to index in one go is analysed one
   spatial tile at a time, each tile fed its own points plus a halo of its neighbours' so the
-  edges come out the same as the middle. Cleaning, thinning, normals, the features and the
-  distance to another cloud all work this way and give the same answer they would give whole,
-  checked point for point in the drivers. Connected components still needs every point in one
-  index, and says so if the cloud is past what the device can hold.
+  edges come out the same as the middle, and the tiles run in parallel on a pool of workers.
+  Cleaning, thinning, normals, the features and the distance to another cloud all work this way
+  and give the same answer they would give whole, checked point for point in the drivers.
+  On the 73.8M point test scan, at full resolution: **SOR in 87 s**, the noise filter in 105 s,
+  duplicate removal in 317 s, under 1.6 GB of WebAssembly heap across six workers. Connected
+  components still needs every point in one index, and says so if the cloud is past what the
+  device can hold.
 - A field gets a ramp, a histogram, a display range and a value filter that can delete what
   falls outside it in one undoable step.
 

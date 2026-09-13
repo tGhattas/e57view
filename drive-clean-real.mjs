@@ -73,14 +73,24 @@ for (const args of [
   { op: 'duplicates', tolerance: 0.001 },
 ]) {
   if (!WANT.includes(args.op)) continue;
-  // one tile at a time first, then the pool, so the two can be compared on this machine on
-  // this scan rather than against a remembered number
+  // One tile at a time first, then the pool, so the two can be compared on this machine on
+  // this scan rather than against a remembered number. The tile plan is pinned to the one the
+  // pool would choose: the budget normally follows the pool size, and a run cut into nineteen
+  // tiles is not the same computation as one cut into four hundred, whoever runs it. How much
+  // the tile size itself changes the answer is a different question from whether running the
+  // tiles at the same time changes it.
+  if (PAIR.includes(args.op)) {
+    const b = await p.evaluate(() => window.__app.anaTileBudget);
+    await p.evaluate((v) => { window.__app.anaTileBudget = v; }, b);
+    console.log(`  tile budget pinned at ${b.toLocaleString('en-GB')} points for both runs`);
+  }
   const one = PAIR.includes(args.op) ? await runOp(args, 1) : null;
   if (one) {
     ok(`${args.op} finishes with one worker`, !one.error, one.error ?? `${one.secs.toFixed(1)}s`);
     if (!one.error) console.log(`  ${args.op} (1 worker): ${one.secs.toFixed(1)}s · ${one.tiles ?? 1} tiles · removed ${one.removed.toLocaleString('en-GB')} · wasm heap ${(one.heap / 1048576).toFixed(0)} MB`);
   }
   const r = await runOp(args, 0);
+  await p.evaluate(() => { window.__app.anaTileBudget = 0; });
   ok(`${args.op} finishes on the whole scan`, !r.error, r.error ?? `${r.secs.toFixed(1)}s`);
   if (!r.error) {
     rows.push({ op: args.op, secs: r.secs, was: one && !one.error ? one.secs : null, removed: r.removed,
