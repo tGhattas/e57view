@@ -30,6 +30,8 @@ await p.waitForTimeout(900);
 try { await p.click('#modal-btns button:has-text("Not now")', { timeout: 3000 }); } catch {}
 await p.evaluate(() => document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed')));
 
+const ok = (label, cond, extra = '') => console.log(`${cond ? 'PASS' : 'FAIL'}  ${label}${extra ? ' · ' + extra : ''}`);
+
 await p.bringToFront();
 // a hidden tab's controls are not clickable, so switch to it the way a user does
 await p.click('#tab-http');
@@ -46,7 +48,7 @@ ok('before a session the HTTP tab shows the choice, not a state', before.idle &&
 ok('and the tab carries no dot', !/live|warn/.test(before.dot), before.dot);
 
 await p.click('#k-agenturl');
-try { await p.waitForFunction(() => /copied with its token/.test(document.getElementById('v-agenturl')?.textContent || ''), null, { timeout: 25000 }); }
+try { await p.waitForFunction(() => /^Copied/.test((document.getElementById('v-agenturl')?.textContent || '').trim()), null, { timeout: 25000 }); }
 catch { console.log('  status was:', await p.textContent('#v-agenturl')); throw new Error('Copy agent URL did not complete'); }
 const blob = await p.evaluate(() => navigator.clipboard.readText());
 const sid = blob.match(/"session":"([a-z0-9]+)"/)[1];
@@ -70,7 +72,6 @@ const call = async (body, hdr = {}) => {
   return { status: r.status, j };
 };
 const auth = { Authorization: `Bearer ${token}` };
-const ok = (label, cond, extra = '') => console.log(`${cond ? 'PASS' : 'FAIL'}  ${label}${extra ? ' · ' + extra : ''}`);
 
 let r = await call({ session: sid, cmd: 'state' });
 ok('no token rejected', r.status === 401, `http ${r.status}`);
@@ -134,7 +135,7 @@ try { await p2.click('#modal-btns button:has-text("Not now")', { timeout: 3000 }
 await p2.evaluate(() => document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed')));
 await p2.bringToFront();
 await p2.click('#k-agenturl');
-await p2.waitForFunction(() => /copied with its token/.test(document.getElementById('v-agenturl')?.textContent || ''), null, { timeout: 30000 });
+await p2.waitForFunction(() => /^Copied/.test((document.getElementById('v-agenturl')?.textContent || '').trim()), null, { timeout: 30000 });
 const blob2 = await p2.evaluate(() => navigator.clipboard.readText());
 const sid2 = blob2.match(/"session":"([a-z0-9]+)"/)[1];
 const auth2 = { Authorization: `Bearer ${blob2.match(/Bearer ([a-f0-9]+)/)[1]}` };

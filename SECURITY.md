@@ -44,7 +44,9 @@ This is the one that crosses a network, so it is the one with a threat model wor
 - **The token is the credential; the session id is only an address.** The id may travel in a
   URL. The token is shown once, kept in memory and `sessionStorage`, and never put in the
   page's URL. The server stores only a SHA-256 of it and compares in constant time.
-- **Read-only by default.** A session cannot crop, delete, save, transform, open another file
+- **Read-only by default**, and the viewer says so in full: a live session shows a
+  `READ-ONLY` or `EDITS ALLOWED` badge across the HTTP tab of its Agent panel
+  ([what that looks like](docs/ui/agent-web-http-readonly.png)). A session cannot crop, delete, save, transform, open another file
   or spend provider credit unless the viewer tab has *Allow edits* ticked. The gate is applied
   in the relay *and* again in the tab, and a `script` is exactly as privileged as the steps in
   it, so a read-only session cannot smuggle an editing command through a wrapper.

@@ -4726,7 +4726,9 @@ function paintAccessBadge() {
 const desktopBridge = { port: 0, agents: 0 };
 const hms = (ms: number) => {
   if (ms <= 0) return 'expired';
-  const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
+  // round to whole minutes first, or 7 h 59.7 m prints as "7 h 60 m"
+  const mins = Math.round(ms / 60000);
+  const h = Math.floor(mins / 60), m = mins % 60;
   return h ? `${h} h ${m} m` : `${m} m`;
 };
 function refreshAgentState() {
@@ -4821,6 +4823,10 @@ function setEditsAllowed(on: boolean) {
   $<HTMLInputElement>('k-agentedits').checked = on;
   const two = $<HTMLInputElement>('k-agentedits2');
   if (two) two.checked = on;
+  // The "Copied, read-only session" confirmation is wrong the moment the level changes, and
+  // it is sticky for eight seconds, so replace it rather than let it sit there contradicting
+  // the badge above it.
+  if (agentSid) agentStatus(on ? 'changed to edits allowed' : 'changed to read-only', 6000, on ? 'busy' : 'ok');
   refreshAgentState();
 }
 $('k-agentedits').addEventListener('change', async e => {
