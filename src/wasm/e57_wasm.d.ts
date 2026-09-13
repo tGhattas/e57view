@@ -11,8 +11,11 @@ export class CloudAnalysis {
     [Symbol.dispose](): void;
     /**
      * `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
+     * `base` is where this leaf's first point sits in the whole cloud, which is what
+     * decides the survivor of a duplicate pair or of a subsample voxel. A run that holds
+     * the cloud whole can pass the running count and get the same answer.
      */
-    add_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array, model: Float32Array): void;
+    add_leaf(ox: number, oy: number, oz: number, size: number, recs: Uint8Array, model: Float32Array, base: number): void;
     /**
      * One leaf of the reference. `stride` keeps 1 in N, for a cloud bigger than the
      * analyser will hold; `model` is its own row-major 4x4, so both clouds arrive in the
@@ -69,6 +72,16 @@ export class CloudAnalysis {
      * Returns the keep mask; the mean and cut-off used are reported separately.
      */
     sor(k: number, n_sigma: number, progress?: Function | null): Uint8Array;
+    /**
+     * The second pass: this tile's keep mask against a cut-off decided over the cloud.
+     */
+    sor_cut(k: number, cut: number, upto: number, progress?: Function | null): Uint8Array;
+    /**
+     * The first pass of a tiled SOR over this tile's own points: `[sum, sum of squares,
+     * count]` of their mean neighbour distances. The caller adds the tiles up to get the
+     * cloud's mean and standard deviation, then hands the cut-off back to `sor_cut`.
+     */
+    sor_stats(k: number, upto: number, progress?: Function | null): Float64Array;
     start_reference(cell: number): void;
     subsample(spacing: number): Uint8Array;
     /**
@@ -253,7 +266,7 @@ export interface InitOutput {
     readonly __wbg_meshbuilder_free: (a: number, b: number) => void;
     readonly __wbg_meshdistance_free: (a: number, b: number) => void;
     readonly __wbg_pointsink_free: (a: number, b: number) => void;
-    readonly cloudanalysis_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+    readonly cloudanalysis_add_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
     readonly cloudanalysis_add_reference_leaf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
     readonly cloudanalysis_build: (a: number) => void;
     readonly cloudanalysis_build_reference: (a: number) => void;
@@ -279,6 +292,8 @@ export interface InitOutput {
     readonly cloudanalysis_reference_normals: (a: number) => number;
     readonly cloudanalysis_rewind: (a: number) => void;
     readonly cloudanalysis_sor: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly cloudanalysis_sor_cut: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+    readonly cloudanalysis_sor_stats: (a: number, b: number, c: number, d: number) => [number, number];
     readonly cloudanalysis_start_reference: (a: number, b: number) => void;
     readonly cloudanalysis_subsample: (a: number, b: number) => [number, number];
     readonly cloudanalysis_write_normals: (a: number, b: number, c: number, d: any) => void;

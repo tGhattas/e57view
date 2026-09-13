@@ -9,7 +9,11 @@ import init, { CloudAnalysis, fit_shape, detect_shapes } from './wasm/e57_wasm.j
 import wasmUrl from './wasm/e57_wasm_bg.wasm?url';
 
 let wasmReady: Promise<any> | null = null;
-const ensureWasm = () => (wasmReady ??= init({ module_or_path: wasmUrl }));
+let wasmExports: any = null;
+const ensureWasm = () => (wasmReady ??= init({ module_or_path: wasmUrl }).then(w => { wasmExports = w; return w; }));
+/** The size of the WebAssembly heap, which is where the index and the points live. Reported
+ *  with every result so a big run can say what it actually cost. */
+const heapBytes = () => wasmExports?.memory?.buffer?.byteLength ?? 0;
 
 let a: CloudAnalysis | null = null;
 let fed = 0;
@@ -20,6 +24,13 @@ let maxPoints = 30e6;
 let model = new Float32Array(0);
 let cell = 0.05;
 let refStarted = false, refFed = 0;
+/** How many of the points fed so far this tile is responsible for.
+ *
+ *  A cloud too big to index at once arrives one spatial tile at a time: the tile's own
+ *  leaves first, then the leaves around it, fed as context so a neighbourhood search at the
+ *  tile's edge still sees a whole surface. Results are cut back to this length, because the
+ *  context points belong to another tile and will be answered for there. */
+let coreLen = 0;
 /** True between a `start` and the first failure.
  *
  *  The main thread posts leaves without waiting for each one, so when a run is refused
@@ -52,7 +63,7 @@ self.onmessage = async (ev: MessageEvent) => {
       model = m.model && m.model.length === 16 ? new Float32Array(m.model) : new Float32Array(0);
       cell = m.cell;
       refStarted = false; refFed = 0;
-      fed = 0;
+      fed = 0; coreLen = 0;
       armed = true;
       post({ type: 'ready' });
       return;
@@ -92,13 +103,16 @@ self.onmessage = async (ev: MessageEvent) => {
     if (m.type === 'leaf') {
       if (!armed || !a) return;      // a failure already reported; stay quiet until the next start
       const recs = new Uint8Array(m.recs);
-      a.add_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs, model);
+      // `base` is where this leaf's first point sits in the whole cloud. Rules of the form
+      // "the first one wins" are settled on it, so a tile decides the way the cloud would.
+      a.add_leaf(m.origin[0], m.origin[1], m.origin[2], m.size, recs, model, (m.base ?? 0) >>> 0);
       fed++;
       const n = a.len();
+      if (!m.context) coreLen = n;
       if (n > maxPoints) {
         armed = false;
         a.free(); a = null;
-        post({ type: 'error', message: `${big(n)} points is past the ${big(maxPoints)} this device can analyse at once. Crop to a smaller area, or reload at a coarser sampling.` });
+        post({ type: 'error', message: `${big(n)} points is past the ${big(maxPoints)} this device can index at once, and this operation needs the whole cloud in one index. Crop to a smaller area, or reload at a coarser sampling.` });
         return;
       }
       if ((fed & 15) === 0) post({ type: 'progress', phase: 'Reading cells', done: n, total: 0 });
@@ -108,11 +122,13 @@ self.onmessage = async (ev: MessageEvent) => {
     if (m.type === 'run') {
       if (!armed || !a) return;      // a failure already reported; stay quiet until the next start
       const n = a.len();
+      // how many of them this run answers for: all of them unless leaves came in as context
+      const own = Math.min(m.outLen ?? (coreLen || n), n);
       post({ type: 'progress', phase: 'Indexing', done: 0, total: n });
       a.build();
       const t0 = performance.now();
       const op = m.op;
-      let out: any = { type: 'result', op, points: n };
+      let out: any = { type: 'result', op, points: own, fed: n };
 
       if (op === 'normals') {
         a.compute_normals(m.k, prog('Computing normals', n));
@@ -133,6 +149,15 @@ self.onmessage = async (ev: MessageEvent) => {
         const f = a.feature(m.name, m.k, m.radius, prog('Computing ' + m.name, n));
         out.kind = 'field';
         out.data = f;
+      } else if (op === 'sor_stats') {
+        // first pass of a tiled SOR: this tile's contribution to the cloud's mean and
+        // standard deviation, so the second pass can use one threshold everywhere
+        const st = a.sor_stats(m.knn ?? m.k ?? 6, own, prog('Measuring neighbourhoods', n));
+        out.kind = 'stats';
+        out.sum = st[0]; out.sum2 = st[1]; out.count = st[2];
+      } else if (op === 'sor_cut') {
+        out.kind = 'mask';
+        out.data = a.sor_cut(m.knn ?? m.k ?? 6, Number(m.cut), own, prog('Removing outliers', n));
       } else if (op === 'sor') {
         out.kind = 'mask';
         out.data = a.sor(m.knn ?? m.k ?? 6, Number(m.sigma ?? 1), prog('Measuring neighbourhoods', n));
@@ -206,13 +231,19 @@ self.onmessage = async (ev: MessageEvent) => {
 
       if (op === 'normals' || op === 'invert') {
         // hand back only the normals; the viewer patches its own records with them
-        const nrm = new Int8Array(n * 3);
-        const src = a.normals_bytes();
-        nrm.set(src);
+        const nrm = new Int8Array(own * 3);
+        nrm.set(a.normals_bytes().subarray(0, own * 3));
         out.kind = 'normals';
         out.data = nrm;
       }
+      // A tile answers for its own points only. Everything above was computed over the
+      // context points too, because that is what makes the edges right, and this is where
+      // they are dropped.
+      if (out.data && own < n && out.data.length > own && out.kind !== 'normals') {
+        out.data = out.data.subarray(0, own);
+      }
       out.ms = performance.now() - t0;
+      out.heap = heapBytes();
       post(out, out.data ? [out.data.buffer] : []);
       return;
     }

@@ -18,19 +18,23 @@ export class CloudAnalysis {
     }
     /**
      * `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
+     * `base` is where this leaf's first point sits in the whole cloud, which is what
+     * decides the survivor of a duplicate pair or of a subsample voxel. A run that holds
+     * the cloud whole can pass the running count and get the same answer.
      * @param {number} ox
      * @param {number} oy
      * @param {number} oz
      * @param {number} size
      * @param {Uint8Array} recs
      * @param {Float32Array} model
+     * @param {number} base
      */
-    add_leaf(ox, oy, oz, size, recs, model) {
+    add_leaf(ox, oy, oz, size, recs, model, base) {
         const ptr0 = passArray8ToWasm0(recs, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passArrayF32ToWasm0(model, wasm.__wbindgen_malloc);
         const len1 = WASM_VECTOR_LEN;
-        wasm.cloudanalysis_add_leaf(this.__wbg_ptr, ox, oy, oz, size, ptr0, len0, ptr1, len1);
+        wasm.cloudanalysis_add_leaf(this.__wbg_ptr, ox, oy, oz, size, ptr0, len0, ptr1, len1, base);
     }
     /**
      * One leaf of the reference. `stride` keeps 1 in N, for a cloud bigger than the
@@ -286,6 +290,35 @@ export class CloudAnalysis {
         const ret = wasm.cloudanalysis_sor(this.__wbg_ptr, k, n_sigma, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
         var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * The second pass: this tile's keep mask against a cut-off decided over the cloud.
+     * @param {number} k
+     * @param {number} cut
+     * @param {number} upto
+     * @param {Function | null} [progress]
+     * @returns {Uint8Array}
+     */
+    sor_cut(k, cut, upto, progress) {
+        const ret = wasm.cloudanalysis_sor_cut(this.__wbg_ptr, k, cut, upto, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * The first pass of a tiled SOR over this tile's own points: `[sum, sum of squares,
+     * count]` of their mean neighbour distances. The caller adds the tiles up to get the
+     * cloud's mean and standard deviation, then hands the cut-off back to `sor_cut`.
+     * @param {number} k
+     * @param {number} upto
+     * @param {Function | null} [progress]
+     * @returns {Float64Array}
+     */
+    sor_stats(k, upto, progress) {
+        const ret = wasm.cloudanalysis_sor_stats(this.__wbg_ptr, k, upto, isLikeNone(progress) ? 0 : addToExternrefTable0(progress));
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
         return v1;
     }
     /**

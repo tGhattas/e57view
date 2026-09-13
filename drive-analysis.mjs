@@ -22,6 +22,37 @@ const ply = join(tmpdir(), 'e57view-analysis.ply');
     L.push(`${(40 + i * 0.05).toFixed(4)} ${(40 + j * 0.05).toFixed(4)} 25.0000 90 190 120`);
   writeFileSync(ply, L.join('\n'));
 }
+// A second, much bigger fixture, for the tiling checks at the end. The octree splits a leaf
+// at 400,000 points, so a cloud has to be a few million before there are enough leaves to
+// cut into tiles at all. Binary PLY, because writing 1.5M lines of text is slower than
+// anything it would be testing.
+const BIG_G = 1200, BIG_SPECK = 3000, BIG_DUP = 100000;
+const BIG_N = BIG_G * BIG_G + BIG_SPECK + BIG_DUP;
+const bigPly = join(tmpdir(), 'e57view-tiles.ply');
+{
+  const head = Buffer.from(['ply', 'format binary_little_endian 1.0', `element vertex ${BIG_N}`,
+    'property float x', 'property float y', 'property float z',
+    'property uchar red', 'property uchar green', 'property uchar blue', 'end_header', ''].join('\n'));
+  const body = Buffer.alloc(BIG_N * 15);
+  const dv = new DataView(body.buffer, body.byteOffset, body.length);
+  let seed = 12345, at = 0;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+  const put = (x, y, z, r, g, bl) => {
+    dv.setFloat32(at, x, true); dv.setFloat32(at + 4, y, true); dv.setFloat32(at + 8, z, true);
+    body[at + 12] = r; body[at + 13] = g; body[at + 14] = bl;
+    at += 15;
+  };
+  const xs = new Float32Array(BIG_DUP), ys = new Float32Array(BIG_DUP), zs = new Float32Array(BIG_DUP);
+  for (let i = 0; i < BIG_G; i++) for (let j = 0; j < BIG_G; j++) {
+    const k = i * BIG_G + j;
+    const x = 10 + i * 0.01, y = 10 + j * 0.01, z = 20 + (rnd() - 0.5) * 0.002;
+    if (k < BIG_DUP) { xs[k] = x; ys[k] = y; zs[k] = z; }
+    put(x, y, z, 190, 180, 160);
+  }
+  for (let i = 0; i < BIG_SPECK; i++) put(10 + rnd() * 12, 10 + rnd() * 12, 20.1 + rnd() * 0.9, 230, 90, 90);
+  for (let i = 0; i < BIG_DUP; i++) put(xs[i], ys[i], zs[i], 190, 180, 160);   // exact repeats
+  writeFileSync(bigPly, Buffer.concat([head, body]));
+}
 mkdirSync('shots', { recursive: true });
 const TOTAL = PLANE + SPECK + BLOB;
 
@@ -296,44 +327,130 @@ const tool = await p.evaluate(async () => {
 ok('viewer_analysis is in the shipped MCP server', tool.hasTool, '');
 ok('with the noise filter options', tool.hasNoiseOpts, '');
 
-// ---------------------------------------------------------------- refusing honestly
-// The analyser holds the whole cloud, and past its cap it refuses. The main thread posts
-// leaves without waiting, so more arrive after the refusal; those used to throw on a null
-// analyser and the second error overwrote the first, leaving the user with "Cannot read
-// properties of null (reading 'add_leaf')" instead of the reason.
+// ---------------------------------------------------------------- tiling
+// A cloud too big to index in one go is analysed one spatial tile at a time, each tile fed
+// its own leaves and then the leaves around it as context. The answer has to be the same as
+// the whole cloud's, point for point, or the tile edges would show. The cap is lowered here
+// so the fixture takes several tiles.
+await p.setInputFiles('#file-input', bigPly);
+for (let i = 0; i < 120; i++) {
+  await p.waitForTimeout(1000);
+  const st = await p.evaluate(() => ({ n: window.__viewer?.loaded ?? 0, modal: !document.getElementById('modal')?.classList.contains('hidden'),
+    btns: [...document.querySelectorAll('#modal-btns button')].map(b => b.textContent) }));
+  // the fixture before this one has unsaved edits on it, so opening asks first
+  if (st.modal) {
+    console.log('  modal while loading:', JSON.stringify(st.btns));
+    for (const label of ['Open anyway', 'Not now', 'Replace']) {
+      try { await p.click(`#modal-btns button:has-text("${label}")`, { timeout: 1500 }); break; } catch {}
+    }
+  }
+  if (st.n >= BIG_N - 5) break;
+  if (i === 119) throw new Error(`the tiling fixture never loaded, ${st.n} points`);
+}
+await idle();
 const loadedNow = await p.evaluate(() => window.__viewer.loaded);
-const refusal = await p.evaluate(async (cap) => {
-  window.__app.anaMaxPoints = cap;
+const leafCount = await p.evaluate(() => window.__viewer.cells.leavesForMask().length);
+console.log(`TILING FIXTURE ${loadedNow.toLocaleString('en-GB')} points in ${leafCount} leaves`);
+ok('the tiling fixture is big enough to have several leaves', leafCount >= 4, `${leafCount} leaves`);
+const cap = Math.floor(loadedNow / 3);
+// a checksum of what survived: the quantised coordinates of every remaining point
+const digest = () => p.evaluate(() => {
+  let n = 0, h = 0;
+  for (const l of window.__viewer.cells.leavesForMask()) {
+    const recs = l.readback(window.__viewer.cells.gl2);
+    const u16 = new Uint16Array(recs.buffer, recs.byteOffset, (l.count * 14) >> 1);
+    for (let i = 0; i < l.count; i++) {
+      const q = i * 7;
+      h = (Math.imul(h, 31) + u16[q] + Math.imul(u16[q + 1], 3) + Math.imul(u16[q + 2], 7)) | 0;
+    }
+    n += l.count;
+  }
+  return { n, h };
+});
+const runOp = async (args, atCap) => {
+  const r = await p.evaluate(async ([a, c]) => {
+    window.__app.anaMaxPoints = c;
+    try { return await window.__app.agentRun('analysis', a); }
+    finally { window.__app.anaMaxPoints = 0; }
+  }, [args, atCap]);
+  await idle();
+  const d = await digest();
+  await p.evaluate(() => window.__app.undoEdit());
+  await p.waitForTimeout(350);
+  return { ...r, ...d };
+};
+for (const args of [
+  { op: 'sor', neighbours: 8, nSigma: 1 },
+  { op: 'noise', neighbourhood: 'radius', removeIsolated: true },
+  { op: 'duplicates', tolerance: 0.02 },
+  { op: 'subsample', spacing: 0.12 },
+]) {
+  const whole = await runOp(args, 0);
+  const tiled = await runOp(args, cap);
+  ok(`${args.op} takes several tiles under a low cap`, (tiled.tiles ?? 1) > 1, `${tiled.tiles ?? 1} tiles`);
+  ok(`tiled ${args.op} removes exactly what the whole cloud does`,
+     whole.removed === tiled.removed && whole.n === tiled.n && whole.h === tiled.h,
+     `${whole.removed} against ${tiled.removed} removed, checksum ${whole.h === tiled.h ? 'equal' : 'differs'}`);
+  if (args.op === 'sor') {
+    ok('and the tiled SOR cut-off is the cloud\'s own',
+       Math.abs(whole.cutOff - tiled.cutOff) < 1e-6 && Math.abs(whole.meanNeighbourDistance - tiled.meanNeighbourDistance) < 1e-6,
+       `cut ${whole.cutOff} against ${tiled.cutOff}`);
+  }
+}
+// a per-point measure has nothing to agree on, but its edges still need the context points
+const vert = await p.evaluate(async (c) => {
+  const read = () => window.__viewer.cells.leavesForMask().map(l => l.sf ? Array.from(l.sf) : []).flat();
+  await window.__app.analysis('feature', { name: 'verticality', k: 16, radius: 0.1 }, 'verticality');
+  const whole = read();
+  window.__app.anaMaxPoints = c;
+  try { await window.__app.analysis('feature', { name: 'verticality', k: 16, radius: 0.1 }, 'verticality'); }
+  finally { window.__app.anaMaxPoints = 0; }
+  const tiled = read();
+  // a point with too few neighbours has no value at all, and NaN has to match NaN
+  let worst = 0, odd = 0;
+  for (let i = 0; i < whole.length; i++) {
+    const a = whole[i], c = tiled[i];
+    if (Number.isNaN(a) || Number.isNaN(c)) { if (Number.isNaN(a) !== Number.isNaN(c)) odd++; continue; }
+    worst = Math.max(worst, Math.abs(a - c));
+  }
+  return { worst, odd, n: whole.length };
+}, cap);
+ok('tiled verticality matches the whole cloud', vert.worst < 1e-6 && vert.odd === 0 && vert.n > 0,
+   `worst ${vert.worst.toExponential(2)} over ${vert.n} points, ${vert.odd} with a value on one side only`);
+await p.evaluate(() => document.getElementById('k-sfclear')?.click());
+
+// ---------------------------------------------------------------- refusing honestly
+// Connected components is the one that cannot be tiled: a cluster can run the length of the
+// cloud, so it needs every point in one index and refuses past the cap. The main thread
+// posts leaves without waiting, so more arrive after the refusal; those used to throw on a
+// null analyser and the second error overwrote the first, leaving the user with "Cannot read
+// properties of null (reading 'add_leaf')" instead of the reason.
+const refusal = await p.evaluate(async (c) => {
+  window.__app.anaMaxPoints = c;
   try {
-    await window.__app.agentRun('analysis', { op: 'sor' });
+    await window.__app.agentRun('analysis', { op: 'components', radius: 0.1 });
     return { message: null };
   } catch (e) {
-    return { message: String(e?.message ?? e), clean: document.getElementById('v-clean')?.textContent?.trim() ?? '' };
+    return { message: String(e?.message ?? e), clean: document.getElementById('v-analysis')?.textContent?.trim() ?? '' };
   } finally { window.__app.anaMaxPoints = 0; }
-}, Math.floor(loadedNow / 3));
+}, cap);
 console.log('REFUSAL', JSON.stringify(refusal));
-ok('an oversized run is refused', !!refusal.message, refusal.message ?? 'it was not refused');
+ok('an oversized whole-cloud run is refused', !!refusal.message, refusal.message ?? 'it was not refused');
 ok('and never with the null-analyser message', !/Cannot read properties of null/.test(refusal.message ?? ''),
    (refusal.message ?? '').slice(0, 80));
 ok('the message names the cap and the point count',
    /[\d,.]+M? points is past the [\d,.]+M? this device/.test(refusal.message ?? ''), refusal.message ?? '');
 
-// the same refusal through the panel, where it has to reach the Clean status line
-const panelMsg = await p.evaluate(async (cap) => {
-  window.__app.anaMaxPoints = cap;
-  document.getElementById('k-ansor').click();
-  // the confirmation modal never appears, because it fails before counting anything
-  for (let i = 0; i < 80; i++) {
-    await new Promise(r => setTimeout(r, 100));
-    const t = document.getElementById('v-clean')?.textContent?.trim() ?? '';
-    if (/failed/.test(t)) { window.__app.anaMaxPoints = 0; return t; }
-  }
-  window.__app.anaMaxPoints = 0;
-  return document.getElementById('v-clean')?.textContent?.trim() ?? '';
-}, Math.floor(loadedNow / 3));
-console.log('CLEAN LINE', JSON.stringify(panelMsg));
-ok('the Clean status line carries the reason', /points is past/.test(panelMsg), panelMsg);
-ok('and not the null message', !/Cannot read properties of null/.test(panelMsg), '');
+// and the filters that used to be refused now run at the same cap
+const cleanLine = await p.evaluate(async (c) => {
+  window.__app.anaMaxPoints = c;
+  try { return await window.__app.agentRun('analysis', { op: 'sor', neighbours: 8, nSigma: 1 }); }
+  finally { window.__app.anaMaxPoints = 0; }
+}, cap);
+ok('SOR runs at a cap that used to refuse it', cleanLine.removed >= 0 && (cleanLine.tiles ?? 1) > 1,
+   `${cleanLine.removed} removed over ${cleanLine.tiles} tiles`);
+await p.evaluate(() => window.__app.undoEdit());
+await p.waitForTimeout(300);
 
 await p.waitForTimeout(400); await p.screenshot({ path: 'shots/analysis-done.png' });
 console.log(fails ? `\n${fails} CHECK(S) FAILED` : '\nALL CHECKS PASSED');

@@ -877,13 +877,14 @@ async function runRegister(op: 'icp' | 'distance_to', args: Record<string, any> 
   anaWorker.postMessage({ type: 'start', cell, maxPoints: cap, model: rowMajor(viewer.cells.model) });
   await anaOnce('ready');
   const counts: number[] = [];
-  let n = 0;
+  let n = 0, base = 0;
   const total = viewer.cells.leafCount;
   for (const { leaf, recs } of viewer.cells.records()) {
     if (!anaAlive) break;
     counts.push(leaf.count);
     const buf = recs.buffer as ArrayBuffer;
-    anaWorker.postMessage({ type: 'leaf', origin: leaf.origin.toArray(), size: leaf.size, recs: buf }, [buf]);
+    anaWorker.postMessage({ type: 'leaf', origin: leaf.origin.toArray(), size: leaf.size, recs: buf, base }, [buf]);
+    base += leaf.count;
     if (++n % 8 === 0) { busy(`Reading the moving layer… ${n} of ${total}`, n / Math.max(total, 1)); await tick(); }
   }
   // the reference is subsampled when it is bigger than the analyser will hold
@@ -925,7 +926,12 @@ $('k-regicp').addEventListener('click', () => { runIcp().catch(() => {}); });
 async function distanceToReference(signed = false) {
   const ref = refEntity(); if (!ref) return null;
   try {
-    const r = await runRegister('distance_to', { signed });
+    // Measuring to another cloud is a per-point question, so a cloud too big to index at
+    // once is measured a tile at a time, with only the part of the reference each tile can
+    // reach fed alongside it.
+    const r = viewer.cells.total > anaCap()
+      ? { refName: layerName(ref), ...await runTiled('distance_to', { signed }, ref) }
+      : await runRegister('distance_to', { signed });
     hideBusy();
     setScalarField(`Distance to ${layerName(ref)}`, r.data as Float32Array, r.counts);
     const s = viewer.cells.scalarStats();
@@ -1802,12 +1808,16 @@ const anaWaiters = new Map<string, (m: any) => void>();
 let anaMaxPoints = 0;
 const anaCap = () => anaMaxPoints || (isTouch ? 8e6 : 30e6);
 let anaError: string | null = null;
+/** "Tile 3 of 8 · " while a tiled run is going, so a long wait says where it has got to. */
+let anaTile = '';
+/** The largest WebAssembly heap any tile of the last run needed, in bytes. */
+let anaHeap = 0;
 let anaAlive = true;
 let sfName = '';
 anaWorker.onmessage = (ev: MessageEvent) => {
   const m = ev.data;
   if (m.type === 'progress') {
-    busy(m.total ? `${m.phase}… ${fmt(m.done)} of ${fmt(m.total)}` : `${m.phase}… ${fmt(m.done)} points`,
+    busy(m.total ? `${anaTile}${m.phase}… ${fmt(m.done)} of ${fmt(m.total)}` : `${anaTile}${m.phase}… ${fmt(m.done)} points`,
       m.total ? m.done / m.total : undefined);
     return;
   }
@@ -1821,6 +1831,7 @@ anaWorker.onmessage = (ev: MessageEvent) => {
     rej?.(m);
     return;
   }
+  if (m.type === 'result' && m.heap) anaHeap = Math.max(anaHeap, m.heap);
   const w = anaWaiters.get(m.type);
   if (w) { anaWaiters.delete(m.type); anaWaiters.delete('error'); w(m); }
 };
@@ -1832,8 +1843,9 @@ function anaOnce(type: string): Promise<any> {
   });
 }
 
-/** Feed every leaf to the analyser, run one operation, and hand back the flat result. */
-async function runAnalysis(op: string, args: Record<string, any> = {}): Promise<any> {
+/** Feed every leaf to the analyser, run one operation, and hand back the flat result.
+ *  Only for what a tile cannot answer on its own: connected components, and the shape fits. */
+async function runWhole(op: string, args: Record<string, any> = {}): Promise<any> {
   if (!viewer.loaded) throw new Error('nothing loaded');
   const counts: number[] = [];
   busy('Starting the analyser…'); await tick();
@@ -1842,19 +1854,260 @@ async function runAnalysis(op: string, args: Record<string, any> = {}): Promise<
   const cell = Math.max(viewer.cells.medianSpacing * 2.5, 0.01);
   anaWorker.postMessage({ type: 'start', cell, maxPoints: anaCap(), model: rowMajor(viewer.cells.model) });
   await anaOnce('ready');
-  let n = 0;
+  let n = 0, base = 0;
   const total = viewer.cells.leafCount;
   for (const { leaf, recs } of viewer.cells.records()) {
     if (!anaAlive) break;
     counts.push(leaf.count);
     const buf = recs.buffer as ArrayBuffer;
-    anaWorker.postMessage({ type: 'leaf', origin: leaf.origin.toArray(), size: leaf.size, recs: buf }, [buf]);
+    anaWorker.postMessage({ type: 'leaf', origin: leaf.origin.toArray(), size: leaf.size, recs: buf, base }, [buf]);
+    base += leaf.count;
     if (++n % 8 === 0) { busy(`Reading cells… ${n} of ${total}`, n / Math.max(total, 1)); await tick(); }
   }
   anaWorker.postMessage({ type: 'run', op, ...args });
   const res = await anaOnce('result');
   return { ...res, counts };
 }
+
+// ------------------------------------------------------------------ tiling
+//
+// The analyser holds one spatial index over everything it is given, and there is a limit to
+// how big that can get in a 32-bit WebAssembly heap. It used to refuse anything past the
+// limit, which on a 73.8M point scan meant the Clean tools did not run at all.
+//
+// Every one of these operations is local: what happens to a point is decided by the points
+// within a few centimetres of it. So the cloud is cut into spatial tiles, each small enough
+// to index, and each tile is fed its own leaves followed by the leaves around it as context.
+// The context points are searched but not answered for, which is what makes a tile's edge
+// come out the same as the middle. Points are settled by their place in the file wherever a
+// rule needs a winner, so two tiles looking at the same pair agree.
+//
+// SOR is the exception that needs the whole cloud: its threshold is the mean and standard
+// deviation of every point's mean neighbour distance. It runs in two passes, the first
+// adding up the tiles' sums and the second applying one threshold.
+type TileBox = { lo: [number, number, number]; hi: [number, number, number]; n: number };
+type Tile = { core: number[]; halo: number[]; points: number; fed: number };
+
+/** Split the leaves into groups that fit, each with the leaves around it noted as context. */
+function planTiles(boxes: TileBox[], budget: number, halo: number): Tile[] {
+  const count = (g: number[]) => g.reduce((n, i) => n + boxes[i].n, 0);
+  const boxOf = (g: number[]) => {
+    const lo: [number, number, number] = [Infinity, Infinity, Infinity];
+    const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    for (const i of g) for (let a = 0; a < 3; a++) {
+      if (boxes[i].lo[a] < lo[a]) lo[a] = boxes[i].lo[a];
+      if (boxes[i].hi[a] > hi[a]) hi[a] = boxes[i].hi[a];
+    }
+    return { lo, hi };
+  };
+  /** Cut a group in two across its longest side, where half of its points are. Half the
+   *  points rather than half the leaves, because a scan is far denser near the scanner. */
+  const halve = (g: number[]): number[][] => {
+    if (g.length < 2) return [g];
+    const b = boxOf(g);
+    let ax = 0;
+    for (let a = 1; a < 3; a++) if (b.hi[a] - b.lo[a] > b.hi[ax] - b.lo[ax]) ax = a;
+    const mid = (i: number) => (boxes[i].lo[ax] + boxes[i].hi[ax]) * 0.5;
+    const sorted = [...g].sort((p, q) => mid(p) - mid(q));
+    const half = count(g) / 2;
+    let acc = 0, at = 0;
+    while (at < sorted.length - 1) { acc += boxes[sorted[at]].n; at++; if (acc >= half) break; }
+    return [sorted.slice(0, at), sorted.slice(at)];
+  };
+  const near = (core: number[]) => {
+    const b = boxOf(core);
+    const inCore = new Set(core);
+    const out: number[] = [];
+    for (let i = 0; i < boxes.length; i++) {
+      if (inCore.has(i)) continue;
+      const q = boxes[i];
+      if (q.hi[0] < b.lo[0] - halo || q.lo[0] > b.hi[0] + halo) continue;
+      if (q.hi[1] < b.lo[1] - halo || q.lo[1] > b.hi[1] + halo) continue;
+      if (q.hi[2] < b.lo[2] - halo || q.lo[2] > b.hi[2] + halo) continue;
+      out.push(i);
+    }
+    return out;
+  };
+  const queue: number[][] = [boxes.map((_, i) => i)];
+  const tiles: Tile[] = [];
+  let guard = 0;
+  while (queue.length && guard++ < 4096) {
+    const core = queue.shift()!;
+    if (!core.length) continue;
+    const own = count(core);
+    // leave room for the context points before even looking at them
+    if (own > budget * 0.6 && core.length > 1) { queue.unshift(...halve(core)); continue; }
+    const ring = near(core);
+    const fed = own + count(ring);
+    if (fed > budget && core.length > 1) { queue.unshift(...halve(core)); continue; }
+    core.sort((a, b) => a - b);
+    tiles.push({ core, halo: ring, points: own, fed });
+  }
+  return tiles;
+}
+
+/** How far outside a tile the searches of the points inside it reach. */
+function haloFor(op: string, args: Record<string, any>, cell: number): number {
+  const knnReach = cell * 8;                       // the grid holds a few points per cell
+  switch (op) {
+    case 'duplicates': return Math.max((args.tol ?? 0.001) * 16, cell);
+    case 'subsample': return Math.max((args.spacing ?? cell) * 2, cell);
+    case 'noise': return args.useKnn ? knnReach : Math.max(Number(args.radius ?? cell) * 3, cell);
+    case 'feature': return args.name === 'neighbour_count' ? Math.max(Number(args.radius ?? cell) * 2, cell) : knnReach;
+    case 'invert': return 0;
+    case 'distance_to': case 'distance_to_mesh': return 0;   // measured against something else
+    default: return knnReach;                      // sor, normals
+  }
+}
+
+const TILED_OPS = new Set(['sor', 'noise', 'duplicates', 'subsample', 'feature', 'normals', 'invert', 'distance_to', 'distance_to_mesh']);
+/** True when this operation gives the same answer tile by tile as it does whole. */
+function tileable(op: string, args: Record<string, any>): boolean {
+  if (op === 'normals') {
+    // Orienting normals without a viewpoint is a vote taken over the whole neighbour graph,
+    // and two tiles can vote differently. With a viewpoint, or with the scanner's stations,
+    // the decision is made per point and tiles cannot disagree.
+    return !args.orient || !!args.viewpoint || (args.viewpoints?.length ?? 0) >= 3;
+  }
+  return TILED_OPS.has(op);
+}
+
+/** The leaves of the active cloud, their boxes and where each one starts in the cloud. */
+function leafPlan() {
+  const cells = viewer.cells;
+  const leaves = cells.leavesForMask();
+  const counts = leaves.map(l => l.count);
+  const offs: number[] = [];
+  let at = 0;
+  for (const c of counts) { offs.push(at); at += c; }
+  const boxes: TileBox[] = leaves.map(l => ({
+    lo: [l.bmin.x, l.bmin.y, l.bmin.z], hi: [l.bmax.x, l.bmax.y, l.bmax.z], n: l.count,
+  }));
+  return { cells, leaves, counts, offs, boxes, total: at };
+}
+
+/** Run one operation over the cloud a tile at a time, and put the answer back together. */
+async function runTiled(op: string, args: Record<string, any> = {}, ref: Entity | null = null): Promise<any> {
+  if (!viewer.loaded) throw new Error('nothing loaded');
+  const { cells, leaves, counts, offs, boxes, total } = leafPlan();
+  anaHeap = 0;
+  const cell = Math.max(cells.medianSpacing * 2.5, 0.01);
+  const budget = anaCap();
+  // leaf boxes are in the cloud's own frame; the reach is a distance on screen
+  const scale = cells.modelScale || 1;
+  const tiles = total <= budget
+    ? [{ core: leaves.map((_, i) => i), halo: [] as number[], points: total, fed: total }]
+    : planTiles(boxes, budget, haloFor(op, args, cell) / scale);
+  const model = rowMajor(cells.model);
+  const refModel = ref ? rowMajor(ref.cells.model) : null;
+  const refLeaves = ref ? ref.cells.leavesForMask() : [];
+  const reach = Math.max(cell * 200, 2);
+  let refStride = 1;
+  const t0 = performance.now();
+
+  /** Feed one tile and run one thing over it. */
+  const onTile = async (t: Tile, ti: number, run: Record<string, any>) => {
+    anaAlive = true; anaError = null;
+    anaTile = tiles.length > 1 ? `Tile ${ti + 1} of ${tiles.length} · ` : '';
+    anaWorker.postMessage({ type: 'start', cell, maxPoints: Math.max(budget * 2, t.fed + 1), model });
+    await anaOnce('ready');
+    let n = 0;
+    const feed = t.core.length + t.halo.length;
+    for (const i of t.core.concat(t.halo)) {
+      if (!anaAlive) break;
+      const context = n >= t.core.length;
+      const recs = leaves[i].readback(cells.gl2);
+      const buf = recs.buffer as ArrayBuffer;
+      anaWorker.postMessage({ type: 'leaf', origin: leaves[i].origin.toArray(), size: leaves[i].size, recs: buf, base: offs[i], context }, [buf]);
+      if (++n % 8 === 0) { busy(`${anaTile}Reading cells… ${n} of ${feed}`, n / Math.max(feed, 1)); await tick(); }
+    }
+    // the reference cloud, only the part of it this tile can reach
+    if (ref && refModel) {
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (const i of t.core) for (let a = 0; a < 3; a++) {
+        lo[a] = Math.min(lo[a], boxes[i].lo[a]); hi[a] = Math.max(hi[a], boxes[i].hi[a]);
+      }
+      const box = new THREE.Box3(new THREE.Vector3(lo[0], lo[1], lo[2]), new THREE.Vector3(hi[0], hi[1], hi[2]))
+        .applyMatrix4(cells.model).expandByScalar(reach);
+      const want = refLeaves.filter(l => box.intersectsBox(
+        new THREE.Box3(l.bmin.clone(), l.bmax.clone()).applyMatrix4(ref.cells.model)));
+      const refPts = want.reduce((s, l) => s + l.count, 0);
+      const stride = Math.max(1, Math.ceil(refPts / Math.max(1, budget - t.points)));
+      let m = 0;
+      for (const l of want) {
+        if (!anaAlive) break;
+        const recs = l.readback(ref.cells.gl2);
+        const buf = recs.buffer as ArrayBuffer;
+        anaWorker.postMessage({ type: 'ref', origin: l.origin.toArray(), size: l.size, recs: buf, model: refModel, stride }, [buf]);
+        if (++m % 8 === 0) { busy(`${anaTile}Reading the reference… ${m} of ${want.length}`, m / Math.max(want.length, 1)); await tick(); }
+      }
+      if (!want.length) throw new Error('no reference cloud was fed');
+      refStride = Math.max(refStride, stride);
+    }
+    anaWorker.postMessage({ type: 'run', outLen: t.points, ...run });
+    const res = await anaOnce('result');
+    anaWorker.postMessage({ type: 'done' });
+    return res;
+  };
+
+  /** Copy a tile's answer back into the array that covers the whole cloud. */
+  const scatter = (t: Tile, part: any, full: any, per = 1) => {
+    let at = 0;
+    for (const i of t.core) {
+      full.set(part.subarray(at * per, (at + counts[i]) * per), offs[i] * per);
+      at += counts[i];
+    }
+  };
+
+  try {
+    let out: any = { op, points: total, counts, tiles: tiles.length };
+    if (op === 'sor' && tiles.length > 1) {
+      // pass one: the cloud's mean and standard deviation, added up over the tiles
+      let sum = 0, sum2 = 0, cnt = 0;
+      for (let i = 0; i < tiles.length; i++) {
+        const r = await onTile(tiles[i], i, { op: 'sor_stats', knn: args.knn ?? args.k ?? 6 });
+        sum += r.sum; sum2 += r.sum2; cnt += r.count;
+      }
+      const mean = sum / Math.max(cnt, 1);
+      const sd = Math.sqrt(Math.abs(sum2 / Math.max(cnt, 1) - mean * mean));
+      const cut = mean + Number(args.sigma ?? 1) * sd;
+      // pass two: one threshold, every tile
+      const full = new Uint8Array(total);
+      for (let i = 0; i < tiles.length; i++) {
+        const r = await onTile(tiles[i], i, { op: 'sor_cut', knn: args.knn ?? args.k ?? 6, cut });
+        scatter(tiles[i], r.data, full);
+      }
+      out.kind = 'mask'; out.data = full; out.mean = mean; out.cut = cut;
+      out.params = { knn: args.knn ?? args.k ?? 6, nSigma: Number(args.sigma ?? 1) };
+    } else {
+      let full: any = null;
+      for (let i = 0; i < tiles.length; i++) {
+        const r = await onTile(tiles[i], i, { op, ...args });
+        if (!full) {
+          out.kind = r.kind;
+          full = r.kind === 'mask' ? new Uint8Array(total)
+            : r.kind === 'normals' ? new Int8Array(total * 3)
+            : new Float32Array(total);
+          for (const k of ['mean', 'cut', 'params', 'components', 'refStride']) if (r[k] !== undefined) out[k] = r[k];
+        }
+        scatter(tiles[i], r.data, full, r.kind === 'normals' ? 3 : 1);
+      }
+      out.data = full;
+    }
+    out.ms = performance.now() - t0;
+    out.heap = anaHeap;
+    if (ref) out.refStride = refStride;
+    return out;
+  } finally { anaTile = ''; }
+}
+
+/** Run one operation, whole or a tile at a time, whichever this cloud needs. */
+async function runAnalysis(op: string, args: Record<string, any> = {}): Promise<any> {
+  if (!viewer.loaded) throw new Error('nothing loaded');
+  if (tileable(op, args)) return runTiled(op, args);
+  return runWhole(op, args);
+}
+
 
 /** Split a flat per-point array back into one piece per leaf. */
 function perLeaf<T extends Float32Array | Uint8Array>(flat: T, counts: number[]): T[] {
@@ -4177,6 +4430,8 @@ const agent = new AgentLink(counted({
     viewer.render();
     return {
       op, removed: before - viewer.loaded, kept: viewer.loaded, of: before,
+      // how many spatial tiles it took, so a slow run on a big cloud explains itself
+      ...(r.tiles && r.tiles > 1 ? { tiles: r.tiles } : {}),
       ...(r.mean !== undefined ? { meanNeighbourDistance: r6(r.mean), cutOff: r6(r.cut) } : {}),
       ...(r.params ? { params: r.params } : {}),
       note: $('v-analysis').textContent,
@@ -5086,7 +5341,8 @@ if (DESKTOP) startDesktop().catch(e => { agentNote('desktop shell: ' + (e?.messa
   get entities() { return viewer.entities; }, get activeId() { return viewer.activeId; },
   get cacheNote() { return cacheNote; }, get meta() { return meta; }, get cacheKey() { return cacheKey; }, get regions() { return allRegions(); }, buildMesh, analysis, runAnalysis, maskTool, get sfStats() { return viewer.cells.scalarStats(); }, get meshData() { return meshData; },
   agentRun: (cmd: string, args: any) => agent.run(cmd, args), runScript,
-  set anaMaxPoints(v: number) { anaMaxPoints = v; }, get anaMaxPoints() { return anaCap(); }, noiseArgs, get anaUi() { return anaUi; },
+  set anaMaxPoints(v: number) { anaMaxPoints = v; }, get anaMaxPoints() { return anaCap(); },
+  get anaHeap() { return anaHeap; }, noiseArgs, get anaUi() { return anaUi; },
   mcpBlocks, mcpTarget, mcpDesktopTarget, renderMcpSetup, get mcpClients() { return MCP_CLIENTS.map(c => ({ id: c.id, name: c.name })); },
   importMesh, measureActiveMesh, smoothActiveMesh, decimateActiveMesh, sampleMeshPoints, distanceToMesh,
   replaceMesh, flipMesh, meshEntities, meshBlob, saveMesh, refreshMeshUI, setDisplay,

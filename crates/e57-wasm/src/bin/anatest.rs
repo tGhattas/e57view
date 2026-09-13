@@ -42,6 +42,33 @@ fn rot_x(deg: f32, c: [f32; 3]) -> [f32; 16] {
     m[15] = 1.0;
     m
 }
+/// Split a cloud into `nt` strips along x and build one Analyzer per strip, the way the
+/// viewer tiles a cloud it cannot index at once: the strip's own points first, in file
+/// order, then every point within `halo` of the strip as context. The second value is where
+/// each of the strip's own points sits in the whole cloud.
+fn tiles(pts: &[[f32; 3]], cell: f32, halo: f32, nt: usize) -> Vec<(Analyzer, Vec<usize>)> {
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for p in pts { lo = lo.min(p[0]); hi = hi.max(p[0]); }
+    let w = (hi - lo) / nt as f32;
+    let mut out = Vec::new();
+    for t in 0..nt {
+        let a0 = lo + t as f32 * w;
+        let a1 = if t + 1 == nt { hi + 1.0 } else { lo + (t + 1) as f32 * w };
+        let mine = |i: usize| pts[i][0] >= a0 && pts[i][0] < a1;
+        let core: Vec<usize> = (0..pts.len()).filter(|&i| mine(i)).collect();
+        let ctx: Vec<usize> = (0..pts.len())
+            .filter(|&i| !mine(i) && pts[i][0] >= a0 - halo && pts[i][0] < a1 + halo).collect();
+        let mut a = Analyzer::new(cell);
+        for &i in core.iter().chain(ctx.iter()) {
+            a.add_records_stride([0.0, 0.0, 0.0], 100.0, &recs(&[pts[i]], [0.0, 0.0, 0.0], 100.0),
+                                 None, 1, i as u32);
+        }
+        a.build();
+        out.push((a, core));
+    }
+    out
+}
+
 fn med(v: &mut Vec<f32>) -> f32 {
     v.retain(|x| x.is_finite());
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -488,6 +515,102 @@ fn main() {
     let keep = d.duplicates(0.001);
     let removed = keep.iter().filter(|&&k| k == 0).count();
     ck("duplicates removed exactly once", removed == 400, format!("{} removed, expected 400", removed));
+
+    // ---------------------------------------------------------------- tiling
+    // A cloud too big to index in one go is analysed one spatial tile at a time, each tile
+    // holding its own points plus a halo of its neighbours' points for the search to find.
+    // Every one of these operations has to give the same answer that way as it does whole,
+    // point for point, or the seams would show as lines of kept or dropped points.
+    {
+        let sp = 0.04f32;
+        let mut seed = 13572468u64;
+        let mut rnd = || { seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); ((seed >> 33) as f32) / 2147483648.0 };
+        let mut cloud: Vec<[f32; 3]> = Vec::new();
+        for i in 0..90 { for j in 0..90 {
+            cloud.push([10.0 + i as f32 * sp + (rnd() - 0.5) * sp * 0.3,
+                        10.0 + j as f32 * sp + (rnd() - 0.5) * sp * 0.3,
+                        20.0 + (rnd() - 0.5) * sp * 0.4]);
+        }}
+        let surface = cloud.len();
+        for _ in 0..300 {
+            cloud.push([10.0 + rnd() * 3.5, 10.0 + rnd() * 3.5, 20.0 + (rnd() - 0.5) * sp * 12.0]);
+        }
+        // a few exact repeats, to be deduplicated
+        for i in 0..200 { cloud.push(cloud[i * 7]); }
+        let n = cloud.len();
+        let cell = sp * 3.0;
+        let halo = 0.6f32;                     // fifteen point spacings, past any of these searches
+        let scatter = |parts: &[(Vec<u8>, &Vec<usize>)]| -> Vec<u8> {
+            let mut out = vec![0u8; n];
+            for (mask, core) in parts {
+                for (k, &g) in core.iter().enumerate() { out[g] = mask[k]; }
+            }
+            out
+        };
+        let diff = |a: &[u8], b: &[u8]| (0..n).filter(|&i| a[i] != b[i]).count();
+
+        // ---- duplicates
+        let whole = mk(&cloud, cell).duplicates(0.001);
+        let mut ts = tiles(&cloud, cell, halo, 4);
+        let parts: Vec<(Vec<u8>, &Vec<usize>)> = ts.iter_mut()
+            .map(|(a, core)| { let m = a.duplicates(0.001); let k = core.len(); (m[..k].to_vec(), &*core) }).collect();
+        let got = scatter(&parts);
+        ck("tiled duplicates match the whole cloud", diff(&whole, &got) == 0,
+           format!("{} of {} points differ, {} removed", diff(&whole, &got), n, whole.iter().filter(|&&k| k == 0).count()));
+
+        // ---- spatial subsample
+        let whole = mk(&cloud, cell).spatial_subsample(0.12);
+        let mut ts = tiles(&cloud, cell, halo, 4);
+        let parts: Vec<(Vec<u8>, &Vec<usize>)> = ts.iter_mut()
+            .map(|(a, core)| { let m = a.spatial_subsample(0.12); let k = core.len(); (m[..k].to_vec(), &*core) }).collect();
+        let got = scatter(&parts);
+        ck("tiled subsample matches the whole cloud", diff(&whole, &got) == 0,
+           format!("{} of {} points differ, {} kept", diff(&whole, &got), n, whole.iter().filter(|&&k| k == 1).count()));
+
+        // ---- noise filter, whose threshold is local and needs no agreement between tiles
+        let p = NoiseParams { use_knn: false, knn: 6, radius: sp * 3.0, use_absolute_error: false,
+                              absolute_error: 0.0, n_sigma: 1.0, remove_isolated: true };
+        let whole = mk(&cloud, cell).noise_filter(p, |_| {});
+        let mut ts = tiles(&cloud, cell, halo, 4);
+        let parts: Vec<(Vec<u8>, &Vec<usize>)> = ts.iter_mut()
+            .map(|(a, core)| { let m = a.noise_filter(p, |_| {}); let k = core.len(); (m[..k].to_vec(), &*core) }).collect();
+        let got = scatter(&parts);
+        ck("tiled noise filter matches the whole cloud", diff(&whole, &got) == 0,
+           format!("{} of {} points differ, {} removed", diff(&whole, &got), n, whole.iter().filter(|&&k| k == 0).count()));
+
+        // ---- SOR, which needs one mean and one standard deviation over the whole cloud, so
+        // the tiles are visited twice: once for the sums, once for the mask
+        let (whole, mu, cut) = mk(&cloud, cell).sor(8, 1.0, |_| {});
+        let mut ts = tiles(&cloud, cell, halo, 4);
+        let (mut sum, mut sum2, mut cnt) = (0.0f64, 0.0f64, 0usize);
+        for (a, core) in ts.iter_mut() {
+            let (s, s2, c) = a.sor_stats(8, core.len(), |_| {});
+            sum += s; sum2 += s2; cnt += c;
+        }
+        let avg = sum / cnt as f64;
+        let sd = (sum2 / cnt as f64 - avg * avg).abs().sqrt();
+        let tcut = (avg + sd) as f32;
+        let parts: Vec<(Vec<u8>, &Vec<usize>)> = ts.iter_mut()
+            .map(|(a, core)| { let k = core.len(); (a.sor_cut(8, tcut, k, |_| {}), &*core) }).collect();
+        let got = scatter(&parts);
+        ck("tiled SOR matches the whole cloud", diff(&whole, &got) == 0 && cnt == n,
+           format!("{} of {} points differ, {} counted, cut {:.6} against {:.6}", diff(&whole, &got), n, cnt, tcut, cut));
+        ck("and the two-pass mean and cut-off are the cloud's own",
+           (avg as f32 - mu).abs() < 1e-6 && (tcut - cut).abs() < 1e-6,
+           format!("mean {:.6} against {:.6}, cut {:.6} against {:.6}", avg, mu, tcut, cut));
+
+        // ---- a per-point measure: nothing to agree on, but the halo has to be fed or the
+        // points at a tile edge would see a surface that stops
+        let whole = mk(&cloud, cell).feature(Feature::Verticality, 12, 0.0, |_| {});
+        let mut ts = tiles(&cloud, cell, halo, 4);
+        let mut got = vec![f32::NAN; n];
+        for (a, core) in ts.iter_mut() {
+            let f = a.feature(Feature::Verticality, 12, 0.0, |_| {});
+            for (k, &g) in core.iter().enumerate() { got[g] = f[k]; }
+        }
+        let worst = (0..n).fold(0.0f32, |m, i| m.max((whole[i] - got[i]).abs()));
+        ck("tiled verticality matches the whole cloud", worst < 1e-6, format!("worst difference {worst:.8}"));
+    }
 
     // ---------------------------------------------------------------- components
     let mut two = Vec::new();

@@ -732,9 +732,12 @@ mod wasm_analysis {
             CloudAnalysis { inner: Analyzer::new(cell), reference: None, cursor: 0, last_count: 0, last_mean: 0.0, last_cut: 0.0 }
         }
         /// `model` is the cloud's 4x4 transform in **row-major** order, or empty for identity.
-        pub fn add_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8], model: &[f32]) {
+        /// `base` is where this leaf's first point sits in the whole cloud, which is what
+        /// decides the survivor of a duplicate pair or of a subsample voxel. A run that holds
+        /// the cloud whole can pass the running count and get the same answer.
+        pub fn add_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8], model: &[f32], base: u32) {
             let m: Option<[f32; 16]> = if model.len() == 16 { Some(model.try_into().unwrap()) } else { None };
-            self.inner.add_records([ox, oy, oz], size, recs, m.as_ref());
+            self.inner.add_records_stride([ox, oy, oz], size, recs, m.as_ref(), 1, base);
         }
         pub fn len(&self) -> u32 { self.inner.len() as u32 }
         pub fn build(&mut self) { self.inner.build(); }
@@ -747,7 +750,8 @@ mod wasm_analysis {
         pub fn add_reference_leaf(&mut self, ox: f32, oy: f32, oz: f32, size: f32, recs: &[u8], model: &[f32], stride: u32) {
             let m: Option<[f32; 16]> = if model.len() == 16 { Some(model.try_into().unwrap()) } else { None };
             if let Some(r) = self.reference.as_mut() {
-                r.add_records_stride([ox, oy, oz], size, recs, m.as_ref(), stride.max(1) as usize);
+                let base = r.len() as u32;
+                r.add_records_stride([ox, oy, oz], size, recs, m.as_ref(), stride.max(1) as usize, base);
             }
         }
         pub fn build_reference(&mut self) { if let Some(r) = self.reference.as_mut() { r.build(); } }
@@ -848,6 +852,17 @@ mod wasm_analysis {
             self.last_mean = mu;
             self.last_cut = cut;
             keep
+        }
+        /// The first pass of a tiled SOR over this tile's own points: `[sum, sum of squares,
+        /// count]` of their mean neighbour distances. The caller adds the tiles up to get the
+        /// cloud's mean and standard deviation, then hands the cut-off back to `sor_cut`.
+        pub fn sor_stats(&mut self, k: u32, upto: u32, progress: Option<js_sys::Function>) -> Vec<f64> {
+            let (sum, sum2, n) = self.inner.sor_stats(k as usize, upto as usize, |i| tick(&progress, i));
+            vec![sum, sum2, n as f64]
+        }
+        /// The second pass: this tile's keep mask against a cut-off decided over the cloud.
+        pub fn sor_cut(&mut self, k: u32, cut: f32, upto: u32, progress: Option<js_sys::Function>) -> Vec<u8> {
+            self.inner.sor_cut(k as usize, cut, upto as usize, |i| tick(&progress, i))
         }
         /// CloudCompare's noise filter, with all of its options: a kNN or a sphere
         /// neighbourhood, a relative (n sigma) or absolute distance threshold, and whether

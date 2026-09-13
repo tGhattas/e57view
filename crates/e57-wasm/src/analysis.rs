@@ -124,6 +124,13 @@ pub struct Analyzer {
     pub nx: Vec<i8>,
     pub ny: Vec<i8>,
     pub nz: Vec<i8>,
+    /// Where each point sits in the whole cloud.
+    ///
+    /// A cloud too big to index at once is analysed one spatial tile at a time, and a tile
+    /// holds its own points followed by its neighbours' points as context. Any rule of the
+    /// form "the first one wins" then has to mean first in the file, not first in this tile,
+    /// or two tiles looking at the same pair of points would each keep a different one.
+    pub gid: Vec<u32>,
     cell: f32,
     inv_cell: f32,
     // CSR-style grid: cell key -> slice of `order`
@@ -291,6 +298,7 @@ impl Analyzer {
         Analyzer {
             x: Vec::new(), y: Vec::new(), z: Vec::new(),
             nx: Vec::new(), ny: Vec::new(), nz: Vec::new(),
+            gid: Vec::new(),
             cell, inv_cell: 1.0 / cell,
             starts: FastMap::default(), order: Vec::new(), built: false,
             extent: 0.0,
@@ -308,17 +316,19 @@ impl Analyzer {
     /// one on screen — verticality on a levelled scan being the obvious case. Normals are
     /// rotated by the upper-left 3x3 and requantised.
     pub fn add_records(&mut self, origin: [f32; 3], size: f32, recs: &[u8], model: Option<&[f32; 16]>) {
-        self.add_records_stride(origin, size, recs, model, 1)
+        let base = self.len() as u32;
+        self.add_records_stride(origin, size, recs, model, 1, base)
     }
     /// Same, keeping 1 in `stride`. A reference cloud bigger than the analyser will hold is
     /// subsampled rather than refused: a nearest-neighbour query against a subsample is a
     /// slightly worse answer, where no answer is no registration at all.
-    pub fn add_records_stride(&mut self, origin: [f32; 3], size: f32, recs: &[u8], model: Option<&[f32; 16]>, stride: usize) {
+    pub fn add_records_stride(&mut self, origin: [f32; 3], size: f32, recs: &[u8], model: Option<&[f32; 16]>, stride: usize, base: u32) {
         const REC: usize = 14;
         let n = recs.len() / REC;
         let k = size / 65536.0;
         let step = stride.max(1);
         self.x.reserve(n / step + 1); self.y.reserve(n / step + 1); self.z.reserve(n / step + 1);
+        self.gid.reserve(n / step + 1);
         for i in (0..n).step_by(step) {
             let o = i * REC;
             let qx = u16::from_le_bytes([recs[o], recs[o + 1]]) as f32;
@@ -356,6 +366,7 @@ impl Analyzer {
             self.nx.push(nx);
             self.ny.push(ny);
             self.nz.push(nz);
+            self.gid.push(base.wrapping_add(i as u32));
         }
         self.built = false;
     }
@@ -451,7 +462,24 @@ impl Analyzer {
             r *= 2.0;
         }
         if scratch.len() > k + 1 {
-            scratch.select_nth_unstable_by(k, |a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            // Same rule as nearest_set: an f64 distance recomputed from the coordinates, ties
+            // broken by the point's place in the file. An f32 comparison with no tie-break
+            // let the partition keep whichever of two equidistant neighbours the grid
+            // happened to reach first, so a point at the edge of a tile could come out with a
+            // slightly different neighbourhood from the same point in the whole cloud.
+            let (px, py, pz) = (self.x[i] as f64, self.y[i] as f64, self.z[i] as f64);
+            let d64 = |j: u32| {
+                let ju = j as usize;
+                let dx = self.x[ju] as f64 - px;
+                let dy = self.y[ju] as f64 - py;
+                let dz = self.z[ju] as f64 - pz;
+                dx * dx + dy * dy + dz * dz
+            };
+            let gid = &self.gid;
+            scratch.select_nth_unstable_by(k, |a, b| {
+                d64(a.1).partial_cmp(&d64(b.1)).unwrap_or(std::cmp::Ordering::Equal)
+                    .then(gid[a.1 as usize].cmp(&gid[b.1 as usize]))
+            });
             scratch.truncate(k + 1);
         }
         scratch.len()
@@ -887,12 +915,14 @@ impl Analyzer {
                 let dz = self.z[ju] as f64 - pz;
                 dx * dx + dy * dy + dz * dz
             };
-            // Ties broken by point index, so the answer does not depend on the order the
-            // grid happened to visit cells in. Two points exactly equidistant from a third
-            // do occur, and without a rule the chosen one varies between runs and between
-            // implementations.
+            // Ties broken by the point's place in the file, so the answer does not depend on
+            // the order the grid happened to visit cells in, nor on which tile is asking.
+            // Two points exactly equidistant from a third do occur, repeated points being the
+            // obvious case, and without a rule the chosen one varies between runs.
+            let gid = &self.gid;
             scratch.select_nth_unstable_by(m - 1, |a, b| {
-                d64(a.1).partial_cmp(&d64(b.1)).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1))
+                d64(a.1).partial_cmp(&d64(b.1)).unwrap_or(std::cmp::Ordering::Equal)
+                    .then(gid[a.1 as usize].cmp(&gid[b.1 as usize]))
             });
             scratch.truncate(m);
         }
@@ -929,15 +959,34 @@ impl Analyzer {
     pub fn sor(&mut self, knn: usize, n_sigma: f32, mut progress: impl FnMut(usize)) -> (Vec<u8>, f32, f32) {
         self.build();
         let n = self.len();
-        let knn = knn.max(1);
         // CloudCompare refuses a cloud no bigger than knn rather than filtering it; keeping
         // everything says the same thing without an error path the caller has to handle.
-        if n <= knn {
+        if n <= knn.max(1) {
             return (vec![1u8; n], 0.0, f32::INFINITY);
         }
-        let mut mean_d = vec![0.0f32; n];
+        let mean_d = self.mean_distances(knn, n, &mut progress);
+        let (sum, sum2) = Analyzer::sums(&mean_d);
+        let avg = sum / n as f64;
+        let sd = (sum2 / n as f64 - avg * avg).abs().sqrt();
+        let cut = avg + n_sigma as f64 * sd;
+        let keep = mean_d.iter().map(|&d| if (d as f64) <= cut { 1u8 } else { 0u8 }).collect();
+        (keep, avg as f32, cut as f32)
+    }
+
+    /// The mean distance to the `knn` nearest neighbours, for the first `upto` points.
+    ///
+    /// A tile holds the points it is responsible for first and its neighbours' points after
+    /// them, so it asks for the prefix: the rest are there to be found by the search and are
+    /// answered for by the tile that owns them.
+    fn mean_distances(&mut self, knn: usize, upto: usize, progress: &mut impl FnMut(usize)) -> Vec<f32> {
+        self.build();
+        let n = self.len();
+        let knn = knn.max(1);
+        let upto = upto.min(n);
+        let mut mean_d = vec![0.0f32; upto];
+        if n <= knn { return mean_d; }
         let mut scratch: Vec<(f32, u32)> = Vec::with_capacity(256);
-        for i in 0..n {
+        for i in 0..upto {
             self.nearest_set(i, knn, &mut scratch);
             let mut s = 0.0f64;
             let mut c = 0u32;
@@ -957,17 +1006,31 @@ impl Analyzer {
             mean_d[i] = if c > 0 { (s / c as f64) as f32 } else { 0.0 };
             if i % 65536 == 0 { progress(i); }
         }
+        mean_d
+    }
+    fn sums(d: &[f32]) -> (f64, f64) {
         let mut sum = 0.0f64;
         let mut sum2 = 0.0f64;
-        for &d in &mean_d {
-            sum += d as f64;
-            sum2 += (d as f64) * (d as f64);
+        for &v in d {
+            sum += v as f64;
+            sum2 += (v as f64) * (v as f64);
         }
-        let avg = sum / n as f64;
-        let sd = (sum2 / n as f64 - avg * avg).abs().sqrt();
-        let cut = avg + n_sigma as f64 * sd;
-        let keep = mean_d.iter().map(|&d| if (d as f64) <= cut { 1u8 } else { 0u8 }).collect();
-        (keep, avg as f32, cut as f32)
+        (sum, sum2)
+    }
+    /// First half of a tiled SOR: the sum and the sum of squares of this tile's own mean
+    /// distances, and how many there were. The caller adds up the tiles and gets exactly the
+    /// mean and standard deviation the whole cloud would have given, because every point is
+    /// counted once by the tile that owns it.
+    pub fn sor_stats(&mut self, knn: usize, upto: usize, mut progress: impl FnMut(usize)) -> (f64, f64, usize) {
+        let d = self.mean_distances(knn, upto, &mut progress);
+        let (sum, sum2) = Analyzer::sums(&d);
+        (sum, sum2, d.len())
+    }
+    /// Second half: the keep mask for this tile's own points against a threshold worked out
+    /// over the whole cloud.
+    pub fn sor_cut(&mut self, knn: usize, cut: f32, upto: usize, mut progress: impl FnMut(usize)) -> Vec<u8> {
+        let d = self.mean_distances(knn, upto, &mut progress);
+        d.iter().map(|&v| if (v as f64) <= cut as f64 { 1u8 } else { 0u8 }).collect()
     }
 
     /// Noise filter: drop points that sit too far from the best-fit plane of the points
@@ -1046,18 +1109,27 @@ impl Analyzer {
         keep
     }
 
-    /// Points closer together than `tol` collapse to the first one seen.
+    /// Points closer together than `tol` collapse to the first one in the file.
+    ///
+    /// The survivor is chosen by global index rather than by position in this Analyzer, so a
+    /// tile that is looking at part of the cloud removes the same points the whole cloud
+    /// would. A removed point does not remove its own neighbours, which is CloudCompare's
+    /// behaviour and ours before tiling: the chain always runs towards smaller indices.
     pub fn duplicates(&mut self, tol: f32) -> Vec<u8> {
         self.build();
         let n = self.len();
         let mut keep = vec![1u8; n];
         let mut scratch: Vec<(f32, u32)> = Vec::with_capacity(64);
-        for i in 0..n {
+        let mut order: Vec<u32> = (0..n as u32).collect();
+        order.sort_unstable_by_key(|&i| self.gid[i as usize]);
+        for oi in 0..n {
+            let i = order[oi] as usize;
             if keep[i] == 0 { continue; }
             self.radius_search(i, tol, &mut scratch);
+            let gi = self.gid[i];
             for &(_, j) in scratch.iter() {
                 let ju = j as usize;
-                if ju > i { keep[ju] = 0; }
+                if self.gid[ju] > gi { keep[ju] = 0; }
             }
         }
         keep
@@ -1118,21 +1190,29 @@ impl Analyzer {
     }
 
     /// Keep one point per voxel of side `spacing` — the spatial subsample.
+    ///
+    /// The one kept is the one that comes first in the file. Position in this Analyzer would
+    /// do just as well for a cloud held whole, but a tile sees its own points before its
+    /// neighbours' and would then keep a different point in every voxel that straddles a
+    /// tile edge.
     pub fn spatial_subsample(&mut self, spacing: f32) -> Vec<u8> {
         let inv = 1.0 / spacing.max(1e-5);
-        let mut taken: FastMap<i64, ()> = FastMap::default();
+        let mut first: FastMap<i64, u32> = FastMap::default();
         let n = self.len();
-        let mut keep = vec![0u8; n];
         for i in 0..n {
             let k = key(
                 (self.x[i] * inv).floor() as i32,
                 (self.y[i] * inv).floor() as i32,
                 (self.z[i] * inv).floor() as i32,
             );
-            if taken.insert(k, ()).is_none() {
-                keep[i] = 1;
+            let g = self.gid[i];
+            match first.get_mut(&k) {
+                Some(best) => { if g < self.gid[*best as usize] { *best = i as u32; } }
+                None => { first.insert(k, i as u32); }
             }
         }
+        let mut keep = vec![0u8; n];
+        for (_, &i) in first.iter() { keep[i as usize] = 1; }
         keep
     }
 
