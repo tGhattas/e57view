@@ -1,4 +1,4 @@
-# e57view — validated technical findings
+# e57view, validated technical findings
 
 All numbers below were measured on this machine (Apple Silicon, Node 20 / V8, Rust 1.98)
 against a real file: `~/Downloads/1973-registered.e57`.
@@ -27,11 +27,11 @@ Notable: this file carries **per-point normals**. Real shading is possible, not 
 Crate `e57` v0.11.13. Dependency tree is `roxmltree` + optional `crc32c`. `#![forbid(unsafe_code)]`.
 
 - Compiles clean to `wasm32-unknown-unknown` (verified).
-- `E57Reader::new` is generic over `T: Read + Seek` — accepts any custom source.
+- `E57Reader::new` is generic over `T: Read + Seek`, accepts any custom source.
 - wasm-bindgen shim built and run end to end (verified).
 - Module size: 347 KB after wasm-bindgen, pre-`wasm-opt`, pre-gzip.
-- Do NOT call `E57Reader::from_file` — compiles on wasm, always fails at runtime.
-- Do NOT enable `crc32c` — no hardware CRC on wasm; skip CRC validation in browser.
+- Do NOT call `E57Reader::from_file`, compiles on wasm, always fails at runtime.
+- Do NOT enable `crc32c`, no hardware CRC on wasm; skip CRC validation in browser.
 
 ## The key architectural result: no whole-file load
 
@@ -54,7 +54,7 @@ Measured through that shim, against the 3.23 GB file, with the file never loaded
 | extract one 8192x4096 panorama | 0.05 s (231 MB/s) |
 
 Ranged-read buffering: a windowed cache inside the Rust source is required. Without it the
-paged reader issues ~1 KB reads — 30,410 JS calls for 31 MB. With a 4-16 MB window that drops
+paged reader issues ~1 KB reads, 30,410 JS calls for 31 MB. With a 4-16 MB window that drops
 to 7-30 calls at no throughput cost. Window size should be re-tuned against real
 `FileReaderSync` overhead in browser.
 
@@ -62,13 +62,13 @@ Warning on benchmarking: unwarmed V8 reports ~1.2 M pts/s. Warm up before measur
 
 ## Decode path cost
 
-`pointcloud_simple()` and `pointcloud_raw()` both land at ~4.5 M pts/s native — the raw path
+`pointcloud_simple()` and `pointcloud_raw()` both land at ~4.5 M pts/s native, the raw path
 allocates a `Vec<RecordValue>` per point, which cancels its advantage. Native full-file decode
 is 16.5 s; wasm is 23 s, a 1.42x penalty.
 
 To go faster, the win is not switching readers, it is **parallel decode**. E57 data packets are
 self-describing (byte 0 = 1, length at bytes 2-4). A byte range can be split across N workers by
-scanning forward to the next valid packet header. Needs a fork or an upstream PR — the crate
+scanning forward to the next valid packet header. Needs a fork or an upstream PR, the crate
 exposes no seek-to-point API. Estimated 4-8x, taking 74M points to roughly 4-6 s.
 
 ## Storage budget
@@ -87,10 +87,10 @@ against a render budget. At 12 B/pt a 5M-point budget costs 60 MB of VRAM.
 Points arrive in acquisition order, not spatial order. The first 10M points already span ~90% of
 the X extent but only part of Y; Y does not fill in until the final ~25M points. A prefix of the
 file is therefore not a valid preview of the whole cloud. The full indexing pass has to run
-before a spatially uniform overview exists — progressive display during that pass shows a
+before a spatially uniform overview exists, progressive display during that pass shows a
 growing trajectory, not a coarse whole.
 
-## Visual verification — the cloud actually renders in colour
+## Visual verification, the cloud actually renders in colour
 
 All 73,757,292 points were decoded and rasterized offline to confirm the data is real and
 coherent, not just numerically plausible. Output in `renders/`.
@@ -106,7 +106,7 @@ At 1000x1330 the cloud covers 45% of the frame. Four modes were rendered:
 | `01-rgb.png` | Correct full colour. A street scene: parked cars, tree canopies, a blue roof, a terracotta tile roof, kerbs and road markings all legible. RGB decode is verified end to end. |
 | `02-rgb-edl.png` | EDL working. Tree canopies gain 3D structure, kerbs and bush clumps resolve individually. |
 | `03-elevation.png` | Elevation ramp over the declared Z range. Terrain reads clearly, sloping from high on the west side down to a lower parking area on the east. |
-| `04-intensity.png` | Works, but far too dark — see below. |
+| `04-intensity.png` | Works, but far too dark, see below. |
 
 ### Two tuning facts this produced
 
@@ -118,8 +118,7 @@ that the knob has to be exposed rather than baked.
 **Intensity is not display-ready as stored.** Mean intensity across the file is **0.227**, so
 most values sit in the bottom quarter of the 0..1 range and a direct mapping renders near-black.
 The declared `intensityLimits` describe sensor range, not a useful display range. This is
-concrete evidence for the histogram with draggable min/max handles rather than auto-ranging —
-without it, intensity mode ships looking broken.
+concrete evidence for the histogram with draggable min/max handles rather than auto-ranging, without it, intensity mode ships looking broken.
 
 ## Built and deployed
 
@@ -157,8 +156,8 @@ from the Files app, and Safari's per-tab memory ceiling all remain untested on a
 
 ## Round two: fast decoder, octree, continuous LOD
 
-Three complaints from real use of the first build — can't zoom into the building, bright
-discs everywhere, and "make it as fast as possible with all points" — turned out to share a
+Three complaints from real use of the first build, can't zoom into the building, bright
+discs everywhere, and "make it as fast as possible with all points", turned out to share a
 root cause: the first build had one global point spacing and no spatial structure.
 
 ### Where the crate's 23 seconds went
@@ -173,15 +172,15 @@ them, and decodes each field with a type-specific loop straight into a typed col
 | | crate | fast reader |
 |---|---|---|
 | raw decode, native | 5.1 M pts/s | 20.1 M pts/s |
-| decode + octree bin, all 73.7M, native | — | 5.6 s |
-| decode + octree + shuffle + upload, browser | — | 13.5 s |
+| decode + octree bin, all 73.7M, native |, | 5.6 s |
+| decode + octree + shuffle + upload, browser |, | 13.5 s |
 
 Validated bit-exact: column sums over 3M records match the crate on all ten fields.
 
 ### The octree
 
 Leaf-only, cells split above 400K points, positions quantised to 16 bits in the cell cube
-(0.08 mm at a 5 m cell). Requantising to a child on split is exact — halving the cube
+(0.08 mm at a 5 m cell). Requantising to a child on split is exact, halving the cube
 doubles the resolution, so it is a shift. The root grows outward when a point lands outside
 it, which is what makes scans without declared bounds work.
 
@@ -247,7 +246,7 @@ the chosen location (File System Access API) or handed to the browser as a downl
 | format | 14.9M-point crop | notes |
 |---|---|---|
 | PLY binary | 641 MB | doubles, absolute coordinates |
-| LAS 1.2 pf2 | — | 0.001 m scale, offset = scan pose |
+| LAS 1.2 pf2 |, | 0.001 m scale, offset = scan pose |
 | E57 | 644 MB, 5.7 s | Rust writer; pose, RGB, intensity, normals (`nor`) |
 
 The exported E57 re-parses with the native reader and validates bit-exact across all ten
@@ -278,7 +277,7 @@ pass emits alpha so the points blend over it with a slider.
 
 The first attempt showed the sky at the bottom. `ImageBitmap` textures upload unflipped, so
 row 0 is the top of the photo; the elevation-to-v mapping had to be inverted. After that fix,
-photo and points align exactly — door frames, wall edges and floor lines coincide.
+photo and points align exactly, door frames, wall edges and floor lines coincide.
 
 ### Two interaction bugs found only by driving the UI
 A single click on a station marker was firing before a double-click could, so
@@ -394,7 +393,7 @@ A first real run through `POST /agent` removed 1,052,087 points of scanner noise
 with `Invalid JSON payload received`. The apply handler returned the result of
 `applyRegions` verbatim, which now carries the undo record: typed arrays, `THREE.Vector3`
 instances and live WebGL leaf handles. Firestore rejected the write, so the caller saw a
-failure for work that had in fact succeeded — the worst possible answer for an agent, which
+failure for work that had in fact succeeded, the worst possible answer for an agent, which
 would retry and delete more. Agent replies are now slimmed (heavy keys and typed arrays
 dropped, result capped at 150 K characters, screenshot at 600 K) and both apply paths return
 `{kept, dropped, points}`. `drive-agent.mjs` covers the whole loop against production:
@@ -412,7 +411,7 @@ user sees a one-time prompt. Verified both ways with Playwright.
 
 ## Productionising
 
-Cloud upload and AI cleaning came out. Both worked — the numbers above are real — but they
+Cloud upload and AI cleaning came out. Both worked, the numbers above are real, but they
 pulled the product away from what it is good at: opening a scan that never leaves the
 machine. Removing them deleted `src/ai.ts`, `src/cloud.ts`, two Cloud Functions
 (`aiSuggest`, `convertCloud`), the Storage bucket rules and CORS, the shared prompt module
@@ -432,15 +431,15 @@ cannot start a local process, which is the whole reason the HTTP endpoint exists
 Poisson is the usual answer and the wrong one here: it solves a global system, and these
 scans already carry per-point normals from the `nor` extension, which is most of what the
 solve is for. Each point is a small oriented plane, so the truncated signed distance field
-can be splatted directly — walk each normal across the truncation band, accumulate the
+can be splatted directly, walk each normal across the truncation band, accumulate the
 signed distance with trilinear weights. Averaging every point that reaches a voxel is what
 removes scanner noise, so the field is smoother than the cloud that made it.
 
 Extraction is naive surface nets rather than marching cubes, chosen for a reason that has
 nothing to do with quality: marching cubes needs a 256x16 triangle table, and a table
 transcribed from memory is a silent, hard-to-spot corruption. Surface nets needs no table
-at all — one vertex per sign-changing cell at the centroid of its crossings, one quad
-around each sign-changing edge — and is manifold by construction. Cells with no data emit
+at all, one vertex per sign-changing cell at the centroid of its crossings, one quad
+around each sign-changing edge, and is manifold by construction. Cells with no data emit
 no quad, so an open scan stays open instead of being capped with invented geometry.
 Taubin smoothing (lambda then a slightly larger negative mu) drops ripple without the
 shrinkage repeated Laplacian passes cause.
@@ -452,7 +451,7 @@ non-manifold edges, 100% of normals facing outward. A flat plane comes back flat
 **0.0 mm** and keeps its border rather than closing into a slab.
 
 Two bugs the test caught that a screenshot would not have. The quad winding was inverted, so
-every normal pointed into the surface — the render still looked plausible. And the density
+every normal pointed into the surface, the render still looked plausible. And the density
 fallback for clouds without normals produced 1,825 vertices and zero triangles, because
 voxels below the weight threshold were rejected as invalid: in density mode empty space is
 not missing data, it is the outside, and without it the field never crosses zero.
@@ -465,10 +464,10 @@ not missing data, it is the outside, and without it the field never crosses zero
 |---|---|---|---|---|
 | 12 cm | 1,785,012 | 7.0 s | 1467 fps | 149 MB |
 | 6 cm | 4,303,346 | 12.7 s | 1001 fps | 197 MB |
-| 5 cm | 7,713,006 | 16.3 s | — | — |
+| 5 cm | 7,713,006 | 16.3 s |, |, |
 
-The weight threshold — how much accumulated evidence a voxel needs before it counts as
-surface — mattered more than anything else, and the first guess was badly wrong. At 0.6 the
+The weight threshold, how much accumulated evidence a voxel needs before it counts as
+surface, mattered more than anything else, and the first guess was badly wrong. At 0.6 the
 render was peppered with pinholes, because a cell needs all eight of its corners valid and
 one weak corner kills it. Measuring boundary edges per triangle across a sweep put the knee
 at 0.3 and the floor at 0.15:
@@ -491,7 +490,7 @@ straight afterwards succeeds.
 
 Two rendering bugs worth recording. The surface drew washed out to pale yellow because
 blending was still enabled from the previous pass, and this target holds (colour, log depth)
-rather than premultiplied colour — the depth in the alpha channel was scaling the colour and
+rather than premultiplied colour, the depth in the alpha channel was scaling the colour and
 saturating it. And the build hung forever the first time because the worker was asked for a
 result that was never requested: the message that starts extraction was missing, so both
 sides waited politely for each other.
@@ -514,13 +513,13 @@ Three bugs worth recording, none of which a screenshot would have caught.
 
 **A normal pointing straight up was indistinguishable from no normal at all.** The record
 format marks "no normal" with (0,0,127), which is exactly what a real +Z normal quantises to,
-so every horizontal upward surface lost its normals — and the surface reconstruction silently
+so every horizontal upward surface lost its normals, and the surface reconstruction silently
 fell back to density mode on ground and roofs. Real normals now step down to 126, an error of
 0.45 degrees, well inside the quantisation noise.
 
 **The field rendered flat grey because a leftover preview leaf was drawn over it.** The
 low-resolution preview uploaded during loading has no correspondence to the analysed points,
-so it never receives a field, and its points fall back to the "no value" colour — painting the
+so it never receives a field, and its points fall back to the "no value" colour, painting the
 whole cloud grey on top of a perfectly correct result. Previews are now dropped when a field
 is attached. Finding it needed the attribute state read from inside the draw call itself:
 every check outside the frame said the buffer was bound and full of the right numbers.
@@ -552,7 +551,7 @@ signed distance field cancels itself where two walls meet.
 
 The fix is not a better vote, it is a different question. A laser only ever measured a
 surface from the station it was standing at, so the outward direction is "toward the nearest
-station" — a per-point fact, not a per-component one, which matters as soon as one cloud
+station", a per-point fact, not a per-component one, which matters as soon as one cloud
 covers several rooms. The E57 carries 102 of them in the test file, and
 `viewer.stationPositions()` already had them in the right frame.
 
@@ -574,20 +573,20 @@ neighbour hops of its seed rather than at the end of one long arm of a depth-fir
 
 `applyRegions` kept a bit mask of dropped points so undo could re-interleave the records
 exactly. It allocated that mask **only when recording an undo step**. The scalar-field
-compaction, written later, consulted the same mask — so with `record=false` every kept value
+compaction, written later, consulted the same mask, so with `record=false` every kept value
 landed at the index of a different point, and nothing crashed, nothing looked wrong, and the
 field was simply describing the wrong points from then on.
 
 Worth recording because of how it hid: the bug needed a scalar field *and* a non-recording
 call, and the only non-recording caller was a code path no driver exercised. The fix is one
-line of intent — decide keep or drop once per point, then use that decision for the records,
-the scalars and the undo mask alike — and the check in `drive-analysis.mjs` gives each point
+line of intent, decide keep or drop once per point, then use that decision for the records,
+the scalars and the undo mask alike, and the check in `drive-analysis.mjs` gives each point
 a unique field value so a shift of one is visible: **315 kept of 1,171, 0 misplaced**.
 
 ## Cloud transforms: do not bake
 
 The obvious implementation rewrites every point. At 14 bytes and 16-bit positions per leaf
-cube that means a full readback, a matrix multiply, a requantisation and a re-upload — about
+cube that means a full readback, a matrix multiply, a requantisation and a re-upload, about
 a second per transform on 18 million points, a lossy round trip through the quantisation
 every time, and an undo step the size of the cloud.
 
@@ -608,12 +607,12 @@ Two things bit.
 **A rotated box re-boxed is bigger than what it holds.** The framing box (`viewer.bounds()`)
 drives fitting, the elevation ramp and the clipping sliders, and it was being carried through
 each change by transforming its eight corners. A 6 × 6 m plane tilted 15° went from a
-1.546 m height range to **2.982 m** after being levelled — the box grew while the points got
+1.546 m height range to **2.982 m** after being levelled, the box grew while the points got
 flatter, which is the opposite of what the feature is for. It is now measured from a uniform
 sample of the points whenever the linear part of the matrix changes (a pure translation
 carries over exactly, so `bounds()` moves by exactly the metres you asked for), and only
 inflated during a gizmo drag, where a readback every frame would stall. Levelled: **1.546 m
-→ 0.000 m**. The leaves are shuffled, so a prefix of each is a uniform subsample — the same
+→ 0.000 m**. The leaves are shuffled, so a prefix of each is a uniform subsample, the same
 property the level-of-detail draw relies on.
 
 **A surface built through the model is transformed twice.** The mesher is handed the matrix
@@ -637,7 +636,7 @@ instance and a z-fighting problem.
 
 Before this there were two half-answers to "is there work to lose". `confirmDiscardHistory`
 counted undo and redo steps, which misses a scalar field and a reconstructed surface
-entirely — neither goes through the history — and the start screen, the only place that
+entirely, neither goes through the history, and the start screen, the only place that
 offered another file, was hidden as soon as a scan loaded, so drag-and-drop was the only way
 out.
 
@@ -645,7 +644,7 @@ The useful realisation is that the undo stack **is** the list of unsaved point c
 save clears it, a reload and an open replace it, and undoing a transform back to the identity
 genuinely does make the cloud clean again. Deriving the answer from `hist.undo`'s entry kinds
 rather than a flag means an undo un-dirties the scan for free, which a boolean would have got
-wrong. Only the two things that never enter the history — a field and a surface — need a mark
+wrong. Only the two things that never enter the history, a field and a surface, need a mark
 of their own.
 
 Naming the losses rather than counting them is the part that matters. "There is unsaved
@@ -665,7 +664,7 @@ model comes out approximately wrong in a way nothing downstream can detect.
 What it needs is calibration and vectors.
 
 **Calibration** means the image arrives with the arithmetic that inverts it. A perspective
-render cannot carry that — one metre is a different number of pixels at every depth — so the
+render cannot carry that. One metre is a different number of pixels at every depth, so the
 preset views use a genuinely orthographic projection. That took a real change rather than the
 existing trick: `renderTopDown` already approximated ortho with a 10° field of view at a long
 distance, and the scale still varies by the depth of the scene over the camera distance, which
@@ -689,15 +688,14 @@ matters: marching squares over the occupancy of a horizontal slab, returning clo
 in metres. An agent drawing a floor plan from a picture is tracing pixels; an agent given four
 closed rings and a bounding box that matches the room to **3 cm** is doing geometry. Likewise
 `fitplane` returns a normal *and* an RMS, because the RMS is what says whether the thing is a
-plane at all — and it caught the test's own mistake: a fitting box tall enough to include the
+plane at all, and it caught the test's own mistake: a fitting box tall enough to include the
 floor and the ceiling strips either side of a wall reported a 24 mm RMS for a wall that is
 exactly flat. Tightened to the wall alone: **0 mm over 2,720 points**.
 
 Three things bit.
 
 **A uniform sample of the cloud is a sparse sample of a slab.** The first `contour`
-implementation reused `cells.sample` — right for the heightmap, which covers everything —
-and a 0.3 m slab holds about 5% of a room's points, so a 20% sample of the cloud left the wall
+implementation reused `cells.sample`, right for the heightmap, which covers everything, and a 0.3 m slab holds about 5% of a room's points, so a 20% sample of the cloud left the wall
 lines full of gaps and marching squares returned 221 tiny closed loops, one per isolated cell.
 Contour now reads every point of the cells the slab touches and skips the rest by their
 transformed bounding box, which is both complete and cheaper on a real scan, where a thin slab
@@ -711,7 +709,7 @@ that line has no length, and the entire outline simplifies to a single vertex. T
 footprint came back as one two-point polyline with a degenerate bounding box. The ring is now
 cut at the vertex furthest from the start and the halves simplified separately.
 
-**Firestore refuses an array directly inside an array** — which is the shape of every
+**Firestore refuses an array directly inside an array**, which is the shape of every
 genuinely two-dimensional thing here: pixel pairs to probe, polylines from a contour. The
 relay wrote command arguments straight into a document field, so `probe` with
 `pixels: [[400,267],[500,267]]` failed the write, the function's promise rejected, and the
@@ -722,7 +720,7 @@ than dropped, so a 1.9 MB surface export arrives in five and reassembles to a by
 
 And one that was already there: **`OrbitControls.update()` ends in `lookAt(target)`.** Setting
 the camera's position and calling `lookAt` is not enough, because the next render re-aims it at
-the stale orbit target — so the first orthographic top view was quietly swung off axis and the
+the stale orbit target, so the first orthographic top view was quietly swung off axis and the
 mapping described a frame that had never been rendered. The probe caught it immediately: 100
 pixels apart measured 1.0108 m against 0.8744 m predicted. `renderTopDown` had the same latent
 bug and is fixed with it.
@@ -732,14 +730,14 @@ bug and is fixed with it.
 The crop region was hard-wired as a keep region: Apply dropped everything outside it, and
 removing a parked van or a tripod from the middle of a scan meant drawing a lasso or asking an
 agent to add a delete-role region by hand. The region machinery had supported both roles since
-the beginning — the shader dims outside a keep region and inside a delete region, and
-`applyRegions` unions keeps and subtracts deletes — so the gap was one flag and one filter.
+the beginning, the shader dims outside a keep region and inside a delete region, and
+`applyRegions` unions keeps and subtracts deletes, so the gap was one flag and one filter.
 
 `applyKeep` filtered `allRegions()` down to keep-role regions, which is what made the crop
 mode invisible: switching its role to `delete` would have made the region disappear from the
 apply set entirely and Apply would have done nothing. It now commits every keep and delete
 region together (`cutRegions()`), which is the same call either way, and `estimateKept`
-answers the same question in both directions — how many survive this set — so the dialog can
+answers the same question in both directions, how many survive this set, so the dialog can
 say *"roughly 6,050 points removed, 6,050 kept"* whichever mode it is in.
 
 `drive-cropmode.mjs` checks the two modes are exact complements over the same box:
@@ -749,7 +747,7 @@ remove, and both undoing.
 ## A one-shot screen-space cut was the wrong shape for the job
 
 The freehand lasso worked exactly as designed and was not useful. You traced an outline, and
-the points were dropped immediately — which means you could never check what the selection
+the points were dropped immediately, which means you could never check what the selection
 was about to take. The selection was an invisible frustum extending away from one camera
 position, so there was nothing to look at, nothing to adjust, and no way to orbit round and
 see whether the thing behind the thing you wanted was also inside it. Undo was the only
@@ -758,7 +756,7 @@ inspection tool, which is a poor one.
 The fix is not a better lasso, it is a different object. A traced outline now becomes a
 **prism**: the polygon extruded along the view direction of the camera that drew it, converted
 from pixels to metres at the orbit target's depth so what you drew around lands on the points
-you were looking at. From then on it is an ordinary region — visible in the 3D overlay as two
+you were looking at. From then on it is an ordinary region, visible in the 3D overlay as two
 outline caps and the edges between them, moved and rotated with the same gizmo as the box,
 adjustable in depth, switchable between Keep and Remove, unioned with the other regions, and
 cut only when Apply is pressed. `drive-segment.mjs` asserts the property the whole change
@@ -769,7 +767,7 @@ below.**
 each region's local frame; a prism adds `abs(l.z) <= half.z` and then an even-odd crossing
 test over its outline. The crossings are the cost: one compare, one divide and one multiply
 per edge, for points that pass the depth test. Twenty-four sides is the cap, so the worst case
-is 24 iterations — but only for points inside the depth band, and only for the prisms among
+is 24 iterations, but only for points inside the depth band, and only for the prisms among
 the active regions. The outlines of every active prism live in one `vec2[96]` uniform with a
 per-region start and count, which is what fixes the limits at four prisms of 24 sides: a
 `vec2[96]` plus two `float[16]` is 896 bytes of uniform storage, against the 16 KB a WebGL2
@@ -787,7 +785,7 @@ merely clips falls through to the per-point test, which is correct rather than c
 
 Two smaller things this shook out. **Apply's direction is a property of the set, not of the
 crop box**: `removingInside()` first asked whether the crop box was in Remove mode, which was
-wrong as soon as a drawn region could be the only thing in the list — the dialog said "Apply
+wrong as soon as a drawn region could be the only thing in the list, the dialog said "Apply
 crop?" while about to remove. It now asks whether the set has anything to keep at all. And a
 region's point count is worth showing in the list, but `countInside` reads cells back from the
 GPU, and the list is re-rendered on every gizmo frame; the count is now skipped while a handle
@@ -798,7 +796,7 @@ release, which needed one extra `onRegionChange` when the drag ends.
 
 Registration, cloud-to-cloud distance and merging are the payoff, and all three need two
 clouds in memory at once. The renderer had exactly one `CellRenderer` and `main.ts` had about
-a dozen module variables that *were* the loaded scan — its file, its metadata, its histograms,
+a dozen module variables that *were* the loaded scan, its file, its metadata, its histograms,
 its surface. Threading an entity argument through every one of those call sites would have
 been a hundred edits and a hundred chances to pass the wrong one.
 
@@ -813,7 +811,7 @@ What genuinely had to change: the draw loop (one pass per visible entity into th
 the frame budget shared out by point count, a per-entity colour tint uniform), `bounds()` (the
 active entity for tools, the union of the visible ones for fitting and the height range), the
 history (each step records its entity, and undo switches back to it first), and "dirty", which
-now aggregates across layers and names the layer — *"a scalar field (Planarity) on Second
+now aggregates across layers and names the layer, *"a scalar field (Planarity) on Second
 pass"*.
 
 Two clouds also raised a question a single cloud never had to answer: **where is the second
@@ -827,7 +825,7 @@ it the first `drive-entities` run had two clouds 20 m apart in the world sitting
 **Merging cannot keep the leaf cubes.** A leaf is an axis-aligned cube with 16-bit offsets
 inside it, and a rotated cube is not a cube. Each source leaf is therefore read through its own
 model matrix and back through the active layer's, its transformed points get a fresh cube, and
-they are requantised into it — under a tenth of a millimetre for a leaf a few metres across,
+they are requantised into it, under a tenth of a millimetre for a leaf a few metres across,
 and the alternative is refusing to merge anything that has been rotated. Scalar fields are
 dropped, because a field covering part of a cloud is worse than no field.
 
@@ -852,7 +850,7 @@ Then the browser gave 47 mm and would not budge, over four iterations that each 
 less than a tenth of a per cent. The cause was two lines earlier: **Match scales had scaled the
 cloud by 0.977**. Two copies of the same room reported different bounding boxes, because one
 had been measured by the loader (a 0.2% percentile over a 1024-bin histogram) and the other
-resampled after a rotation — two different measurements of the same thing, and coarse
+resampled after a rotation, two different measurements of the same thing, and coarse
 alignment turned the difference into a scale. A rigid ICP cannot undo a scale error, so it
 stalled at exactly the residual the scale left behind, and every downstream number was wrong
 without anything reporting a failure. Both coarse tools now measure both layers the same way,
@@ -873,7 +871,7 @@ fill rate. `dropPreview` now drops the queued ones too.
 ### Scope
 
 Per-entity surfaces are stored per entity and re-uploaded on a switch, but only the **active**
-layer's surface is drawn — one `MeshView`, not one per layer. Stations are likewise the active
+layer's surface is drawn, because there is one `MeshView` rather than one per layer. Stations are likewise the active
 layer's only. Both are honest limits rather than oversights: drawing every layer's surface
 needs a program and a VAO set per layer, and the panorama bubble assumes one scan's pose.
 
@@ -883,15 +881,15 @@ The outline tool works, and it was the wrong default. Tracing a polygon is a car
 two-handed operation that has to be done from a viewpoint where the thing is unobstructed;
 what people actually do is look at something and say *that one*. So the primary gesture is now
 one click: **S**, click a point on the cloud, and a small box or sphere appears centred exactly
-on the surface point under the cursor — `pickWorld` already gave the millimetre-accurate answer
+on the surface point under the cursor, `pickWorld` already gave the millimetre-accurate answer
 for the measure tool, so the placement is free.
 
 Making it big enough is then the whole job, and there are four ways because different sizes
 want different ones: the gizmo handles for a shape you are watching, the sliders for a number
 you know, **Alt + scroll** for the gesture everyone's fingers already have (captured before
 OrbitControls sees the wheel, or the camera dollies at the same time), and **Fit to contents**
-for "as big as that object". Fit grows each axis by half until a `countInside` stops rising —
-that is the edge of whatever the region is sitting on — and then replaces the region with the
+for "as big as that object". Fit grows each axis by half until a `countInside` stops rising, which is the edge of whatever
+the region is sitting on, and then replaces the region with the
 exact bounding box of the points it holds. Growing alone would leave it 50% too big; the
 tightening is what makes it a fit. On the test blob: **1,600 of 1,600 points, radius 1.42 m
 against a true half-diagonal of 1.379 m**, having started at 0.2 m.
@@ -913,7 +911,7 @@ decompressed records are ordinary LAS point records, so the existing LAS decoder
 and the two formats share one loop.
 
 Measured natively on 5,000,000 generated terrain points (`laztest`): **130.0 MB of raw records
-compress to 3.3 MB — 2.5% — in 0.40 s, and decompress in 0.88 s: 5.7 M points/s, 148 MB/s of
+compress to 3.3 MB, 2.5%, in 0.40 s, and decompress in 0.88 s: 5.7 M points/s, 148 MB/s of
 output**, byte-exact, with a seek to an arbitrary point index landing correctly. In the browser
 the round trip through the viewer's own export is 30.5% of the LAS it came from (a small file,
 where the chunk table and header are a real fraction).
@@ -922,12 +920,12 @@ COPC is LAZ with an extra VLR describing an octree; ignoring that VLR reads ever
 file order, which is what this viewer wants anyway since it builds its own octree.
 
 **Classification needed somewhere to live.** A per-point label cannot be carried beside the
-points, because the octree shuffles them — that is what makes drawing a prefix of a leaf a
+points, because the octree shuffles them, which is what makes drawing a prefix of a leaf a
 uniform subsample. But the 14-byte record has always had a spare byte at index 13, and a LAS
 classification is exactly one byte. It travels with the point through the shuffle, through a
 crop, through undo, and the field is built from it after the leaves land. That last part cost
 one debugging round: uploads are deferred a frame at a time, so anything that reads leaves
-back has to wait for the queue to drain — the same lesson as the cached-transform framing box,
+back has to wait for the queue to drain, the same lesson as the cached-transform framing box,
 now a shared `afterUploads` helper.
 
 **Plain text has no header to trust.** The delimiter is guessed by which separator splits the
@@ -940,14 +938,14 @@ is loading nonsense. Colours are recognised as 0-255 or 0-1 from the first row t
 **PTX is structured, and the structure is the point.** Each scan carries rows, columns, a
 scanner position and a 4×4 pose; points are in the scanner's own frame and a shot that returned
 nothing is written as `0 0 0`. Applying each pose puts every scan in one frame, skipping the
-zeros drops the misses, and each scan's translation becomes a station — so the station markers
+zeros drops the misses, and each scan's translation becomes a station, so the station markers
 and "view from here" work on a Leica export with no panoramas in it at all.
 
 ## Fits that report a residual, and a detector that removes what it finds
 
 Every fit here returns an RMS beside its parameters, and that is the whole design. A cylinder
-fitted to a flat wall comes back with a radius and an axis and a centre — perfectly formed,
-entirely meaningless — and the only thing that says so is the residual. `drive-fit.mjs` tests
+fitted to a flat wall comes back with a radius and an axis and a centre, perfectly formed,
+entirely meaningless, and the only thing that says so is the residual. `drive-fit.mjs` tests
 exactly that case: a sphere fitted to the pipe reports **118.7 mm RMS against 0.4 mm for the
 right shape**.
 
@@ -956,7 +954,7 @@ by + cz + d = 0`) is linear, so it cannot fail to converge and gives a starting 
 dozen Gauss-Newton steps on the true distance `|p - c| - r` make the RMS mean what it says.
 The cylinder's axis comes from the **normals**, not the points: every normal of a cylinder is
 perpendicular to its axis, so the normal set spans a plane and the axis is the direction they
-vary least in — which works on a 90° arc, where fitting the axis from the points would not.
+vary least in, which works on a 90° arc, where fitting the axis from the points would not.
 Measured against known primitives with a millimetre of jitter: plane normal **0.008°** off,
 sphere centre **0.011 mm** and radius **0.000 mm**, cylinder axis **0.0000°** and radius
 **0.000 mm**, circle radius **0.01 mm**.
@@ -964,21 +962,21 @@ sphere centre **0.011 mm** and radius **0.000 mm**, cylinder axis **0.0000°** a
 The detector is RANSAC, one shape at a time, and the part worth stating is that **removing
 each shape's inliers before looking for the next is the non-maximum suppression**. Two fits of
 the same wall cannot both survive, because after the first there is nothing left for the second
-to be supported by — no scoring heuristic, no overlap test, just an invariant. Each shape is
+to be supported by. No scoring heuristic, no overlap test, just an invariant. Each shape is
 then refitted on everything that agreed with it, which is what turns a lucky three-point sample
 into a measurement: in the native scene the refitted planes come back at **0.6 mm RMS** from
 1 mm of noise.
 
 RANSAC runs on a sample, because it does not need ten million points to find a wall. But the
 labels a sample produces only cover the sample, so the field is built by classifying **every**
-point against the few shapes that were found — cheaper than feeding everything to the
+point against the few shapes that were found, cheaper than feeding everything to the
 detector, and honest about what it knows. On the test scene: **38,299 points labelled of
 38,291 real ones, with 2,000 noise points left unclaimed.**
 
 Two things the driver shook out. **Undo refused to run on an empty layer.** `undoEdit` began
 with `if (!viewer.loaded) return null`, which is precisely backwards: an edit that removed
 everything is the one that most needs undoing, and there was no way back from it. And a fit
-over a region that also contains noise reports a worse residual — which is correct, and meant
+over a region that also contains noise reports a worse residual, which is correct, and meant
 the test fixture had to keep its noise out of the boxes it fits in, rather than the code
 pretending the noise was not there.
 
@@ -989,7 +987,7 @@ arithmetic is trivial; getting the right answer was about which side gets its ho
 
 Against a flat plane the first attempt was already right: **64.202 m³ against an arithmetic
 64.274 m³, −0.11%**, for a pyramid (a²h/3) plus a half-cylinder mound (πr²L/2). Against a
-*reference layer* it came out at **16.019 m³ — a quarter of the answer** — and the reason is
+*reference layer* it came out at **16.019 m³, a quarter of the answer**, and the reason is
 worth keeping. The reference was sampled at 0.1 m and the raster cell was 0.05 m, so only about
 one cell in four of the reference had a point in it, and every cell where the reference was
 empty was skipped. Not reported as missing: silently skipped, in a number that looked
@@ -1002,7 +1000,7 @@ is the point: a cell the reference has no point in still has ground under it, bu
 active layer has no point in has nothing measured above it. Both ways now agree: **64.202 m³,
 −0.11%**.
 
-The same reach cap that makes filling safe means it does not fill everything — the two shapes
+The same reach cap that makes filling safe means it does not fill everything, the two shapes
 in the fixture are 4.5 m apart and the ground between them stays empty at a twelve-cell reach.
 That is the intended behaviour and the driver asserts it rather than asserting full coverage.
 
@@ -1026,19 +1024,18 @@ An imported mesh breaks that in the first minute of use: the whole point of open
 model next to a scan is seeing both. So `MeshView` moved into `Entity`, `viewer.mesh` became an
 accessor for the active one, and the draw loop walks every visible layer's. Switching layers
 now re-points the UI instead of re-uploading anything, which also made it instant. The
-`current × built-with⁻¹` trick that keeps a surface glued to its points survived unchanged —
-it just runs per entity now.
+`current × built-with⁻¹` trick that keeps a surface glued to its points survived unchanged, it just runs per entity now.
 
 A mesh layer is a layer with zero points, which needed two small honesties elsewhere:
 `visibleEntities` (the point draw loop, merging, registration) still filters on `total > 0`,
 and a new `shownEntities` is what framing and the height range use. And `setModel` re-boxes a
-mesh layer from its vertices rather than sampling points it does not have — a rotated box
+mesh layer from its vertices rather than sampling points it does not have, a rotated box
 inflates, and a mesh has exact vertices to measure instead.
 
 ### Point-to-triangle, because point-to-nearest-vertex is a different measurement
 
-Cloud-to-mesh distance is the one part that had to be in Rust. The naive version — index the
-mesh vertices in the existing spatial grid and reuse the nearest-point search — is wrong by up
+Cloud-to-mesh distance is the one part that had to be in Rust. The naive version, index the
+mesh vertices in the existing spatial grid and reuse the nearest-point search, is wrong by up
 to most of a triangle on a coarse mesh, and coarse meshes are exactly what people compare
 against. A point 2 m above the centre of a unit cube's top face is 2 m from the surface and
 2.121 m from the nearest vertex; on a 20 cm-decimated model that gap is centimetres.
@@ -1047,7 +1044,7 @@ So triangles go into a uniform grid by their bounding boxes and each query expan
 time until no unsearched cell can be closer than the best already found. The per-triangle test
 is the standard region classification: project into the plane, and clamp to the nearest edge or
 vertex when the projection falls outside. A triangle spanning an absurd number of cells is
-registered by its three corners only — the expanding search still reaches it, and the
+registered by its three corners only, the expanding search still reaches it, and the
 alternative is one triangle in ten thousand cells.
 
 Validated natively against a unit cube (face, edge, corner, on-surface, inside), then in the
@@ -1056,15 +1053,15 @@ browser against a shell of 30,000 points 250 mm outside a 16,384-triangle sphere
 
 ### Decimation: vertex clustering, and saying so
 
-The brief allowed either quadric edge collapse or vertex clustering "if quadric is too much —
-say which". It is vertex clustering, and the trade is worth stating rather than burying:
+The brief allowed either quadric edge collapse or vertex clustering "if quadric is too much, say which". It is vertex clustering, and the trade is worth stating rather than burying:
 clustering is one linear pass with no priority queue, so it finishes on millions of triangles
 in well under a second, but you give it a **cell size** and get whatever triangle count that
 grid produces. Edge collapse hits an exact target and follows thin features better, at the cost
 of a heap of every edge re-ranked on each collapse.
 
 What it does keep is corners, because each cluster's representative is the point minimising the
-squared distance to the planes of its triangles — the quadric — not the mean of its vertices.
+squared distance to the planes of its triangles, which is the quadric, rather than the mean of
+its vertices.
 Where that system is near-singular (a flat patch, where any point on the plane is as good) or
 throws the point outside the cell, it falls back to the area-weighted mean. A 16,384-triangle
 sphere decimates to 770 triangles at a 20 cm cell with the area holding at **12.529 m² against
@@ -1073,7 +1070,7 @@ sphere decimates to 770 triangles at a 20 cm cell with the area holding at **12.
 **The bug that made this look broken first**: the cluster key packed three cell indices into
 one double as `(x+2²⁰)·2⁴⁰ + (y+2²⁰)·2²⁰ + z`, which exceeds 2⁵³ and collides. Collisions weld
 unrelated parts of a model into one vertex, and the sphere came out at 180 triangles and
-**4.12 m²** — a third of its area — which looks like a bad algorithm rather than a bad hash. It
+**4.12 m²**, a third of its area, which looks like a bad algorithm rather than a bad hash. It
 is now two levels of `Map`, outer keyed on the x index and inner on `y·dz + z`, neither of which
 can overflow for any grid a machine could hold. The same mistake was in the duplicate-triangle
 test and is fixed the same way.
@@ -1099,7 +1096,7 @@ boundary edges; a single quad reads 4.000 m² and four boundary edges.
 ### Sampling is the bridge back to the point tools
 
 Points scattered over a mesh, area-weighted (so one big triangle gets as many as the hundred
-small ones covering the same area), land as a **new point layer** — which means every cloud
+small ones covering the same area), land as a **new point layer**, which means every cloud
 tool works on a mesh through one step: fit primitives to it, section it, contour it, raster it,
 register a scan onto it. The generator is a small deterministic xorshift, so the same mesh
 gives the same points twice and a driver can assert on them. 120,000 points over a 12.560 m²
@@ -1116,8 +1113,7 @@ They are binned onto a coarse grid first, about 40,000 points a leaf.
 A PLY is a point cloud or a mesh depending on whether it has a `face` element with a non-zero
 count, and nothing in the name says which. The open path reads 64 KB of header and decides
 there; a PLY with faces becomes a mesh layer, one without stays on the cloud importer it always
-used. OBJ and STL have no such ambiguity. STL has no vertices at all — only loose triangles —
-so its corners are welded back together on import at a ten-millionth of the model's extent,
+used. OBJ and STL have no such ambiguity. STL has no vertices at all, only loose triangles, so its corners are welded back together on import at a ten-millionth of the model's extent,
 because without shared vertices smoothing, decimation and the boundary-edge count are all
 meaningless.
 
@@ -1128,16 +1124,16 @@ each one crossing a relay, and nineteen of them are decided entirely by the prev
 fit a plane in a box built from the bounds the last call reported, count points at the height
 the last fit found, contour at that height. The commands were never the slow part.
 
-So `script` takes the whole plan — an array of `{cmd, args, save?, label?}` — and runs it in
+So `script` takes the whole plan, an array of `{cmd, args, save?, label?}`, and runs it in
 the tab, with each step's result available to the next. The reply is one record per step in
 order, with its result, its error and its milliseconds, whatever happened.
 
 The variables are deliberately small, and the restraint is the design:
 
-- `$last` — the previous step's result.
-- `$layers`, `$active` — recomputed **before every step**, because a step can add, remove or
+- `$last`, the previous step's result.
+- `$layers`, `$active`, recomputed **before every step**, because a step can add, remove or
   activate a layer and a stale list would be worse than none.
-- `$name` — bound by a step's own `save`, or passed in by the caller as `vars`.
+- `$name`, bound by a step's own `save`, or passed in by the caller as `vars`.
 
 Dotted paths index in, array indices included: `$last.area`, `$layers.0.id`,
 `$s.bounds.local.centre`. A string that is *exactly* `"$path"` is replaced by the value with
@@ -1147,8 +1143,8 @@ box centre ends up as the string `"3.025,2.025,0"`.
 
 What it deliberately does not have: conditionals, loops, arithmetic. Every one of those is a
 step toward a badly-specified programming language embedded in JSON, and the agent calling it
-already has a real one. A script is a batch, not a program. It also cannot run a script —
-checked explicitly, because the alternative is a stack overflow in someone's browser tab.
+already has a real one. A script is a batch, not a program. It also cannot run a script. That is checked explicitly, because the alternative is a stack
+overflow in someone's browser tab.
 
 Three smaller decisions that each came from a concrete failure mode:
 
@@ -1163,9 +1159,9 @@ Three smaller decisions that each came from a concrete failure mode:
   before anything executes, in the tab and in the relay both, so a read-only session cannot get
   an editing command through by wrapping it.
 
-`drive-script.mjs` runs one end to end — fit a floor inside a box built from the cloud's own
+`drive-script.mjs` runs one end to end, fit a floor inside a box built from the cloud's own
 bounds, count what is on it at the height the fit found, measure the diagonal from two
-whole-array variables — and then checks the failure paths: an unknown command stops the run, a
+whole-array variables, and then checks the failure paths: an unknown command stops the run, a
 bad variable is named, `stopOnError:false` finishes anyway, and a nested script is refused.
 
 ## A desktop app, and the three things a web page cannot do
@@ -1184,14 +1180,13 @@ over 100 MB for an Electron shell of the same page.
 
 Every decoder in this project is written against `readRange(offset, length) -> Uint8Array`,
 because the point of the E57 reader is that the file never enters memory. In a browser that is
-`FileReaderSync` over `File.slice()` inside a worker. In the desktop app there is no `File` —
-the user chose a path, or dropped one from Finder, which Tauri delivers as a path rather than
+`FileReaderSync` over `File.slice()` inside a worker. In the desktop app there is no `File`, the user chose a path, or dropped one from Finder, which Tauri delivers as a path rather than
 a drop event.
 
 So the shell serves byte ranges over a custom URL scheme and the worker reads them with a
 **synchronous XHR**, which a worker is allowed to do. The alternatives were worse. A
 `SharedArrayBuffer` with an `Atomics.wait` handshake needs cross-origin isolation and a main
-thread that is never busy — and the main thread here is the one rendering. Making the reader
+thread that is never busy, and the main thread here is the one rendering. Making the reader
 async means rewriting the Rust `Read` implementation and everything above it. A blocking range
 request inside a worker is the small answer, and because it has the same shape as the browser
 path, nothing downstream changed: one ternary in each of three workers.
@@ -1199,8 +1194,8 @@ path, nothing downstream changed: one ternary in each of three workers.
 **It hung on the first run, silently.** Sixty seconds at 6% CPU and flat memory. The cause was
 the Content Security Policy: `connect-src` did not list the custom scheme, so WKWebView refused
 the request without an error a worker could see. Adding `e57vfile:` to `connect-src` fixed it
-outright. Worth writing down because the symptom — a hang, not a failure — points nowhere near
-the cause.
+outright. Worth writing down because the symptom is a hang rather than a failure, which points nowhere
+near the cause.
 
 ### The bug that made every fix invisible
 
@@ -1209,7 +1204,7 @@ not. `tauri::generate_context!()` bakes the built front-end into the binary **at
 expansion time**, and cargo does not know that happened: rebuild `dist-desktop`, leave `src/`
 alone, and cargo cheerfully skips the compile and ships the *previous* front-end inside a
 freshly bundled app. Everything compiles, the app runs, and it is the wrong app. The same trap
-caught `include_str!("../../mcp/tools.json")` — the binary served 29 tools for a while after
+caught `include_str!("../../mcp/tools.json")`, the binary served 29 tools for a while after
 the file had 30.
 
 Two lines in `build.rs` fix it, and they are the kind of line that is obvious only afterwards:
@@ -1226,7 +1221,7 @@ relay. Guarding them at runtime would still ship them.
 So the desktop build is a separate Vite mode. An `enforce: 'pre'` plugin strips the analytics
 script and the font links out of the HTML (the font stacks already name `system-ui` and
 `ui-monospace` as fallbacks, so this costs the typeface and nothing else), and resolves
-`./session` to a four-line stub that throws with an explanation — which takes **458 KB of
+`./session` to a four-line stub that throws with an explanation, which takes **458 KB of
 Firestore client** out of the bundle rather than merely not calling it. It also blanks the
 web-only install snippet, because a URL in a `<pre>` is still a URL in the shipped bytes.
 Afterwards the only absolute URLs left in `dist-desktop` are the two XML namespaces that SVG
@@ -1236,14 +1231,14 @@ requires. The one socket the process opens is a listener on 127.0.0.1 for the ag
 
 The desktop app serves MCP from Rust, and the web build serves it from Node. Two
 implementations describing the same thirty tools in two languages would drift the week after
-they were written — so neither describes them. `mcp/tools.json` holds every name, description,
+they were written, so neither describes them. `mcp/tools.json` holds every name, description,
 JSON Schema, timeout and reply shape; `mcp/server.mjs` reads it and converts each schema back
 into the zod shape the SDK wants, and `desktop/src/mcp.rs` embeds it and serves `tools/list`
 verbatim.
 
 Pushing the *reply* shape into the same file is what made the two actually identical rather
-than merely similar. Each tool carries a small `ui` record — `shot: always | never | own-image
-| own-png`, an optional `noShotWhen: {op: [...]}`, an optional `writesFile: {arg, via}` — and
+than merely similar. Each tool carries a small `ui` record, `shot: always | never | own-image
+| own-png`, an optional `noShotWhen: {op: [...]}`, an optional `writesFile: {arg, via}`, and
 both servers implement that one algorithm instead of twenty-nine hand-written handlers. The
 Node server went from 282 lines to 171 in the process. `test-mcp.mjs` drives each server over
 stdio the way an agent does and compares every name, description, property list and required
@@ -1251,13 +1246,13 @@ list against the file: 23 checks, and it runs in CI on all three platforms.
 
 The split that made this possible: in the web build the Node MCP server *is* the WebSocket
 endpoint, but the desktop app is already running when an agent starts, so the app owns a small
-router — one viewer, any number of agents — and `e57view --mcp` is just another agent that
+router with one viewer and any number of agents, and `e57view --mcp` is just another agent that
 happens to speak MCP on its own stdin and stdout. The wire protocol is byte-for-byte the one
 the web build already used, so `agent.ts` cannot tell which server it is talking to.
 
 ### Measured, on this machine, on the real scan
 
-`drive-desktop.mjs` drives the **built app** through its own MCP server — there is no
+`drive-desktop.mjs` drives the **built app** through its own MCP server. There is no
 Playwright, because a WKWebView is not a browser you can attach to, and the interface an agent
 will actually use is the right one to test through. Against `1973-registered.e57`, 3.23 GB:
 
@@ -1266,7 +1261,7 @@ will actually use is the right one to test through. Against `1973-registered.e57
 | open by path, 73,757,292 points | **13.0 s** (Chrome, same file: 13.5 s) |
 | resident memory, whole scan loaded | **82 MB** (the 1,033 MB of records live in GPU buffers) |
 | cache the decoded cells to OPFS | **1.1 s** |
-| reopen from that cache | **0.7 s — 19.6x faster than decoding** |
+| reopen from that cache | **0.7 s, 19.6x faster than decoding** |
 | export 1-in-40 as LAS to a chosen path | 48.0 MB in 1.0 s, byte-exact |
 | exact point-in-box count over all 73.8M | passes |
 
@@ -1293,7 +1288,7 @@ someone has made them. These are the ones that took thought.
 
 The licence is **GPL-3.0-only**, not `-or-later`, and the reason is in the dependency tree.
 Apache-2.0 is compatible with GPLv3 in one direction: GPLv3 may absorb Apache-2.0 code, but not
-the reverse — and it is **not** compatible with GPLv2 at all. Half this project's dependency
+the reverse, and it is **not** compatible with GPLv2 at all. Half this project's dependency
 tree is `Apache-2.0 OR MIT`, and `wry`, `tao` and most of Tauri are in it. `-or-later` would
 offer a downstream recipient the option of GPLv2, under which that tree cannot legally be
 combined. `-only` is the honest statement of what is actually permitted.
@@ -1316,7 +1311,7 @@ authorship that is not true.
 Twelve drivers had `/Users/tamer/Downloads/1973-registered.e57` in them, which is worse than
 untidy: it is a path that exists on exactly one machine, so every one of those drivers fails
 with `ENOENT` for anybody else and the failure says nothing useful. They read
-`E57VIEW_TEST_FILE` now and **skip with an explanation**, exiting 0 — a driver that cannot run
+`E57VIEW_TEST_FILE` now and **skip with an explanation**, exiting 0, a driver that cannot run
 is not a driver that failed, and CI has no 3 GB scan to give it. `tools/scrub-paths.mjs --check`
 keeps them that way.
 
@@ -1329,7 +1324,7 @@ the cost of a 3 GB accident is a rewritten history.
 site inside it is `e57view`, which is the address people use; `opensketch.web.app` is a second
 site in the same project that does nothing but 301 every path to the new one. The
 config in `src/firebase-config.ts` is public web config rather than a secret, and the README
-says how to point it at your own project — or delete the whole thing, since the viewer, the
+says how to point it at your own project, or delete the whole thing, since the viewer, the
 local MCP bridge and the desktop app all work with no Firebase at all, and the desktop build
 does not even contain the client.
 
@@ -1337,7 +1332,7 @@ does not even contain the client.
 
 The old README was an engineering log with a features list on top. The new one leads with what
 the program is, a picture of it running, and six claims that each carry a number an automated
-test asserts — 13.5 s for a 3.23 GB file, 9.8 ms for 8M points, 0.0000° on a cylinder axis.
+test asserts, 13.5 s for a 3.23 GB file, 9.8 ms for 8M points, 0.0000° on a cylinder axis.
 Claims with numbers are checkable; claims without them are marketing.
 
 The architecture diagram is Mermaid, which GitHub renders natively. Worth knowing: **parsing is
@@ -1348,7 +1343,7 @@ its separator.
 
 That table check had one false positive worth recording, because the fix is not obvious: a
 headerless two-column table starts `| | |`, which matches the obvious "separator row" regex
-`^\|[-: |]+\|$` — spaces are in the character class. Requiring at least one dash fixes it.
+`^\|[-: |]+\|$`, spaces are in the character class. Requiring at least one dash fixes it.
 Five perfectly good tables looked broken until then.
 
 ### The gap analysis, a year later in project time
@@ -1357,14 +1352,14 @@ Five perfectly good tables looked broken until then.
 brought up to date, and the shape of it changed completely. Five gaps were called structural at
 the time: one cloud at a time, no scalar fields, normals that could only be read, a cloud that
 could not be moved, and no freehand selection. **Four are closed.** The fifth turned into
-something deliberately different — an outline becomes a prism region you can orbit around,
+something deliberately different, an outline becomes a prism region you can orbit around,
 because a cut you cannot inspect from another angle was the thing people kept getting wrong.
 
 Of 190 capabilities compared: **64 covered, 48 partial, 78 missing**, against 29 / 24 / 137 at
 the start. What is left is four honest groups rather than a list: no project file (which most
 of the polyline and label rows wait behind), no headless batch mode, none of the research
 plugins, and a long tail of formats and conveniences. Keeping the statuses in the generator
-rather than the Markdown means the counts at the top cannot disagree with the tables — which
+rather than the Markdown means the counts at the top cannot disagree with the tables, which
 they would have, within a week, otherwise.
 
 ## Reading CloudCompare's filters instead of guessing at them

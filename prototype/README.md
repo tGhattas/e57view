@@ -1,14 +1,14 @@
-# prototype — validated, working
+# prototype: validated, working
 
 This is the code the plan's numbers came from. It runs.
 
 ## What's here
 
-- `crates/e57-wasm/` — the Rust `Read + Seek` shim over a synchronous JS ranged-read callback,
+- `crates/e57-wasm/`: the Rust `Read + Seek` shim over a synchronous JS ranged-read callback,
   plus a `#[wasm_bindgen]` façade. **This is the piece that makes a 3.23 GB file readable from
   wasm32's 4 GB address space.** Includes the windowed cache (see plan: it is mandatory).
-- `bench/main.rs` — native benchmark/probe used to profile decode and inspect file structure.
-- `testshim.mjs` / `clean.mjs` — Node harnesses that drive the wasm module with `readSync`,
+- `bench/main.rs`: native benchmark and probe, used to profile decode and inspect file structure.
+- `testshim.mjs` and `clean.mjs`: Node harnesses that drive the wasm module with `readSync`,
   standing in for `FileReaderSync` in a Worker.
 
 ## Build
@@ -42,5 +42,5 @@ const readRange = (offset, length) =>
 Nothing else changes. `FileReaderSync` is worker-only and synchronous, which is exactly what the
 Rust `Read` impl needs, and it requires no SharedArrayBuffer and no COOP/COEP headers.
 
-Re-tune `set_window_size()` once in browser — `FileReaderSync` has higher per-call overhead than
+Re-tune `set_window_size()` once in a browser. `FileReaderSync` has higher per-call overhead than
 Node's `readSync`, so the optimum may sit above 16 MB.

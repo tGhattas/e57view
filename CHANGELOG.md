@@ -32,8 +32,8 @@ been released yet, so everything is unreleased.
 ### Viewing
 
 - A **leaf-only octree** with 16-bit positions (14 bytes a point) and each leaf shuffled, so
-  drawing a prefix of a leaf is a uniform subsample — continuous level of detail at no storage
-  cost.
+  drawing a prefix of a leaf is a uniform subsample. That gives continuous level of detail at
+  no storage cost.
 - A **raw WebGL2 renderer** that frustum-culls leaves, sizes each one's draw count by projected
   screen area and fills a per-frame budget. 8M points in 9.8 ms, 32M in 30 ms.
 - **Eye-dome lighting** with a same-surface tolerance, adaptive point sizing, circular points,
@@ -49,8 +49,8 @@ been released yet, so everything is unreleased.
 
 - **Regions**: box, sphere, slab and prism, added to a list and applied only when you say so.
   Placed by pointing at a thing and grown or fitted to what they hold, rather than drawn.
-- **Crop both ways** — keep what is inside, or remove it — with the preview dimming whichever
-  half is going, and the confirmation counting both sides.
+- **Crop both ways**, keeping what is inside or removing it, with the preview dimming whichever
+  half is going and the confirmation counting both sides.
 - **Undo and redo** for every destructive step, spilling to private browser storage so undoing
   a crop of 70M points does not need a second copy in memory.
 - **Save as** writes what is in memory, crop and transform included, and never touches the
@@ -59,18 +59,18 @@ been released yet, so everything is unreleased.
 ### Analysis
 
 - **Normals**: estimated from neighbourhoods, propagated breadth-first, and oriented toward the
-  scan's own station positions per point — which is the only orientation that is right for
+  scan's own station positions per point, which is the only orientation that is right for
   something scanned from the inside.
 - **Scalar fields** from curvature, planarity, verticality, roughness, density and more, with a
   ramp, a histogram and a value filter.
 - **Cleaning**: **SOR and noise filters with the same semantics and defaults as CloudCompare's**
-  — reimplemented in Rust from `CCCoreLib::CloudSamplingTools`, not copied, and asserted to
+  reimplemented in Rust from `CCCoreLib::CloudSamplingTools`, not copied, and asserted to
   remove the same points as a transcription of that algorithm on every run. The noise filter
   has all of CloudCompare's options: a sphere or kNN neighbourhood, a relative or absolute
   threshold, and whether points with too few neighbours to fit a plane are dropped. Plus
   duplicate removal and spatial subsampling.
 - **Connected components**, so a cluster can be isolated and kept or dropped.
-- **Fit primitives** — plane, sphere, cylinder, circle — each reporting an RMS, because a
+- **Fit primitives**: plane, sphere, cylinder and circle, each reporting an RMS, because a
   cylinder fitted to a flat wall has a radius and an axis and means nothing without one.
   Validated to 0.008° on a plane normal, 0.01 mm on a sphere, 0.0000° on a cylinder axis.
 - **RANSAC shape detection** that removes each shape's inliers before looking for the next,
@@ -129,8 +129,8 @@ been released yet, so everything is unreleased.
 
 - **Tauri v2**, 4.7 MB, working with no network at all: no analytics, no web fonts, and 458 KB
   of Firestore client resolved away rather than merely not called.
-- Files open **by path** — Finder drops, a File menu with Open Recent, `e57view scan.e57` — and
-  exports go through **native Save dialogs**.
+- Files open **by path**: Finder drops, a File menu with Open Recent, `e57view scan.e57`.
+  Exports go through **native Save dialogs**.
 - **MCP built in**: `e57view --mcp` speaks MCP on stdio with no Node and no install, from the
   same `mcp/tools.json` the web server reads, so the two cannot drift.
 - On a 3.23 GB, 73.8M-point E57: **13.0 s to open by path, 82 MB resident, 1.1 s to cache,

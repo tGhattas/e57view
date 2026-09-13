@@ -21,16 +21,17 @@ with the tables.
 
 ## Where the remaining distance is
 
-Five structural gaps were named when this audit was first written. Four have since closed —
-several clouds at once, scalar fields, computing and orienting normals, and moving the cloud —
-and the fifth turned into something deliberately different: an outline drawn on screen becomes
-a **prism region** you can orbit around and adjust rather than a one-shot screen-space cut,
+Five structural gaps were named when this audit was first written. Four have since closed:
+several clouds at once, scalar fields, computing and orienting normals, and moving the cloud.
+The fifth turned into something deliberately different. An outline drawn on screen becomes a
+**prism region** you can orbit around and adjust rather than a one-shot screen-space cut,
 because a cut you cannot inspect from another angle is the thing users kept getting wrong.
 
 What is left divides into four honest groups.
 
-**1. The data model stops at clouds and meshes.** CloudCompare holds a tree of entities —
-polylines, sensors, labels, primitives, viewports — that can be saved together as a project.
+**1. The data model stops at clouds and meshes.** CloudCompare holds a tree of entities,
+including polylines, sensors, labels, primitives and viewports, that can be saved together as a
+project.
 e57view has layers of points and layers of triangles, and nothing that holds them together on
 disk. A project file is the single biggest missing thing, and most of the "no" rows about
 polylines and labels follow from it.
@@ -50,7 +51,7 @@ what twenty years looks like.
 
 ## Everything, by category
 
-Legend: **Have** · **Partial** — the note says exactly what differs · **Missing**.
+Legend: **Have**, **Partial** (the note says exactly what differs), **Missing**.
 
 ### Session and data model
 
@@ -60,14 +61,14 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 |---|---|---|
 | Multiple entities open at once | **Have** | Layers, every visible one drawn, exactly one active. |
 | Per-entity visibility and property toggles | **Partial** | Visibility and a colour tint per layer. Colour mode, point size and the scalar-field display are global. |
-| Clone an entity | **Have** | — |
+| Clone an entity | **Have** | none |
 | Merge clouds | **Have** | Through each layer's own transform, so the geometry on screen is the geometry that lands. |
 | Save a project file | **Missing** | The on-device cache stores one scan's decoded cells; there is no file holding several layers, their transforms and the camera. |
 | Create a cloud from picked points, paste from clipboard | **Partial** | Sampling a mesh makes a new point layer; there is no picking or pasting into one. |
-| Select children by type or name | **Missing** | — |
+| Select children by type or name | **Missing** | none |
 | Global shift and scale, user editable | **Partial** | The shift is subtracted automatically on load and reported by the agent as `translation`; it is not editable in the panel. |
 | Octree as a user-visible object | **Partial** | Internal to the renderer and the analyser. CloudCompare exposes compute and resample, and other tools consume it. |
-| Kd-tree | **Missing** | — |
+| Kd-tree | **Missing** | none |
 
 ### File formats
 
@@ -86,12 +87,12 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 | Mesh formats in (OBJ, STL, OFF, VTK, FBX, Maya) | **Partial** | PLY, OBJ and STL open as mesh layers. The rest do not. |
 | Mesh formats out | **Partial** | PLY, OBJ and STL, for any mesh layer including a reconstructed surface. No FBX, VTK or OFF. |
 | DXF and SHP vector | **Partial** | Contours export as DXF LWPOLYLINE and as GeoJSON. Nothing vector is read, and there is no SHP. |
-| Draco compressed (.drc) | **Missing** | — |
-| RIEGL RDBX, plus match and plane patch files | **Missing** | — |
-| PCD via the Point Cloud Library | **Missing** | — |
-| STEP CAD import | **Missing** | — |
-| Photogrammetry projects (Photoscan PSZ, Bundler) | **Missing** | — |
-| Native binary formats (BIN, SBF) | **Missing** | — |
+| Draco compressed (.drc) | **Missing** | none |
+| RIEGL RDBX, plus match and plane patch files | **Missing** | none |
+| PCD via the Point Cloud Library | **Missing** | none |
+| STEP CAD import | **Missing** | none |
+| Photogrammetry projects (Photoscan PSZ, Bundler) | **Missing** | none |
+| Native binary formats (BIN, SBF) | **Missing** | none |
 | Raster grids in and out | **Partial** | A height model exports as a PNG with its world file. No GeoTIFF, no ASC, and no raster import. |
 | Depth map, ICM, POV, PN, PV, SOI, Sinusx, Mascaret | **Missing** | A long tail of survey and research formats. |
 
@@ -103,19 +104,19 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 |---|---|---|
 | Eye-dome lighting | **Have** | Both have it. Ours has a same-surface tolerance, so close-ups do not ring. |
 | Bubble view from a scanner station | **Have** | Both have it. Ours blends the E57 panorama with the points. |
-| Cursor coordinate readout | **Have** | — |
+| Cursor coordinate readout | **Have** | none |
 | Frame rate test | **Have** | Internal, used by the drivers. |
-| Sun light and a positionable custom light | **Missing** | — |
+| Sun light and a positionable custom light | **Missing** | none |
 | Ambient occlusion | **Missing** | CloudCompare has qPCV and an SSAO option. |
 | Materials and textures on meshes | **Missing** | Mesh layers carry vertex colours only. |
-| Multiple 3D views, tiled or cascaded | **Missing** | — |
-| Camera link between views | **Missing** | — |
+| Multiple 3D views, tiled or cascaded | **Missing** | none |
+| Camera link between views | **Missing** | none |
 | Stereo display | **Missing** | Anaglyph, side by side and NVIDIA Vision. |
 | Render to a file at a chosen resolution | **Partial** | The agent renders at any width with an exact pixel-to-metre mapping. The panel has no render-to-file button. |
 | Save a viewport as an object | **Partial** | A view link restores the camera and colour mode; it is a URL, not an entity. |
 | Colour scale manager and custom ramps | **Partial** | One ramp, with the display range and a value filter. No manager, no custom scales, no scale bar in the view. |
 | Orthographic projection | **Partial** | Every agent view and section is truly orthographic with a calibrated mapping. The panel camera is perspective. |
-| Lock rotation about an axis | **Missing** | — |
+| Lock rotation about an axis | **Missing** | none |
 | Preset views and precise zoom | **Partial** | Fit and top down in the panel; the agent can set an exact pose or an orbit. No front, side or isometric buttons. |
 | Full screen | **Partial** | In the desktop app's View menu. Not in the browser build. |
 | Clipping planes | **Partial** | Height clipping and crop volumes. No arbitrary plane you can toggle. |
@@ -129,12 +130,12 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 | Crop to a box or sphere | **Have** | With rotation, as CloudCompare's clipping box also has. |
 | Section and slab cuts | **Have** | Any number, unioned. |
 | Delete points inside a region | **Have** | Keep inside and Remove inside, with the preview dimming whichever half is going. |
-| Freehand polygon segmentation | **Have** | An outline becomes a *prism* — a real 3D region you can orbit around and adjust — rather than a one-shot screen-space cut. |
+| Freehand polygon segmentation | **Have** | An outline becomes a *prism*, a real 3D region you can orbit around and adjust, rather than a one-shot screen-space cut. |
 | Clipping box with repeated slices | **Partial** | No repeat, no slice series generation. |
-| Extract sections along a polyline, and unfold | **Missing** | — |
+| Extract sections along a polyline, and unfold | **Missing** | none |
 | Label connected components | **Have** | Written as a scalar field, so one cluster can be isolated with the value filter. |
-| K-means clustering | **Missing** | — |
-| Front propagation segmentation | **Missing** | — |
+| K-means clustering | **Missing** | none |
+| Front propagation segmentation | **Missing** | none |
 | Filter points by scalar value | **Have** | With a live count, and Delete points outside as one undoable step. |
 | Colour based segmentation | **Missing** | qColorimetricSegmenter picks two colours and a tolerance. |
 | Manual classification into layers | **Partial** | A LAS or LAZ classification is read as a scalar field. There is no painting classes by hand. |
@@ -154,7 +155,7 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 | Move bounding box centre, min or max to the origin | **Partial** | Translate by an exact vector, which does it in one step, but there is no button for the three cases. |
 | Subsample a cloud | **Have** | Spatial subsampling to a spacing, as an undoable edit; plus striding at load and at export. |
 | Remove duplicate points | **Have** | To a tolerance. |
-| Shift points along their normals | **Missing** | — |
+| Shift points along their normals | **Missing** | none |
 | Primitive factory | **Partial** | A fitted plane, sphere, cylinder or circle is drawn in the view; it does not become an entity you can save or measure against. |
 
 ### Scalar fields
@@ -167,14 +168,14 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 | Scalar field manager, rename, delete | **Partial** | Clear, and replace by computing another. No manager. |
 | Histogram of a field | **Have** | With the display range and the filter range drawn on it. |
 | Statistical parameters of a field | **Partial** | Minimum, maximum and how many points carry a value. No mean, variance or percentile report. |
-| Gradient of a field | **Missing** | — |
-| Gaussian and bilateral filtering of a field | **Missing** | — |
+| Gradient of a field | **Missing** | none |
+| Gaussian and bilateral filtering of a field | **Missing** | none |
 | Filter by value into a new cloud | **Have** | Delete points outside the range, undoably. |
 | Field arithmetic | **Missing** | Add, subtract, multiply between fields. |
 | Convert field to RGB, and RGB to field | **Missing** | Including random RGB per integer value. |
 | Add constant, classification or point index fields | **Partial** | Classification, from LAS and LAZ. No constant or index field. |
-| Coordinates to fields, and fields to coordinates | **Missing** | — |
-| Normals to fields, and fields to normals | **Missing** | — |
+| Coordinates to fields, and fields to coordinates | **Missing** | none |
+| Normals to fields, and fields to normals | **Missing** | none |
 | Interpolate a field from another entity | **Partial** | Distance to another layer, and distance to a mesh, are written as fields. There is no general interpolation of an existing field across entities. |
 | Split a cloud by integer field value | **Partial** | Filter to one value and keep. It does not produce several clouds at once. |
 | Colour scales bound to a field | **Partial** | One ramp over the field's range. |
@@ -185,18 +186,18 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 
 | Capability in CloudCompare | e57view | Note |
 |---|---|---|
-| Brightness and gamma | **Have** | — |
+| Brightness and gamma | **Have** | none |
 | Intensity range mapping | **Have** | With a percentile auto-range. |
 | Height ramp | **Partial** | An elevation colour mode with a fixed ramp. |
 | Set a unique colour | **Partial** | A per-layer tint multiplier, for telling two overlapping scans apart. |
-| Colorize, apply a hue while keeping luminance | **Missing** | — |
+| Colorize, apply a hue while keeping luminance | **Missing** | none |
 | Colour levels | **Missing** | Input and output level adjustment per channel. |
-| Convert to greyscale | **Missing** | — |
-| Colour to scalar field | **Missing** | — |
+| Convert to greyscale | **Missing** | none |
+| Colour to scalar field | **Missing** | none |
 | Enhance colours with intensities | **Have** | The RGB x intensity colour mode. |
 | Colour filters | **Missing** | Bilateral, Gaussian, mean and median. |
-| Interpolate colours from another entity | **Missing** | — |
-| Clear colours | **Missing** | — |
+| Interpolate colours from another entity | **Missing** | none |
+| Clear colours | **Missing** | none |
 
 ### Normals
 
@@ -206,13 +207,13 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 |---|---|---|
 | Read normals from the file | **Have** | The libE57 nor extension, plus PLY and LAS. |
 | Compute normals from a neighbourhood | **Have** | Plane fit over k nearest neighbours, in a worker over the whole cloud. |
-| Orient normals with a minimum spanning tree | **Partial** | Breadth-first propagation through the neighbour graph, then a per-point decision to face the nearest scanner station — which is the orientation that is right for anything scanned from the inside. Not an MST. |
-| Orient normals with fast marching | **Missing** | — |
+| Orient normals with a minimum spanning tree | **Partial** | Breadth-first propagation through the neighbour graph, then a per-point decision to face the nearest scanner station, which is the orientation that is right for anything scanned from the inside. It is not an MST. |
+| Orient normals with fast marching | **Missing** | none |
 | Hough transform normals | **Missing** | qHoughNormals. |
-| Invert normals | **Have** | — |
+| Invert normals | **Have** | none |
 | Normals to dip and dip direction | **Partial** | A fitted plane reports dip and dip direction in degrees. Not written per point as a field. |
 | Normals to HSV colours | **Partial** | A normal-shading colour mode. Not a stored colour. |
-| Display normals as lines | **Missing** | — |
+| Display normals as lines | **Missing** | none |
 
 ### Measurement and inspection
 
@@ -228,7 +229,7 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 | Measure a mesh volume | **Have** | With the boundary edge count beside it, because an open mesh's divergence sum is not an enclosed volume. A unit cube reads 1.000 m3. |
 | 2.5D volume between two surfaces | **Have** | Cut and fill reported separately. Measured against arithmetic: 64.202 m3 against 64.274, -0.11%. |
 | Geometric features | **Have** | Fifteen: roughness, curvature, planarity, linearity, sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume and surface density, neighbour count and the three eigenvalues. |
-| Local statistical test | **Missing** | — |
+| Local statistical test | **Missing** | none |
 | Batch export of cloud and plane info | **Partial** | The agent's `state` and `fit` return exactly this as JSON. There is no batch file writer. |
 
 ### Registration and alignment
@@ -238,8 +239,8 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 | Capability in CloudCompare | e57view | Note |
 |---|---|---|
 | Fine registration by ICP | **Have** | Point-to-plane, rotating about the centroid, reporting per-iteration RMS, overlap, pairs and the matrix. Recovers a known offset to 0.000 mm / 0.0000 degrees. |
-| Align by picking point pairs | **Missing** | — |
-| Match bounding box centres | **Have** | — |
+| Align by picking point pairs | **Missing** | none |
+| Match bounding box centres | **Have** | none |
 | Match scales | **Have** | From boxes measured the same way on both layers, which is the detail that decides whether the number means anything. |
 | Automatic cloud alignment | **Missing** | No feature-based global registration. |
 | Best registration RMS matrix | **Have** | ICP reports it. |
@@ -252,12 +253,12 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 |---|---|---|
 | Cloud to cloud distance | **Have** | Written as a scalar field, optionally signed along the reference's own normals. |
 | Cloud to mesh distance | **Have** | Point-to-triangle through a triangle grid, not point-to-nearest-vertex. 249.96 to 250.64 mm on a known 250 mm offset. |
-| Cloud to primitive distance | **Missing** | — |
-| Closest point set | **Missing** | — |
+| Cloud to primitive distance | **Missing** | none |
+| Closest point set | **Missing** | none |
 | M3C2 multiscale change detection | **Partial** | The signed variant projects onto the reference point's own normal, which is the part of M3C2 that stops settlement and heave cancelling. It is not multiscale and has no confidence interval. |
 | Volumetric change between meshes | **Missing** | qVoxFall, for rockfall volumes. |
 | Comparison against a surface of revolution | **Missing** | qSRA, with 2D distance maps and DXF profiles. |
-| Distance maps and distance to a best fit quadric | **Missing** | — |
+| Distance maps and distance to a best fit quadric | **Missing** | none |
 
 ### Meshing and surfaces
 
@@ -270,11 +271,11 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 | Export a mesh | **Have** | PLY, OBJ or STL, with the layer transform and the global shift baked in. |
 | Delaunay 2.5D triangulation | **Missing** | On the XY plane or a best fitting plane. |
 | Mesh from scan grids | **Missing** | Uses the acquisition grid of a structured scan. |
-| Surface between two polylines | **Missing** | — |
-| Subdivide a mesh | **Missing** | — |
-| Flip triangles | **Have** | — |
+| Surface between two polylines | **Missing** | none |
+| Subdivide a mesh | **Missing** | none |
+| Flip triangles | **Have** | none |
 | Sample points on a mesh | **Have** | Area-weighted, by count or by density, with interpolated normals and colours, into a new point layer. |
-| Convert texture or material to per-vertex RGB | **Missing** | — |
+| Convert texture or material to per-vertex RGB | **Missing** | none |
 | Flag vertices by type | **Partial** | Boundary and non-manifold edges are counted and reported; they are not flagged per vertex. |
 | Boolean CSG operations on meshes | **Missing** | qCork and a libIGL based alternative. |
 | Moving least squares smoothing and reconstruction | **Missing** | Through the PCL wrapper. |
@@ -289,13 +290,13 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 |---|---|---|
 | Fit a plane | **Have** | With RMS, worst distance, dip and dip direction. Normal to 0.008 degrees on a fixture. |
 | Fit a sphere | **Have** | Algebraic then Gauss-Newton. Centre and radius to 0.01 mm. |
-| Fit a circle | **Have** | — |
+| Fit a circle | **Have** | none |
 | Fit a cylinder | **Have** | Axis from the normal set's least-variance direction, which is what makes it hold on a partial arc. 0.0000 degrees off the axis on a fixture. |
-| Fit a 2D polygon facet | **Missing** | — |
-| Fit a 2.5D quadric | **Missing** | — |
+| Fit a 2D polygon facet | **Missing** | none |
+| Fit a 2.5D quadric | **Missing** | none |
 | RANSAC shape detection | **Partial** | Planes, spheres and cylinders, with inlier removal as the non-maximum suppression. No cones or tori. |
-| Promote a circle to a cylinder | **Missing** | — |
-| Bounding box PCA fit | **Missing** | — |
+| Promote a circle to a cylinder | **Missing** | none |
+| Bounding box PCA fit | **Missing** | none |
 | Plane properties, compare and flip | **Partial** | A fit reports its plane fully; there is no comparison between two of them. |
 
 ### Rasterisation, grids and volume
@@ -319,8 +320,8 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 |---|---|---|
 | Manual removal inside a volume | **Have** | Box, sphere, slab or prism, with undo. |
 | Statistical outlier removal | **Have** | On neighbour distance statistics, reporting the mean and the cut-off it used. |
-| Noise filter relative to a fitted surface | **Have** | — |
-| Remove duplicate points | **Have** | — |
+| Noise filter relative to a fitted surface | **Have** | none |
+| Remove duplicate points | **Have** | none |
 | Cloth simulation ground filter | **Missing** | qCSF, the standard ground and off-ground split. |
 | Hidden point removal | **Missing** | qHPR, approximate visibility from a viewpoint. |
 
@@ -349,12 +350,12 @@ Legend: **Have** · **Partial** — the note says exactly what differs · **Miss
 |---|---|---|
 | Panorama imagery from the file | **Have** | E57 spherical images, shown as bubbles. |
 | Stand at a scanner position | **Partial** | Enter the panorama. CloudCompare models the sensor and can render the view from it. |
-| TLS and GBL sensor model | **Partial** | Station positions are read and used — to orient normals outward per point — but there is no editable sensor object. |
-| Depth buffer create, show, export | **Missing** | — |
+| TLS and GBL sensor model | **Partial** | Station positions are read and used, to orient normals outward per point, but there is no editable sensor object. |
+| Depth buffer create, show, export | **Missing** | none |
 | Point visibility from a sensor | **Missing** | Using the depth buffer or the octree. |
-| Camera sensor and uncertainty projection | **Missing** | — |
-| Compute ranges from a sensor | **Missing** | — |
-| Compute scattering angles | **Missing** | — |
+| Camera sensor and uncertainty projection | **Missing** | none |
+| Compute ranges from a sensor | **Missing** | none |
+| Compute scattering angles | **Missing** | none |
 
 ### Automation
 
@@ -378,7 +379,7 @@ a scanner position, and a JSON-RPC remote control plugin, so none of those are o
   equivalent.
 - **It opens a 3.23 GB E57 in about 13 seconds** with no import or conversion step, and caches
   the decoded cells so the next open takes about a second.
-- **A desktop build that is 4.7 MB and opens no network connection at all** — same code, same
+- **A desktop build that is 4.7 MB and opens no network connection at all.** Same code, same
   renderer, with files by path and MCP served from the binary.
 - **Touch interface for iPhone and iPad**, including a bottom sheet and a larger gizmo.
 - **Undo and redo for destructive edits**, spilling large steps to disk. CloudCompare's menu

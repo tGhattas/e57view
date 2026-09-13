@@ -1,4 +1,4 @@
-# e57view — build plan
+# e57view, build plan
 
 A browser E57 viewer with ReCap-grade visual quality, no install and no upload.
 
@@ -43,19 +43,19 @@ Four stages, three of them off the main thread.
    WebGL2 + EDL + normals
 ```
 
-**Stage 1 — Probe.** Worker opens the file through the ranged-read shim, reads the 48-byte
+**Stage 1, Probe.** Worker opens the file through the ranged-read shim, reads the 48-byte
 header and the XML section. Returns scan list, point counts, bounds, poses, sensor strings, and
 the image2D table. Cost: 10 ms, 0.2 MB read. The UI shows a real scan card immediately.
 
-**Stage 2 — Index.** Workers stream points through the WASM decoder and feed an octree builder.
+**Stage 2, Index.** Workers stream points through the WASM decoder and feed an octree builder.
 Nodes are quantized to 12 B/pt and written to OPFS as they complete. Coarse levels are emitted
 first so the renderer has something within ~1 s.
 
-**Stage 3 — Cache.** Keyed on file identity (name + size + lastModified + E57 root GUID). A
+**Stage 3, Cache.** Keyed on file identity (name + size + lastModified + E57 root GUID). A
 `FileSystemFileHandle` is kept in IndexedDB so "recent files" reopen without a picker. Cache hit
 means stage 2 is skipped entirely.
 
-**Stage 4 — Render.** Main thread. Frustum-culls the octree, sorts nodes by projected screen
+**Stage 4, Render.** Main thread. Frustum-culls the octree, sorts nodes by projected screen
 size, pages them in and out against a point budget, draws with a custom point shader plus an EDL
 post-pass.
 
@@ -84,7 +84,7 @@ JS round trips per 31 MB.
 
 Potree-style, built streaming rather than in two passes:
 
-- Root cube from the XML `cartesianBounds` — no pre-pass needed, the bounds are declared.
+- Root cube from the XML `cartesianBounds`, no pre-pass needed, the bounds are declared.
 - Node capacity ~50K points. Grid-subsample on insert: each node keeps a coarse occupancy grid
   and accepts a point only if its cell is empty, otherwise pushes it to the child. This yields
   the uniform-density look Potree has, not random decimation.
@@ -139,21 +139,21 @@ Port three shaders from Potree rather than inventing them. Each encodes a non-ob
 2. **Adaptive point size.** Walks the octree *inside the vertex shader* against a small texture
    the CPU rebuilds each frame from the visible-node set, so each point knows the spacing of the
    deepest *visible* node at its position and grows to cover the gap. This is what removes the
-   holes that appear while a region refines — not optional on a progressive viewer.
+   holes that appear while a region refines, not optional on a progressive viewer.
 3. **Normal shading.** Hemispheric against the decoded normals, layered on top of EDL.
 
 ### Color modes
 
 RGB, intensity, RGB x intensity, elevation ramp, normal-as-color, classification, flat, and
-**scan colour** (each source scan a distinct hue — the fastest way to eyeball a bad
+**scan colour** (each source scan a distinct hue, the fastest way to eyeball a bad
 registration). Intensity and elevation get a histogram with draggable min/max handles and
 savable ramp presets, because auto-ranging is wrong often enough to matter.
 
 ### Quality tiers
 
-- **Fast** — square points, no EDL. For navigation on weak GPUs.
-- **Balanced** (default) — circular points, EDL, normals.
-- **High** — Potree's three-pass weighted splat: a depth prepass that pushes each point two
+- **Fast**, square points, no EDL. For navigation on weak GPUs.
+- **Balanced** (default), circular points, EDL, normals.
+- **High**, Potree's three-pass weighted splat: a depth prepass that pushes each point two
   radii back to build a shell, an additive accumulation weighted by distance from the splat
   centre, then a normalize pass. Removes shimmer when orbiting, at ~2x geometry cost.
 
@@ -171,15 +171,15 @@ on-screen points at 1440p with EDL on:
 
 So 5M is the right default. EDL costs ~10% of the budget; HQ splatting ~50%.
 
-The ceiling is usually **not** raster throughput. It is **draw calls** — one per resident node,
-several hundred to a thousand per frame — and VRAM once extra attributes are resident. Measure
+The ceiling is usually **not** raster throughput. It is **draw calls**, one per resident node,
+several hundred to a thousand per frame, and VRAM once extra attributes are resident. Measure
 both in M3, because they may force larger nodes than the obvious choice.
 
 ### WebGPU is not the upgrade it looks like
 
 WebGPU hardcodes its point primitive to **1 pixel**. There is no `gl_PointSize` equivalent, and
 three.js documents the limitation. Porting is not a backend swap: it means instanced quads at
-6x the vertex work, or compute-shader software rasterization with atomics — research-grade, and
+6x the vertex work, or compute-shader software rasterization with atomics, research-grade, and
 needing 64-bit atomics the web does not have. Build on WebGL2, keep render passes behind an
 interface, revisit only for a real reason.
 
@@ -254,25 +254,25 @@ e57view/
 
 ## 8. Milestones
 
-**M1 — Prove it in the browser.** Port the prototype shim into a real worker with
+**M1, Prove it in the browser.** Port the prototype shim into a real worker with
 `FileReaderSync`, open the 3.23 GB file, print the scan card. Confirms the 10 ms open and that
 `FileReaderSync` overhead does not change the window-size tuning. Small, and it de-risks the
 rest.
 
-**M2 — Points on screen.** Decode a bounded prefix, render with a basic point shader, orbit
+**M2, Points on screen.** Decode a bounded prefix, render with a basic point shader, orbit
 controls. No LOD yet. First visual.
 
-**M3 — Octree and OPFS.** Streaming builder, node format, disk cache, LOD scheduler, point
+**M3, Octree and OPFS.** Streaming builder, node format, disk cache, LOD scheduler, point
 budget. This is the biggest single piece of work.
 
-**M4 — Look.** EDL, normal shading, adaptive point size, colour modes, tone controls. Where it
+**M4, Look.** EDL, normal shading, adaptive point size, colour modes, tone controls. Where it
 starts to match ReCap.
 
-**M5 — Tools.** Section box, clipping, measurement, GPU picking.
+**M5, Tools.** Section box, clipping, measurement, GPU picking.
 
-**M6 — Stations.** Panorama extraction, bubble views, blend slider.
+**M6, Stations.** Panorama extraction, bubble views, blend slider.
 
-**M7 — Polish and speed.** Parallel decode, quality tiers, URL state, shortcuts, empty and error
+**M7, Polish and speed.** Parallel decode, quality tiers, URL state, shortcuts, empty and error
 states.
 
 ## 9. Risks
@@ -292,7 +292,7 @@ rather than accumulating, or a 74M-point build will pressure the tab.
 on its own, so it needs to be genuinely good, not an afterthought.
 
 **Spherical-only scans.** Terrestrial scanners often store spherical coordinates with no
-cartesian. The crate converts, but it must be exercised — the test file is cartesian, so this
+cartesian. The crate converts, but it must be exercised, the test file is cartesian, so this
 path is currently untested.
 
 **Multi-scan files.** The test file is a single registered cloud. Files with 50+ unregistered

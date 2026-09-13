@@ -52,7 +52,7 @@ jobs:
         run: node tools/spdx.mjs --check
       - name: no hard-coded home paths in the drivers
         run: node tools/scrub-paths.mjs --check
-      - name: internal links resolve and the mermaid diagrams render
+      - name: links resolve, mermaid renders, and the house style holds
         run: |
           npx playwright install --with-deps chromium
           node tools/check-markdown.mjs

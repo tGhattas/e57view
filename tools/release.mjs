@@ -121,7 +121,7 @@ const next = /^## /m.exec(cl.slice(bodyStart));
 const body = cl.slice(bodyStart, next ? bodyStart + next.index : cl.length).trim();
 if (!body) { console.error(`${CL}'s Unreleased section is empty. There is nothing to release.`); process.exit(1); }
 const newCl = cl.slice(0, head.index)
-  + `## Unreleased\n\n_Nothing yet._\n\n## ${version} — ${today}\n\n${body}\n\n`
+  + `## Unreleased\n\n_Nothing yet._\n\n## ${version} (${today})\n\n${body}\n\n`
   + cl.slice(next ? bodyStart + next.index : cl.length);
 writeFileSync(CL, newCl);
 edits.push(CL);

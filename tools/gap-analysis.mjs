@@ -2,8 +2,8 @@
 // Regenerate docs/cloudcompare-gap-analysis.md.
 //
 // The data below is a capability audit of CloudCompare read from its source in September 2026
-// — the menu tree, every dialog title, the plugin directories, the registered format filters
-// and the command line constants — with e57view's status against each row kept current as
+// the menu tree, every dialog title, the plugin directories, the registered format filters
+// and the command line constants. e57view's status against each row is kept current as
 // things get built. It lives in a script rather than in the Markdown so that updating a status
 // is one word in one place and the counts at the top cannot disagree with the tables.
 import { writeFileSync } from 'node:fs';
@@ -68,7 +68,7 @@ const D = [
  ["Crop to a box or sphere", "yes", "With rotation, as CloudCompare's clipping box also has."],
  ["Section and slab cuts", "yes", "Any number, unioned."],
  ["Delete points inside a region", "yes", "Keep inside and Remove inside, with the preview dimming whichever half is going."],
- ["Freehand polygon segmentation", "yes", "An outline becomes a *prism* — a real 3D region you can orbit around and adjust — rather than a one-shot screen-space cut."],
+ ["Freehand polygon segmentation", "yes", "An outline becomes a *prism*, a real 3D region you can orbit around and adjust, rather than a one-shot screen-space cut."],
  ["Clipping box with repeated slices", "part", "No repeat, no slice series generation."],
  ["Extract sections along a polyline, and unfold", "no", ""],
  ["Label connected components", "yes", "Written as a scalar field, so one cluster can be isolated with the value filter."],
@@ -125,7 +125,7 @@ const D = [
 ["Normals", [
  ["Read normals from the file", "yes", "The libE57 nor extension, plus PLY and LAS."],
  ["Compute normals from a neighbourhood", "yes", "Plane fit over k nearest neighbours, in a worker over the whole cloud."],
- ["Orient normals with a minimum spanning tree", "part", "Breadth-first propagation through the neighbour graph, then a per-point decision to face the nearest scanner station — which is the orientation that is right for anything scanned from the inside. Not an MST."],
+ ["Orient normals with a minimum spanning tree", "part", "Breadth-first propagation through the neighbour graph, then a per-point decision to face the nearest scanner station, which is the orientation that is right for anything scanned from the inside. It is not an MST."],
  ["Orient normals with fast marching", "no", ""],
  ["Hough transform normals", "no", "qHoughNormals."],
  ["Invert normals", "yes", ""],
@@ -223,7 +223,7 @@ const D = [
 ["Sensors", [
  ["Panorama imagery from the file", "yes", "E57 spherical images, shown as bubbles."],
  ["Stand at a scanner position", "part", "Enter the panorama. CloudCompare models the sensor and can render the view from it."],
- ["TLS and GBL sensor model", "part", "Station positions are read and used — to orient normals outward per point — but there is no editable sensor object."],
+ ["TLS and GBL sensor model", "part", "Station positions are read and used, to orient normals outward per point, but there is no editable sensor object."],
  ["Depth buffer create, show, export", "no", ""],
  ["Point visibility from a sensor", "no", "Using the depth buffer or the octree."],
  ["Camera sensor and uncertainty projection", "no", ""],
@@ -266,16 +266,17 @@ with the tables.
 
 ## Where the remaining distance is
 
-Five structural gaps were named when this audit was first written. Four have since closed —
-several clouds at once, scalar fields, computing and orienting normals, and moving the cloud —
-and the fifth turned into something deliberately different: an outline drawn on screen becomes
-a **prism region** you can orbit around and adjust rather than a one-shot screen-space cut,
+Five structural gaps were named when this audit was first written. Four have since closed:
+several clouds at once, scalar fields, computing and orienting normals, and moving the cloud.
+The fifth turned into something deliberately different. An outline drawn on screen becomes a
+**prism region** you can orbit around and adjust rather than a one-shot screen-space cut,
 because a cut you cannot inspect from another angle is the thing users kept getting wrong.
 
 What is left divides into four honest groups.
 
-**1. The data model stops at clouds and meshes.** CloudCompare holds a tree of entities —
-polylines, sensors, labels, primitives, viewports — that can be saved together as a project.
+**1. The data model stops at clouds and meshes.** CloudCompare holds a tree of entities,
+including polylines, sensors, labels, primitives and viewports, that can be saved together as a
+project.
 e57view has layers of points and layers of triangles, and nothing that holds them together on
 disk. A project file is the single biggest missing thing, and most of the "no" rows about
 polylines and labels follow from it.
@@ -295,7 +296,7 @@ what twenty years looks like.
 
 ## Everything, by category
 
-Legend: **Have** · **Partial** — the note says exactly what differs · **Missing**.
+Legend: **Have**, **Partial** (the note says exactly what differs), **Missing**.
 
 `;
 
@@ -305,7 +306,7 @@ for (const [cat, rows] of D) {
     return c ? `${c} ${LBL[k].toLowerCase()}` : "";
   }).filter(Boolean).join(" · ");
   md += `### ${cat}\n\n<sub>${t}</sub>\n\n| Capability in CloudCompare | e57view | Note |\n|---|---|---|\n`;
-  for (const [f, s, n] of rows) md += `| ${f} | **${LBL[s]}** | ${n || "—"} |\n`;
+  for (const [f, s, n] of rows) md += `| ${f} | **${LBL[s]}** | ${n || "none"} |\n`;
   md += "\n";
 }
 
@@ -319,7 +320,7 @@ a scanner position, and a JSON-RPC remote control plugin, so none of those are o
   equivalent.
 - **It opens a 3.23 GB E57 in about 13 seconds** with no import or conversion step, and caches
   the decoded cells so the next open takes about a second.
-- **A desktop build that is 4.7 MB and opens no network connection at all** — same code, same
+- **A desktop build that is 4.7 MB and opens no network connection at all.** Same code, same
   renderer, with files by path and MCP served from the binary.
 - **Touch interface for iPhone and iPad**, including a bottom sheet and a larger gizmo.
 - **Undo and redo for destructive edits**, spilling large steps to disk. CloudCompare's menu

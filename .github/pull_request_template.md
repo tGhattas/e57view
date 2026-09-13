@@ -6,7 +6,7 @@
 
 <!-- This project measures things rather than asserting that they ran. If you changed
      geometry, analysis, I/O or the agent surface, say which driver covers it and what
-     numbers it produced — "drive-fit.mjs 22/22, plane normal 0.008°". If you added a
+     numbers it produced, like "drive-fit.mjs 22/22, plane normal 0.008°". If you added a
      capability, say which driver you added. -->
 
 - [ ] `npx tsc --noEmit -p tsconfig.json`

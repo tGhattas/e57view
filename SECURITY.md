@@ -21,7 +21,7 @@ That is the whole threat model for the ordinary case. What follows is about the 
 interfaces, which exist so that an AI agent can drive the viewer, and which are the only parts
 that accept instructions from outside the page.
 
-## The local MCP bridge — `ws://127.0.0.1:7337`
+## The local MCP bridge, `ws://127.0.0.1:7337`
 
 - **Bound to loopback only.** Nothing off the machine can reach it. There is no
   authentication on it, by design: anything that can open a socket on your loopback interface
@@ -30,12 +30,12 @@ that accept instructions from outside the page.
   off until you tick *Local MCP*.
 - In the **desktop build** the app is the server, and the bridge starts with the app. If that
   is not what you want, run the app with `E57VIEW_PORT` set to a port you control, or do not
-  register the MCP server with any agent — an unused bridge accepts connections but has
-  nothing to relay.
+  register the MCP server with any agent. An unused bridge accepts connections but has nothing
+  to relay.
 - A client on the bridge can do anything the panel can do, including deleting points and
   writing files to paths it names. It cannot do anything the viewer itself cannot.
 
-## The hosted agent session — `POST /agent` (web build only)
+## The hosted agent session, `POST /agent`, web build only
 
 This is the one that crosses a network, so it is the one with a threat model worth stating.
 
@@ -47,13 +47,13 @@ This is the one that crosses a network, so it is the one with a threat model wor
 - **Read-only by default.** A session cannot crop, delete, save, transform, open another file
   or spend provider credit unless the viewer tab has *Allow edits* ticked. The gate is applied
   in the relay *and* again in the tab, and a `script` is exactly as privileged as the steps in
-  it — a read-only session cannot smuggle an editing command through a wrapper.
+  it, so a read-only session cannot smuggle an editing command through a wrapper.
 - **Expires in 8 hours**, or when the tab closes, or when you press *Stop session*.
-- **The scan itself never leaves the tab.** The relay carries commands and results — numbers,
-  and JPEG or PNG renders you asked for. Point data goes out only if you explicitly call
+- **The scan itself never leaves the tab.** The relay carries commands and results: numbers,
+  and the JPEG or PNG renders you asked for. Point data goes out only if you explicitly call
   `export`, which streams a file you asked for to the agent that asked for it.
 - The relay is a Firebase Cloud Function belonging to whoever deployed that instance. If you
-  do not want a third party in the path, use the desktop build, or run your own deployment —
+  do not want a third party in the path, use the desktop build, or run your own deployment.
   `src/firebase-config.ts` is the only place that decides which one.
 
 ## Dependencies
@@ -67,7 +67,8 @@ Report a vulnerable dependency the same way as anything else.
   browser profile are all readable by anything running as you.
 - **A hostile scan file.** The decoders are written in safe Rust and refuse malformed input,
   but a file crafted to exhaust memory can still make a tab run out of memory. Report anything
-  worse than that — a crash outside a panic, or a read outside a buffer — as a vulnerability.
+  worse than that, such as a crash outside a panic or a read outside a buffer, as a
+  vulnerability.
 - **A hostile agent.** If you give an agent an edit-enabled session, it can delete points and
   write files. That is the point of the feature. Give it a read-only session when you are not
   sure.

@@ -12,7 +12,7 @@ const version = (process.argv[2] || '').replace(/^v/, '');
 if (!version) { console.error('Usage: node tools/release-notes.mjs v1.2.3'); process.exit(1); }
 
 const cl = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
-// "## 1.2.3" or "## 1.2.3 — 2026-09-13"
+// "## 1.2.3" or "## 1.2.3 (2026-09-13)"
 const head = new RegExp(`^## ${version.replace(/\./g, '\\.')}\\b.*$`, 'm').exec(cl);
 if (!head) {
   console.error(`CHANGELOG.md has no section for ${version}.`);

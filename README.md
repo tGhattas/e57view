@@ -9,7 +9,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="Licence: GPL-3.0-only" src="https://img.shields.io/badge/licence-GPL--3.0--only-14707d"></a>
   <a href=".github/workflows/build.yml"><img alt="Build" src="https://img.shields.io/badge/build-web%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-14707d"></a>
-  <a href="#the-agent-interface"><img alt="MCP" src="https://img.shields.io/badge/MCP-30%20tools-14707d"></a>
+  <a href="#the-agent-interface"><img alt="MCP: 31 tools" src="https://img.shields.io/badge/MCP-31%20tools-14707d"></a>
   <a href="https://e57view.web.app"><img alt="Live" src="https://img.shields.io/badge/try%20it-e57view.web.app-2b7a84"></a>
 </p>
 
@@ -21,12 +21,12 @@
 
 ---
 
-e57view reads **E57**, **LAS**, **LAZ**, **PTX**, **PLY** and delimited text point clouds, and
-**PLY / OBJ / STL** meshes, and lets you look at them, measure them, clean them, register them,
-compare them, reconstruct surfaces from them and write them back out — in a browser tab, or as
-a 4.7 MB desktop application that opens no network connection at all.
+e57view reads E57, LAS, LAZ, PTX, PLY and delimited text point clouds, and PLY, OBJ and STL
+meshes. You can look at them, measure them, clean them, register them, compare them,
+reconstruct surfaces from them and write them back out. It runs in a browser tab, or as a
+4.7 MB desktop application that opens no network connection at all.
 
-**Try it:** [e57view.web.app](https://e57view.web.app) — drop a file on the page.
+Try it at [e57view.web.app](https://e57view.web.app). Drop a file on the page.
 
 ## Why this exists
 
@@ -34,37 +34,41 @@ Point cloud software is desktop software with an import step. You install someth
 for it to convert your file into its own format, and then you look at your data. That is a long
 way to go to answer "how wide is that opening".
 
-The bet was that a browser could skip all of it. It can, and here is what makes it work — every
-number below is asserted by a test driver on every run, not remembered:
+We wanted to know whether a browser could skip all of it. It can. Every number below is
+asserted by a test driver on every run.
 
-- **Nothing is uploaded, ever.** The file is read off your disk by a WebAssembly decoder inside
-  a worker. There is no server that could receive a scan, and the desktop build opens no
-  network connection at all.
-- **A 3.23 GB E57 opens in 13.5 seconds** with no import step — 73.8 million points, from a
-  columnar decoder written for this project that is four times faster than the reference reader
-  and validated bit-exact against it on all ten fields. The file **never enters WebAssembly
-  memory**: a synchronous ranged-read shim feeds the Rust reader, so wasm32's 4 GB address
-  space is not a ceiling. No SharedArrayBuffer, no cross-origin isolation headers.
-- **It renders like a desktop viewer.** A leaf-only octree with 14-byte points, each leaf
-  shuffled so drawing a prefix is a uniform subsample — continuous level of detail at no
-  storage cost — through a hand-written WebGL2 pipeline with eye-dome lighting. 8M points in
-  **9.8 ms**, 32M in **30 ms**.
-- **Destructive edits undo**, including a crop of seventy million points, by spilling to
-  private browser storage rather than keeping a second copy in memory.
-- **Transforms are never baked.** A cloud carries a 4×4 matrix that every consumer reads
-  through, so levelling a scan is instant, lossless and undoable, and only a written file bakes
-  it.
-- **It was built for an AI agent to drive**, not adapted for one afterwards. An orthographic
-  render comes back with the mapping that turns any of its pixels into a world point; `probe`
-  re-establishes a past render's camera to answer exactly; `recommendedSource` says whether to
-  measure the points or the surface and why. 30 MCP tools, offline in the desktop build.
-- **Everything is measured.** A unit cube reads 6.000 m² and 1.000 m³. A volume comes out
-  **−0.11%** from arithmetic. A cylinder fit lands **0.0000°** off the axis. ICP recovers a
-  known offset to **0.000 mm**. Each of those is a driver asserting it, and each caught a real
-  bug the day it was written.
+Nothing is uploaded, ever. The file is read off your disk by a WebAssembly decoder inside a
+worker. There is no server that could receive a scan, and the desktop build opens no network
+connection at all.
 
-For an honest account of what it does *not* do, see
-[docs/cloudcompare-gap-analysis.md](docs/cloudcompare-gap-analysis.md) — a capability audit
+A 3.23 GB E57 opens in 13.5 seconds with no import step. That is 73.8 million points, through
+a columnar decoder written for this project that runs four times faster than the reference
+reader and was validated bit-exact against it on all ten fields. The file never enters
+WebAssembly memory. A synchronous ranged-read shim feeds the Rust reader, so wasm32's 4 GB
+address space is not a ceiling. No SharedArrayBuffer, no cross-origin isolation headers.
+
+It renders like a desktop viewer. Points live in a leaf-only octree at 14 bytes each, with
+every leaf shuffled so that drawing a prefix of it is a uniform subsample. That gives
+continuous level of detail at no storage cost. The renderer is hand-written WebGL2 with
+eye-dome lighting: 8M points in 9.8 ms, 32M in 30 ms.
+
+Destructive edits undo, including a crop of seventy million points. Large undo steps spill to
+private browser storage instead of keeping a second copy of the cloud in memory.
+
+Transforms are never baked. A cloud carries a 4x4 matrix that every consumer reads through, so
+levelling a scan is instant, lossless and undoable. Only a written file bakes it.
+
+It was built for an AI agent to drive. An orthographic render comes back with the mapping that
+turns any of its pixels into a world point. `probe` re-establishes a past render's camera so it
+can answer exactly. `recommendedSource` says whether to measure the points or the surface, and
+why. There are 31 MCP tools, and they work offline in the desktop build.
+
+Everything is measured. A unit cube reads 6.000 m² and 1.000 m³. A volume comes out 0.11% from
+arithmetic. A cylinder fit lands 0.0000° off the axis. ICP recovers a known offset to 0.000 mm.
+Each of those is a driver asserting it, and each caught a real bug the day it was written.
+
+For an account of what it does not do, see
+[docs/cloudcompare-gap-analysis.md](docs/cloudcompare-gap-analysis.md). It is a capability audit
 against CloudCompare read from its source, 190 rows, kept current.
 
 ## What it does
@@ -103,12 +107,12 @@ against CloudCompare read from its source, 190 rows, kept current.
 <details open>
 <summary><strong>Regions and editing</strong></summary>
 
-- Regions are **box, sphere, slab or prism** — created by pointing at a thing and grown or
-  fitted to what they hold, rather than drawn. Any number, unioned.
+- Regions are a box, a sphere, a slab or a prism. You create one by pointing at a thing, then
+  grow it by a factor or fit it to what it holds. There can be any number, unioned.
 - A drawn outline becomes a **prism**: a real 3D region you can orbit around and adjust, not a
   one-shot screen-space cut.
-- Crop **both ways** — keep what is inside, or remove it — with the preview dimming whichever
-  half is going and the confirmation counting both sides.
+- Crop works both ways: keep what is inside, or remove it. The preview dims whichever half is
+  going, and the confirmation counts both sides.
 - **Undo and redo** for every destructive step, with disk spill. **Save as** writes what is in
   memory, crop and transform included, and never touches the original.
 
@@ -118,8 +122,8 @@ against CloudCompare read from its source, 190 rows, kept current.
 <summary><strong>Analysis and scalar fields</strong></summary>
 
 - **Normals**: computed over a neighbourhood, propagated breadth-first, and oriented toward the
-  scan's own station positions *per point* — the only orientation that is right for something
-  scanned from the inside.
+  scan's own station positions, per point. That is the only orientation that is right for
+  something scanned from the inside.
 - **Fifteen geometric features** as scalar fields: roughness, curvature, planarity, linearity,
   sphericity, anisotropy, omnivariance, eigenentropy, verticality, volume and surface density,
   neighbour count, and the three eigenvalues.
@@ -138,13 +142,13 @@ against CloudCompare read from its source, 190 rows, kept current.
 <details open>
 <summary><strong>Fitting and detection</strong></summary>
 
-- Fit a **plane, sphere, cylinder or circle** to what a region holds — each reporting an
-  **RMS**, because a cylinder fitted to a flat wall has a radius and an axis and means nothing
-  without one. Validated: plane normal to 0.008°, sphere centre and radius to 0.01 mm, cylinder
-  axis to 0.0000°.
+- Fit a plane, a sphere, a cylinder or a circle to what a region holds. Each fit reports an
+  RMS, because a cylinder fitted to a flat wall has a radius and an axis and means nothing
+  without one. Validated at 0.008° on a plane normal, 0.01 mm on a sphere centre and radius,
+  and 0.0000° on a cylinder axis.
 - **RANSAC shape detection** over the whole cloud, one shape at a time, removing each shape's
-  inliers before looking for the next — which is also the non-maximum suppression. Every point
-  gets a *Shape* index as a field.
+  inliers before looking for the next. That removal is also the non-maximum suppression. Every
+  point gets a *Shape* index as a field.
 
 </details>
 
@@ -176,9 +180,9 @@ against CloudCompare read from its source, 190 rows, kept current.
 <details open>
 <summary><strong>Rasters, contours and volumes</strong></summary>
 
-- **Height models** over a regular grid along any axis — highest, lowest, mean, density, or the
-  mean of a scalar field — draped over the cloud so they can be judged rather than merely
-  produced.
+- Height models over a regular grid along any axis: highest, lowest, mean, density, or the mean
+  of a scalar field. They are draped over the cloud so you can judge them rather than only
+  produce them.
 - **Contours** by marching squares with the crossing interpolated along each edge, out as DXF
   or GeoJSON in the global frame.
 - **2.5D volumes** against another layer or a flat plane, cut and fill reported separately
@@ -189,15 +193,16 @@ against CloudCompare read from its source, 190 rows, kept current.
 <details open>
 <summary><strong>The agent interface</strong></summary>
 
-- **30 MCP tools** over a localhost bridge — state, calibrated views, sections, probe, contour,
-  fit, detect, regions, transform, register, distance, volume, mesh, cache, export, script.
+- 31 MCP tools over a localhost bridge: state, calibrated views, sections, probe, contour,
+  fit, detect, regions, analysis, transform, register, distance, volume, mesh, cache, export,
+  script.
 - **A calibrated modelling kit**, not screenshots: every orthographic render returns
   `metresPerPixel` and a `topLeft`, and `probe` turns pixels of a past render back into world
   points exactly.
 - **Scripts**: a list of `{cmd, args}` steps run in order with each step's result available to
   the next, because the round trip is the expensive part.
-- A **hosted HTTP session** for driving a browser tab from anywhere — opt-in, bearer token,
-  read-only by default, revoked when the tab closes.
+- A hosted HTTP session for driving a browser tab from anywhere. It is opt-in, uses a bearer
+  token, is read-only by default, and is revoked when the tab closes.
 - [`public/llms.txt`](public/llms.txt) documents the whole surface with worked examples.
 
 </details>
@@ -207,7 +212,7 @@ against CloudCompare read from its source, 190 rows, kept current.
 
 - **Tauri v2**, 4.7 MB, working with **no network at all**: no analytics, no web fonts, and the
   Firestore client resolved away at build time rather than merely not called.
-- Files open **by path** — Finder drops, a File menu with Open Recent, `e57view scan.e57`.
+- Files open by path: Finder drops, a File menu with Open Recent, `e57view scan.e57`.
 - **Native Save dialogs** for every export.
 - **MCP built in**: `e57view --mcp` speaks MCP on stdio with no Node and no install.
 - On a 3.23 GB, 73.8M-point E57: **13.0 s to open, 82 MB resident, 0.7 s to reopen from the
@@ -219,7 +224,7 @@ against CloudCompare read from its source, 190 rows, kept current.
 
 ```mermaid
 flowchart TB
-  subgraph shell["Desktop shell — Tauri v2 (optional)"]
+  subgraph shell["Desktop shell, Tauri v2, optional"]
     direction LR
     menu["Menus · Finder drops<br/>Native save dialogs"]
     ranges["Byte ranges by path<br/>e57vfile://"]
@@ -288,9 +293,9 @@ flowchart TB
 
 Three things in that diagram are the whole design:
 
-1. **The file is never held.** Every decoder takes a `readRange(offset, length)` callback —
-   `FileReaderSync` over `File.slice()` in the browser, a ranged request to the shell in the
-   desktop app — so the same code reads a 3 GB file from either.
+1. **The file is never held.** Every decoder takes a `readRange(offset, length)` callback. In
+   the browser that is `FileReaderSync` over `File.slice()`; in the desktop app it is a ranged
+   request to the shell. The same code reads a 3 GB file from either.
 2. **Points live on the GPU, quantised.** Fourteen bytes each, in leaf cubes, shuffled. Nothing
    holds a second copy: analysis reads leaves back, undo spills to disk, transforms are a
    matrix.
@@ -323,21 +328,21 @@ npm run desktop:build      # → desktop/target/release/bundle/
 You need [Rust](https://rustup.rs) and, on Linux, `libwebkit2gtk-4.1-dev` and `libgtk-3-dev`.
 CI builds macOS, Windows and Linux on every push.
 
-> **Unsigned builds.** Releases are not code-signed yet. macOS will refuse the first open —
-> right-click the app and choose *Open*, or run
+> **Unsigned builds.** Releases are not code-signed yet. macOS will refuse the first open. To
+> get past it, right-click the app and choose *Open*, or run
 > `xattr -dr com.apple.quarantine /Applications/e57view.app`. Windows SmartScreen will warn
 > once. [`.github/workflows/build.yml`](.github/workflows/build.yml) documents exactly which
 > secrets to add to sign and notarise.
 
 ### Driving it from an agent
 
-The Agent panel has a **client picker** — Claude Code, Codex CLI, Cursor, Claude Desktop,
-Gemini CLI, Windsurf — that writes the exact snippet for whichever build you are running, with
-a Copy button. What follows is the same thing, written out.
+The Agent panel has a client picker for Claude Code, Codex CLI, Cursor, Claude Desktop, Gemini
+CLI and Windsurf. It writes the exact snippet for whichever build you are running, with a Copy
+button. What follows is the same thing, written out.
 
 There is one MCP server and two ways to reach it. **The desktop app is the server** (no Node,
 no install, no network); the **browser build** is driven by a one-file Node server it hands
-you. Everything below is the desktop form — for the browser build, first
+you. Everything below is the desktop form. For the browser build, first run
 
 ```sh
 curl -fsSL https://e57view.web.app/mcp.mjs -o e57view-mcp.mjs
@@ -345,7 +350,7 @@ curl -fsSL https://e57view.web.app/mcp.mjs -o e57view-mcp.mjs
 
 then replace `/Applications/e57view.app/Contents/MacOS/e57view --mcp` with
 `node /absolute/path/to/e57view-mcp.mjs`, and tick **Local MCP** in the Agent panel. On Windows
-and Linux the binary is under `C:\Program Files\e57view\` and `/usr/bin/` — the panel reads
+and Linux the binary is under `C:\Program Files\e57view\` and `/usr/bin/`. The panel reads
 the running binary's real path, so take it from there rather than from here.
 
 **Claude Code**
@@ -354,7 +359,8 @@ the running binary's real path, so take it from there rather than from here.
 claude mcp add e57view -- /Applications/e57view.app/Contents/MacOS/e57view --mcp
 ```
 
-**Codex CLI** — `codex mcp add` arrived in Codex 0.36.0; before that, use the config file.
+**Codex CLI.** `codex mcp add` arrived in Codex 0.36.0. On an older version, use the config
+file below.
 
 ```sh
 codex mcp add e57view -- /Applications/e57view.app/Contents/MacOS/e57view --mcp
@@ -370,7 +376,7 @@ args = ["--mcp"]
 
 **Cursor** (`.cursor/mcp.json`, or `~/.cursor/mcp.json` for every project), **Claude Desktop**
 (`claude_desktop_config.json`), **Gemini CLI** (`~/.gemini/settings.json`) and **Windsurf**
-(`~/.codeium/windsurf/mcp_config.json`) all take the same object — only the file differs:
+(`~/.codeium/windsurf/mcp_config.json`) all take the same object. Only the file differs:
 
 ```json
 { "mcpServers": { "e57view": {
@@ -378,7 +384,7 @@ args = ["--mcp"]
     "args": ["--mcp"] } } }
 ```
 
-**Over HTTP, no MCP** — press *Copy agent URL* in the Agent panel and POST to the endpoint it
+**Over HTTP, with no MCP.** Press *Copy agent URL* in the Agent panel and POST to the endpoint it
 gives you. Read-only until you tick *Allow edits*; the token is shown once and the session dies
 with the tab. See [`public/llms.txt`](public/llms.txt).
 
@@ -427,7 +433,7 @@ commit, then publishes a GitHub Release with the `.dmg`, the Windows installer, 
 the `.AppImage` and `SHA256SUMS.txt`, using the CHANGELOG section for that version as the
 notes. The workflows only run if Actions can run at all: a private repository bills Actions
 minutes and refuses until billing is set up, a public one is free. The first release is
-unsigned — see the note under [Quick start](#as-a-desktop-app).
+unsigned. See the note under [Quick start](#as-a-desktop-app).
 
 | | |
 |---|---|
@@ -439,7 +445,7 @@ unsigned — see the note under [Quick start](#as-a-desktop-app).
 | `functions/` | the Cloud Function behind the hosted agent session |
 | `drive-*.mjs` | the drivers |
 | `docs/` | the gap analysis |
-| [`FINDINGS.md`](FINDINGS.md) | **the engineering log** — what was hard, what was wrong, and the numbers |
+| [`FINDINGS.md`](FINDINGS.md) | the engineering log: what was hard, what was wrong, and the numbers |
 
 `FINDINGS.md` is the most useful file here if you are going to change anything. It is not a
 changelog; it is what was tried, what broke, and what the measurements said.
@@ -463,7 +469,7 @@ Add your site's domain under **Authentication → Settings → Authorised domain
 console, or the anonymous sign-in that agent sessions use will be refused.
 
 The only Cloud Function is `agent`, the mailbox that lets an agent drive an open tab. **If you
-do not want it, delete it** — the viewer, the local MCP bridge and the desktop app all work
+do not want it, delete it.** The viewer, the local MCP bridge and the desktop app all work
 without any Firebase at all, and the desktop build does not even contain the client.
 
 ## Contributing
@@ -471,11 +477,12 @@ without any Firebase at all, and the desktop build does not even contain the cli
 [CONTRIBUTING.md](CONTRIBUTING.md) has the build, the test conventions and the one rule that
 matters: **every feature ships with a driver that measures something with a known answer.**
 
-- [Code of Conduct](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1
-- [Security](SECURITY.md) — how to report, and the agent endpoint's threat model
+- [Code of Conduct](CODE_OF_CONDUCT.md), Contributor Covenant 2.1
+- [Security](SECURITY.md), how to report and what the agent endpoint's threat model is
+- [Acknowledgements](ACKNOWLEDGEMENTS.md), the projects this one is built on
 - [Changelog](CHANGELOG.md)
-- [Third-party licences](THIRD_PARTY.md) — generated, and it fails the build on an
-  incompatible one
+- [Third-party licences](THIRD_PARTY.md), generated, and it fails the build on an incompatible
+  one
 
 ## Roadmap
 
@@ -495,6 +502,9 @@ From the [gap analysis](docs/cloudcompare-gap-analysis.md), in the order they wo
 
 ## Licence
 
-**GPL-3.0-only.** See [LICENSE](LICENSE). Every dependency is compatible; see
-[THIRD_PARTY.md](THIRD_PARTY.md), which is generated from the lock files and refuses to
-finish if it meets a licence that is not.
+GPL-3.0-only. See [LICENSE](LICENSE). Every dependency is compatible. See
+[THIRD_PARTY.md](THIRD_PARTY.md), which is generated from the lock files and refuses to finish
+if it meets a licence that is not.
+
+[ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md) names the projects and the people this one is built
+on top of, and says what we took from each.

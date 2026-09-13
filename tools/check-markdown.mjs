@@ -8,7 +8,8 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
 
 const files = ['README.md', 'CONTRIBUTING.md', 'SECURITY.md', 'CHANGELOG.md', 'THIRD_PARTY.md',
-  'CODE_OF_CONDUCT.md', 'FINDINGS.md', ...readdirSync('docs').filter(f => f.endsWith('.md')).map(f => `docs/${f}`)];
+  'CODE_OF_CONDUCT.md', 'ACKNOWLEDGEMENTS.md', 'FINDINGS.md',
+  ...readdirSync('docs').filter(f => f.endsWith('.md')).map(f => `docs/${f}`)];
 
 let fails = 0;
 const ok = (n, c, d = '') => { console.log(`${c ? 'PASS' : 'FAIL'}  ${n}${d ? ' · ' + d : ''}`); if (!c) fails++; };
@@ -95,6 +96,26 @@ for (const f of files) {
     if (i > 0 && cols(lines[i - 1]) !== cols(lines[i])) bad++;
   }
   if (tables) ok(`tables in ${f} line up`, !bad, `${tables} table${tables > 1 ? 's' : ''}${bad ? `, ${bad} with a header mismatch` : ''}`);
+}
+
+// ---------------------------------------------------------------- house style
+// One rule, checked because it is easy to slip back into: no em-dashes. They read as a tic in
+// a document meant to sound like a person explaining their own project, and once a few are in
+// they multiply. A comma, a colon or a full stop always works instead.
+{
+  const offenders = [];
+  const all = new Set(files);
+  for (const extra of ['PLAN.md', 'ACKNOWLEDGEMENTS.md', 'prototype/README.md', '.github/pull_request_template.md']) {
+    if (existsSync(extra)) all.add(extra);
+  }
+  let total = 0;
+  for (const f of all) {
+    if (!existsSync(f)) continue;
+    const n = (readFileSync(f, 'utf8').match(/\u2014/g) ?? []).length;
+    total += n;
+    if (n) offenders.push(`${f} (${n})`);
+  }
+  ok('no em-dashes in the documentation', total === 0, offenders.join(', ') || `${all.size} files clean`);
 }
 
 console.log(`\n${fails === 0 ? 'ALL CHECKS PASSED' : `${fails} CHECK(S) FAILED`}`);
