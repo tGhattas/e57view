@@ -336,7 +336,7 @@ isolated points kept.
 {"session":"S","cmd":"mesh","args":{"op":"sample","density":400}}
 {"session":"S","cmd":"mesh","args":{"op":"distance","mesh":"design"}}
 
-A PLY, OBJ or STL opened in the viewer (Mesh -> Import mesh…, or dropped on the window) becomes
+A PLY, OBJ or STL opened in the viewer (Mesh -> Import a mesh…, or dropped on the window) becomes
 a layer of triangles rather than points. It appears in `entities` with `kind:"mesh"`, carries
 its own 4x4 model matrix, and `transform` moves it exactly as it moves a cloud. Every visible
 layer's triangles are drawn, not only the active one's, so a design model and a scan of the

@@ -84,7 +84,8 @@ ok('points untouched', pts === 300000, `${pts.toLocaleString()} still in memory`
 // export
 const [dl] = await Promise.all([
   p.waitForEvent('download', { timeout: 120000 }),
-  p.evaluate(() => { document.getElementById('k-mfmt').value = 'ply'; document.getElementById('k-msave').click(); }),
+  // one export control now: the Mesh group's format select and Export mesh button
+  p.evaluate(() => { document.getElementById('k-meshfmt').value = 'ply'; document.getElementById('k-meshsave').click(); }),
 ]);
 const out = join(tmpdir(), 'surface-out.ply');
 await dl.saveAs(out);

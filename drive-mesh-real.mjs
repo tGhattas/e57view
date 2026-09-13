@@ -21,7 +21,11 @@ console.log('LOAD:', await p.textContent('#tb-points'));
 console.log('point spacing default:', await p.textContent('#v-mvox'));
 for (const vox of (process.env.VOX || '10,5,3').split(',').map(Number)) {
   const t0 = Date.now();
-  const st = await p.evaluate(v => window.__app.buildMesh({ voxel: v, smooth: 2, trunc: 2, confirm: false }), vox);
+  // A fine voxel on a big scan is refused by the device budget rather than crashing the tab,
+  // which is the behaviour we want; report it and carry on to the next level.
+  const st = await p.evaluate(v => window.__app.buildMesh({ voxel: v, smooth: 2, trunc: 2, confirm: false })
+    .catch(e => ({ refused: String(e?.message ?? e) })), vox);
+  if (st.refused) { console.log(`VOXEL ${vox} cm → refused: ${st.refused}`); continue; }
   const heap = await p.evaluate(() => (performance).memory ? +(performance.memory.usedJSHeapSize / 1e6).toFixed(0) : -1);
   console.log(`VOXEL ${vox} cm → ${st.triangles.toLocaleString()} tris, ${st.vertices.toLocaleString()} verts · ${((Date.now()-t0)/1000).toFixed(1)}s · oriented ${(st.oriented/1e6).toFixed(1)}M · heap ${heap} MB`);
   await p.evaluate(() => document.getElementById('k-dispmesh').click());

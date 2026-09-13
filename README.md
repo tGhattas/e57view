@@ -166,10 +166,11 @@ against CloudCompare read from its source, 190 rows, kept current.
 </details>
 
 <details open>
-<summary><strong>Surfaces and meshes</strong></summary>
+<summary><strong>Meshes</strong></summary>
 
 - **Surface reconstruction** from oriented points, with a hole ratio so you can tell whether
-  the result is worth measuring.
+  the result is worth measuring. It and mesh import share one **Mesh** group, in the order you
+  use them: build, show, edit, measure, compare, sample, export.
 - Meshes are **layers**, every visible one drawn: **area and volume** through the layer's
   transform with the boundary-edge count beside them, **area-weighted point sampling** into a
   new layer, **cloud-to-mesh distance** as a field (point-to-triangle, not

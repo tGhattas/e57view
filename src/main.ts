@@ -2706,9 +2706,9 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
   const estBytes = (area / (voxel * voxel)) * (2 * trunc + 1) * 7 / 0.45;
   const budget = isTouch ? 260e6 : 900e6;
   if (opts.confirm !== false) {
-    const ans = await modal('Build a surface?',
-      `<p>Reconstructs a triangle surface from <b>${fmt(used)}</b> of ${fmt(viewer.loaded)} points at a <b>${(voxel * 100).toFixed(1)} cm</b> voxel.</p>` +
-      `<p>The points stay exactly as they are; the surface is a separate object you can show, hide or save. Expect a few seconds to a minute.</p>` +
+    const ans = await modal('Build a mesh from the points?',
+      `<p>Reconstructs a triangle mesh from <b>${fmt(used)}</b> of ${fmt(viewer.loaded)} points at a <b>${(voxel * 100).toFixed(1)} cm</b> voxel.</p>` +
+      `<p>The points stay exactly as they are. The mesh is a separate object you can show, hide, measure or export. Expect a few seconds to a minute.</p>` +
       (estBytes > budget
         ? `<p><b>This is likely to be too fine.</b> The field would need roughly <b>${mb(estBytes)}</b>, over the ${mb(budget)} this device allows. Raise Detail, or crop to a smaller area and build that.</p>`
         : `<p class="mono">field ≈ ${mb(estBytes)}</p>`),
@@ -2739,6 +2739,7 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
     const st0 = done.stats;
     viewer.setMesh(meshData, builtWith);
     document.body.classList.toggle('has-mesh', viewer.anyMesh);
+    $('v-meshinfo').textContent = 'no mesh yet';      // so refreshMeshUI rewrites it
     refreshMeshUI();
     dirtyMark.surface = done.stats.triangles || 0;
     meshInfo = {
@@ -2751,7 +2752,7 @@ async function buildMesh(opts: { voxel?: number; smooth?: number; trunc?: number
     const mode = st.oriented > st.unoriented * 4 ? 'from normals' : 'density (no usable normals)';
     $('v-mesh').textContent = meshData.idx.length
       ? `${fmt(st.triangles)} triangles · ${fmt(st.vertices)} vertices · ${mb(viewer.mesh.bytes)} · ${mode} · ${((performance.now() - t0) / 1000).toFixed(1)}s`
-      : 'no surface found — try a coarser Detail or more Fill gaps';
+      : 'no mesh found, so try a coarser Detail or more Fill gaps';
     return st;
   } catch (e: any) {
     $('v-mesh').textContent = 'failed: ' + (e?.message ?? e);
@@ -2765,22 +2766,7 @@ $('k-mclear').addEventListener('click', () => {
   dirtyMark.surface = 0; refreshMeshUI(); renderLayers();
   sfName = ''; dirtyMark.field = ''; sfStats = null; document.body.classList.remove('has-sf', 'sf-filtering');
   ($('k-color-sf') as HTMLOptionElement).disabled = true;
-  setDisplay('points'); $('v-mesh').textContent = '—';
-});
-$('k-msave').addEventListener('click', async () => {
-  if (!meshData) return;
-  const fmtSel = $<HTMLSelectElement>('k-mfmt').value as 'ply' | 'obj' | 'stl';
-  const base = (currentFile?.name ?? 'scan').replace(/\.(e57|ply|las)$/i, '') + '-surface';
-  const handle = await pickSaveHandle(`${base}.${fmtSel}`, fmtSel);
-  if (handle === null) return;
-  busy('Writing the surface…'); await tick();
-  try {
-    const blob = meshBlob(fmtSel);
-    const file = new File([blob], `${base}.${fmtSel}`);
-    await writeOutFile({ file, name: file.name, scratch: '' }, handle);
-    $('v-mesh').textContent = `saved ${file.name} · ${mb(blob.size)}`;
-  } catch (e: any) { fail('Could not save the surface: ' + (e?.message ?? e)); }
-  finally { hideBusy(); }
+  setDisplay('points'); $('v-mesh').textContent = '—'; $('v-meshinfo').textContent = 'no mesh yet';
 });
 
 
@@ -2811,7 +2797,15 @@ function refreshMeshUI() {
   const have = !!meshData?.idx.length;
   for (const id of ['k-meshmeasure', 'k-meshflip', 'k-meshsmooth', 'k-meshdecim', 'k-meshsample', 'k-meshsave'])
     ($(id) as HTMLButtonElement).disabled = !have;
-  if (!have && !list.length) $('v-meshinfo').textContent = 'no mesh layer';
+  const info = $('v-meshinfo');
+  if (!have && !list.length) { info.textContent = 'no mesh yet'; info.className = 'statusline'; }
+  else if (have && /^no mesh yet$/.test(info.textContent ?? '')) {
+    // a mesh has appeared since this line was last written, so say what it is rather than
+    // leaving the placeholder contradicting the controls that just became available
+    const st = meshData!;
+    info.textContent = `${fmt(st.idx.length / 3)} triangles · ${fmt(st.pos.length / 3)} vertices`;
+    info.className = 'statusline ok';
+  }
 }
 function syncMeshOpLabels() {
   $('v-meshiter').textContent = String(meshSettings.iterations);
@@ -3122,7 +3116,11 @@ $('k-meshsave').addEventListener('click', () => saveMesh().catch(e => { $('v-mes
 async function saveMesh(fmtIn?: 'ply' | 'obj' | 'stl') {
   if (!meshData?.idx.length) throw new Error('the active layer has no mesh');
   const fmtSel = fmtIn ?? ($<HTMLSelectElement>('k-meshfmt').value as 'ply' | 'obj' | 'stl');
-  const base = (meshFile || currentFile?.name || 'mesh').replace(/\.(ply|obj|stl|e57|las|laz)$/i, '');
+  // an imported mesh keeps its own name; a reconstructed one is named after the scan it came
+  // from, with -mesh, so the two do not collide in a downloads folder
+  const base = meshFile
+    ? meshFile.replace(/\.(ply|obj|stl)$/i, '')
+    : (currentFile?.name ?? 'scan').replace(/\.(e57|ply|las|laz|ptx|txt|xyz|pts|asc|csv|neu)$/i, '') + '-mesh';
   const handle = await pickSaveHandle(`${base}.${fmtSel}`, fmtSel);
   if (handle === null) return null;
   busy('Writing the mesh…'); await tick();
