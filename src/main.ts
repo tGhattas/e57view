@@ -2236,8 +2236,10 @@ async function runTiled(op: string, args: Record<string, any> = {}, ref: Entity 
     anaPoolLive = [];
     $('busy-stop').classList.add('hidden');
   }
-  if (anaCancelled) throw new Error('cancelled');
-  if (stop) throw new Error(stop);
+  // A run that ends badly takes the progress dialog with it. The panel hides it in a finally
+  // of its own; an agent-driven run used to leave it up over the scan with nothing running.
+  if (anaCancelled) { hideBusy(); throw new Error('cancelled'); }
+  if (stop) { hideBusy(); throw new Error(stop); }
 
   if (isSor) {
     // Compensated summation, because this threshold is a statistic of every point in the
@@ -4629,8 +4631,8 @@ const agent = new AgentLink(counted({
     else if (op === 'duplicates') { args = { tol: Number(a.tolerance ?? 0.001) }; label = 'Remove duplicates'; }
     else if (op === 'subsample') { args = { spacing: Number(a.spacing ?? anaUi.spacing) }; label = 'Thin the cloud'; }
     else throw new Error(`unknown analysis op: ${op}. Use normals, invert, feature, components, sor, noise, duplicates or subsample.`);
-    const r = await runAnalysis(op, args);
-    hideBusy();
+    let r: any;
+    try { r = await runAnalysis(op, args); } finally { hideBusy(); }
     // no modal for an agent: the gate is "Allow edits", and it undoes like any other edit
     await commitMask(label, perLeaf(r.data as Uint8Array, r.counts), '', false);
     viewer.render();

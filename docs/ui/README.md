@@ -27,6 +27,7 @@ node drive-agent.mjs                                            # writes agent-l
 | `agent-desktop-scripts.png` | the Scripts tab there |
 | `mesh-after.png` | the Mesh group with a mesh present, so the controls that only appear then are in it |
 | `agent-log.png` | the Log tab after a session has run commands, with one entry opened |
+| `tiled-progress.png` | a tiled analysis in flight: which tile, how many are running, and Cancel |
 
 `agent-shots.mjs` starts a real session against the deployed site rather than faking one in
 the DOM, so the badge, the expiry and the dot in the tab are the ones a user would see.
