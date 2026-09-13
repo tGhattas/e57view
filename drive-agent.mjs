@@ -31,6 +31,20 @@ try { await p.click('#modal-btns button:has-text("Not now")', { timeout: 3000 })
 await p.evaluate(() => document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed')));
 
 await p.bringToFront();
+// a hidden tab's controls are not clickable, so switch to it the way a user does
+await p.click('#tab-http');
+const access = () => p.evaluate(() => ({
+  badge: document.getElementById('v-access')?.textContent.trim() ?? '',
+  note: document.getElementById('v-accessnote')?.textContent.trim() ?? '',
+  live: !document.getElementById('http-live').classList.contains('hidden'),
+  idle: !document.getElementById('http-idle').classList.contains('hidden'),
+  dot: document.getElementById('tab-http').className,
+  left: document.getElementById('v-agentexp')?.textContent.trim() ?? '',
+}));
+const before = await access();
+ok('before a session the HTTP tab shows the choice, not a state', before.idle && !before.live, JSON.stringify(before.idle));
+ok('and the tab carries no dot', !/live|warn/.test(before.dot), before.dot);
+
 await p.click('#k-agenturl');
 try { await p.waitForFunction(() => /copied with its token/.test(document.getElementById('v-agenturl')?.textContent || ''), null, { timeout: 25000 }); }
 catch { console.log('  status was:', await p.textContent('#v-agenturl')); throw new Error('Copy agent URL did not complete'); }
@@ -38,6 +52,16 @@ const blob = await p.evaluate(() => navigator.clipboard.readText());
 const sid = blob.match(/"session":"([a-z0-9]+)"/)[1];
 const token = blob.match(/Bearer ([a-f0-9]+)/)[1];
 console.log(`SESSION ${sid} · token ${token.length} hex chars`);
+const live = await access();
+console.log('ACCESS', JSON.stringify({ badge: live.badge, left: live.left }));
+ok('starting a session swaps in the live block', live.live && !live.idle, '');
+ok('the access level is stated in full', live.badge === 'READ-ONLY', live.badge);
+ok('with a line saying what that means', /cannot change or save/.test(live.note), live.note);
+ok('and the time left is shown', /expires in \d+ h/.test(live.left), live.left);
+ok('the tab carries a dot', /live/.test(live.dot), live.dot);
+ok('the copied text leads with the access level', /^# READ-ONLY/m.test(blob), blob.split('\n')[0]);
+const toast = await p.textContent('#v-agenturl');
+ok('and the confirmation says which kind of session', /read-only session/.test(toast), toast);
 console.log('URL in the clipboard has no token:', !blob.split('\n').find(l => l.startsWith('Viewer page:'))?.includes(token));
 
 const call = async (body, hdr = {}) => {
@@ -57,11 +81,15 @@ ok('valid token accepted', r.status === 200 && r.j.result?.points === NPTS, `htt
 
 r = await call({ session: sid, cmd: 'history', args: { op: 'undo' } }, auth);
 ok('edit blocked while read-only', r.status === 403, `http ${r.status}`);
-await p.click('#k-agentedits');
+await p.click('#http-live #k-agentedits2');
 await p.waitForTimeout(1200);
 r = await call({ session: sid, cmd: 'history', args: { op: 'undo' } }, auth);
 ok('edit allowed after Allow edits', r.status === 200, `http ${r.status}`);
-await p.click('#k-agentedits');
+const hot = await access();
+ok('and the badge flips to EDITS ALLOWED', hot.badge === 'EDITS ALLOWED', hot.badge);
+ok('with a line saying what that means', /crop, delete/.test(hot.note), hot.note);
+ok('and the tab dot turns to a warning', /warn/.test(hot.dot), hot.dot);
+await p.click('#http-live #k-agentedits2');
 await p.waitForTimeout(1200);
 
 // merge fix: a preset must not linger into the next set_view
@@ -76,7 +104,7 @@ const bytes = JSON.stringify(r.j).length;
 ok('screenshot returns one image', !!r.j.shot && !r.j.result?.png, `${(bytes/1024).toFixed(0)} KB body`);
 
 // an apply must return a plain summary: the undo record cannot cross Firestore
-await p.click('#k-agentedits'); await p.waitForTimeout(1200);
+await p.click('#http-live #k-agentedits2'); await p.waitForTimeout(1200);
 r = await call({ session: sid, cmd: 'regions', args: { op: 'add', shot: false,
   region: { kind: 'box', role: 'delete', center: [54.5, 47, 7.3], half: [11, 4, 1], label: 'specks' } } }, auth);
 ok('agent can add a delete region', r.status === 200 && !!r.j.result?.id, r.j.result?.label ?? '');
@@ -86,12 +114,15 @@ ok('apply replies with a summary', r.status === 200 && r.j.ok !== false && ap.dr
    `kept ${ap.kept} dropped ${ap.dropped}`);
 r = await call({ session: sid, cmd: 'history', args: { op: 'undo', shot: false } }, auth);
 ok('undo restores through the endpoint', r.status === 200 && r.j.result?.points === NPTS, `${r.j.result?.points} pts`);
-await p.click('#k-agentedits'); await p.waitForTimeout(800);
+await p.click('#http-live #k-agentedits2'); await p.waitForTimeout(800);
 
 await p.click('#k-agentstop');
 await p.waitForTimeout(1500);
 r = await call({ session: sid, cmd: 'state' }, auth);
 ok('stopped session revoked', r.status === 401, `http ${r.status}`);
+const gone = await access();
+ok('and the tab goes back to offering a new session', gone.idle && !gone.live, '');
+ok('with no dot on it', !/live|warn/.test(gone.dot), gone.dot);
 
 // closing the window must kill the token by itself
 const p2 = await ctx.newPage();

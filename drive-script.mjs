@@ -96,6 +96,8 @@ const shot = await p.evaluate(() => window.__app.agentRun('script', { steps: [{ 
 ok('a step that answers with a picture reports it, not the bytes', /omitted/.test(String(shot.steps[0].result.png ?? '')), String(shot.steps[0].result.png).slice(0, 70));
 
 // ---------------------------------------------------------------- the panel action
+// Run script lives on the Scripts tab of the Agent group now, so switch to it first.
+await p.click('#tab-script');
 await p.click('#k-script');
 await p.waitForSelector('#sc-text', { timeout: 10000 });
 await p.fill('#sc-text', JSON.stringify([{ cmd: 'set_view', args: { preset: 'top' } }, { cmd: 'state' }], null, 2));

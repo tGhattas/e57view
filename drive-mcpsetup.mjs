@@ -24,8 +24,12 @@ const openPanel = () => p.evaluate(() => {
   document.getElementById('drop').classList.add('hidden');
   document.getElementById('panel').classList.remove('hidden');
   document.querySelectorAll('#panel .grp').forEach(g => g.classList.remove('closed'));
+  document.querySelectorAll('#panel details.sub').forEach(d => d.setAttribute('open', ''));
 });
+/** A hidden tab's controls are not clickable, so the driver switches tabs the way a user does. */
+const agentTab = (name) => p.click(`#tab-${name}`);
 await openPanel();
+await agentTab('mcp');
 
 const clients = await p.evaluate(() => window.__app.mcpClients);
 ok('the panel offers a client for each of the tools people use', clients.length >= 6,
@@ -34,16 +38,18 @@ for (const want of ['Claude Code', 'Codex CLI', 'Cursor', 'Claude Desktop']) {
   ok(`  ${want} is one of them`, clients.some(c => c.name === want), '');
 }
 
-/** The blocks the panel is actually showing, read out of the DOM. */
+/** The blocks the panel is showing, in the order a reader meets them. The download line lives
+ *  under step 1 and the registration snippets under step 2, so both containers are read. */
 const shown = () => p.evaluate(() =>
-  Array.from(document.querySelectorAll('#mcp-snips .snipwrap')).map(w => ({
+  Array.from(document.querySelectorAll('#mcp-dl .snipwrap, #mcp-snips .snipwrap')).map(w => ({
     label: w.querySelector('.sniplabel')?.textContent ?? '',
     text: w.querySelector('pre')?.textContent ?? '',
     copyId: w.querySelector('button')?.id ?? '',
   })));
+/** Click the chip, the way a user does. The `<select>` behind it is still the state. */
 const pick = async (id) => {
-  await p.selectOption('#k-mcpclient', id);
-  await p.waitForTimeout(60);
+  await p.click(`#mcp-clients button[data-client="${id}"]`);
+  await p.waitForTimeout(80);
   return shown();
 };
 
@@ -88,7 +94,7 @@ for (const [id, file] of [['cursor', '.cursor/mcp.json'], ['claude-desktop', 'cl
 await pick('codex');
 for (const i of [0, 1, 2]) {
   const { text, copied } = await p.evaluate(async (idx) => {
-    const wraps = document.querySelectorAll('#mcp-snips .snipwrap');
+    const wraps = document.querySelectorAll('#mcp-dl .snipwrap, #mcp-snips .snipwrap');
     const w = wraps[idx];
     const text = w.querySelector('pre').textContent;
     w.querySelector('button').click();
@@ -103,8 +109,11 @@ for (const i of [0, 1, 2]) {
 await pick('windsurf');
 await p.reload({ waitUntil: 'networkidle' });
 await openPanel();
+await agentTab('mcp');
 ok('the chosen client survives a reload', (await p.inputValue('#k-mcpclient')) === 'windsurf',
    await p.inputValue('#k-mcpclient'));
+ok('and the chip shows it', await p.evaluate(() =>
+  document.querySelector('#mcp-clients button.on')?.dataset.client === 'windsurf'), '');
 
 // ---------------------------------------------------------------- the desktop build's forms
 console.log('\n--- desktop build (the app registering itself) ---');
@@ -149,6 +158,65 @@ for (const [plat, exe] of EXES) {
 const spaced = await p.evaluate(() =>
   window.__app.mcpBlocks('claude-code', window.__app.mcpDesktopTarget('/Users/a b/e57view'))[0].text);  // scrub-ok: a fixture, not anybody's home
 ok('a path with a space is quoted for the shell', spaced.includes('"/Users/a b/e57view"'), spaced);     // scrub-ok: the same fixture
+
+// ---------------------------------------------------------------- three tabs
+console.log('\n--- three tabs, one at a time ---');
+const tabs = await p.evaluate(() => Array.from(document.querySelectorAll('#agent-tabs .tab'))
+  .map(t => ({ id: t.id, name: t.textContent.trim(), visible: !!t.offsetParent })));
+ok('there is a tab for each way in', tabs.length === 3, tabs.map(t => t.name).join(', '));
+ok('and they are MCP, HTTP and Scripts', tabs.map(t => t.name).join(',') === 'MCP,HTTP,Scripts',
+   tabs.map(t => t.name).join(','));
+
+for (const [tab, pane] of [['mcp', 'pane-mcp'], ['http', 'pane-http'], ['script', 'pane-script']]) {
+  await agentTab(tab);
+  const vis = await p.evaluate(() => ['pane-mcp', 'pane-http', 'pane-script']
+    .filter(id => !document.getElementById(id).classList.contains('hidden')));
+  ok(`${tab}: only its own pane is showing`, vis.length === 1 && vis[0] === pane, vis.join(', '));
+}
+await agentTab('mcp');
+ok('the connect switch and the picker are in the MCP tab',
+   await p.evaluate(() => !!document.querySelector('#pane-mcp #k-agent') && !!document.querySelector('#pane-mcp #mcp-clients')), '');
+ok('Allow edits and the session button are in the HTTP tab',
+   await p.evaluate(() => !!document.querySelector('#pane-http #k-agentedits') && !!document.querySelector('#pane-http #k-agenturl')), '');
+ok('Run script is in the Scripts tab',
+   await p.evaluate(() => !!document.querySelector('#pane-script #k-script')), '');
+ok('there is exactly one client picker',
+   (await p.evaluate(() => document.querySelectorAll('#k-mcpclient').length)) === 1, '');
+
+const mcpWords = await p.evaluate(() => document.getElementById('pane-mcp').innerText);
+ok('the MCP tab says Allow edits does not apply to it', /does not apply here/i.test(mcpWords), '');
+await agentTab('http');
+const httpWords = await p.evaluate(() => document.getElementById('pane-http').innerText);
+ok('the HTTP tab says the token is shown once', /shown once/i.test(httpWords), '');
+ok('and offers the choice before starting',
+   await p.evaluate(() => !document.getElementById('http-idle').classList.contains('hidden')
+     && !!document.querySelector('#http-idle #k-agentedits')), '');
+await agentTab('mcp');
+
+// ---------------------------------------------------------------- the state shows
+const before = await p.evaluate(() => ({
+  line: document.getElementById('v-mcppill').textContent.trim(),
+  dot: document.getElementById('tab-mcp').className,
+}));
+ok('the MCP tab starts at not connected', before.line === 'not connected' && !/live|warn/.test(before.dot),
+   `${before.line} · ${before.dot}`);
+await p.evaluate(() => { const c = document.getElementById('k-agent'); c.checked = true; c.dispatchEvent(new Event('change')); });
+await p.waitForTimeout(250);
+const on = await p.evaluate(() => ({
+  line: document.getElementById('v-mcppill').textContent.trim(),
+  dot: document.getElementById('tab-mcp').className,
+}));
+ok('switching Connect on changes the status line', on.line !== before.line && /127\.0\.0\.1:7337/.test(on.line),
+   `"${before.line}" -> "${on.line}"`);
+ok('and lights the dot on the tab', /warn|live/.test(on.dot), on.dot);
+await p.evaluate(() => { const c = document.getElementById('k-agent'); c.checked = false; c.dispatchEvent(new Event('change')); });
+await p.waitForTimeout(250);
+const off = await p.evaluate(() => ({
+  line: document.getElementById('v-mcppill').textContent.trim(),
+  dot: document.getElementById('tab-mcp').className,
+}));
+ok('switching it off puts both back', off.line === 'not connected' && !/live|warn/.test(off.dot),
+   `${off.line} · ${off.dot}`);
 
 console.log(`\n${fails === 0 ? 'ALL CHECKS PASSED' : `${fails} CHECK(S) FAILED`}`);
 await br.close();

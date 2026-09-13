@@ -21,6 +21,7 @@ let shell: typeof import('./desktop') | null = null;
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const fmt = (n: number) => Math.round(n).toLocaleString();
 const mb = (b: number) => b >= 1e9 ? `${(b / 1e9).toFixed(2)} GB` : `${(b / 1e6).toFixed(0)} MB`;
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const uid = (p: string) => p + Math.random().toString(36).slice(2, 8);
 
 const viewer = new Viewer($<HTMLCanvasElement>('gl'));
@@ -1981,6 +1982,10 @@ const anaUi = {
 };
 function syncAnaLabels() {
   $('v-ank').textContent = String(anaUi.k);
+  const k2 = $<HTMLInputElement>('k-ank2');
+  if (k2) { k2.value = String(anaUi.k); $('v-ank2').textContent = String(anaUi.k); }
+  const k1 = $<HTMLInputElement>('k-ank');
+  if (k1 && +k1.value !== anaUi.k) k1.value = String(anaUi.k);
   $('v-ansigma').textContent = anaUi.sigma.toFixed(1) + ' σ';
   $('v-anspace').textContent = anaUi.spacing.toFixed(2) + ' m';
   $('v-annradius').textContent = anaUi.noiseRadius.toFixed(2) + ' m';
@@ -1990,7 +1995,11 @@ function syncAnaLabels() {
   $('k-annradius').closest('label')!.classList.toggle('dim', anaUi.noiseKnn);
   $('k-annabs').closest('label')!.classList.toggle('dim', !anaUi.noiseAbsolute);
 }
-$('k-ank').addEventListener('input', e => { anaUi.k = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
+// Neighbours appears in both Analysis and Clean, because both need it and neither should send
+// you to the other group to change it. One value, two sliders, repainted together.
+for (const id of ['k-ank', 'k-ank2']) {
+  $(id)?.addEventListener('input', e => { anaUi.k = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
+}
 $('k-ansigma').addEventListener('input', e => { anaUi.sigma = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
 $('k-anspace').addEventListener('input', e => { anaUi.spacing = +(e.target as HTMLInputElement).value; syncAnaLabels(); });
 $('k-annbmode').addEventListener('change', e => { anaUi.noiseKnn = (e.target as HTMLSelectElement).value === 'knn'; syncAnaLabels(); });
@@ -2059,14 +2068,23 @@ $('k-ancc').addEventListener('click', () =>
   analysis('components', { radius: anaUi.spacing, minPts: 16 }, 'Connected components').catch(() => {}));
 
 async function maskTool(op: string, args: Record<string, any>, label: string, prompt: string) {
+  const note = (t: string, kind = '') => {
+    const el = $('v-clean') ?? $('v-analysis');
+    el.textContent = t;
+    el.className = 'statusline' + (kind ? ' ' + kind : '');
+  };
   try {
+    const before = viewer.loaded;
     const r = await runAnalysis(op, args);
     hideBusy();
     const masks = perLeaf(r.data as Uint8Array, r.counts);
     const extra = r.mean !== undefined ? `<p class="mono">mean neighbour distance ${r.mean.toFixed(4)} m · cut-off ${r.cut.toFixed(4)} m</p>` : '';
-    await commitMask(label, masks, prompt + extra);
+    const res = await commitMask(label, masks, prompt + extra);
+    if (!res) { note('nothing removed'); return; }
+    const pct = before ? (res.dropped / before) * 100 : 0;
+    note(`removed ${fmt(res.dropped)} points, ${pct.toFixed(1)}%, undo with ${isMac ? '⌘Z' : 'Ctrl+Z'}`, 'ok');
   } catch (e: any) {
-    $('v-analysis').textContent = 'failed: ' + (e?.message ?? e);
+    note('failed: ' + (e?.message ?? e), 'err');
   } finally { hideBusy(); }
 }
 $('k-ansor').addEventListener('click', () => maskTool('sor', { knn: anaUi.k, sigma: anaUi.sigma }, 'Remove outliers',
@@ -3892,7 +3910,22 @@ $('k-script').addEventListener('click', async () => {
 });
 
 // ------------------------------------------------------------------ agent link
-const agent = new AgentLink({
+/** How many commands an agent has run in this tab, and when the last one was. Counting here
+ *  rather than in one transport catches both: the WebSocket path calls a handler directly and
+ *  the HTTP relay goes through `dispatchAgent`, and both end up in this object. */
+const agentCalls = { n: 0, last: 0 };
+function counted<T extends Record<string, any>>(handlers: T): T {
+  const out: any = {};
+  for (const [k, fn] of Object.entries(handlers)) {
+    out[k] = async (a: any) => {
+      agentCalls.n++; agentCalls.last = Date.now();
+      refreshAgentState();
+      try { return await (fn as any)(a); } finally { refreshAgentState(); }
+    };
+  }
+  return out;
+}
+const agent = new AgentLink(counted({
   state: () => stateRecord(),
   screenshot: (a) => ({ png: viewer.snapshot(a.width ?? 1280).split(',')[1], view: viewer.getView(), size: [innerWidth, innerHeight], camera: viewer.cameraRecord() }),
   /** A calibrated image: orthographic by default, so the mapping it comes with is exact. */
@@ -4375,14 +4408,27 @@ const agent = new AgentLink({
   },
   script: (a) => runScript(a),
   stations: async (a) => { if (a.enter === -1) viewer.exitBubble(); else if (a.enter !== undefined) await enterStation(a.enter); viewer.render(); return { stations: viewer.stationPositions(), bubble: viewer.bubble?.index ?? null }; },
-});
-agent.onStatus = (s) => { $('v-agent').textContent = s; };
+}));
+// In the desktop build the bridge is inside the app, so AgentLink's advice about starting a
+// Node server is wrong there; `refreshBridge` owns that line instead.
+// The connection state is the line above; this one is for one-off messages, so a transient
+// "copied" is not immediately overwritten by a repeat of what the status line already says.
+agent.onStatus = () => refreshAgentState();
+function agentNote(text: string) {
+  const el = $('v-agent');
+  el.textContent = text;
+  el.classList.toggle('hidden', !text);
+}
 // The MCP server is a plain file the user runs; the page can only hand it over.
 $('k-mcpget').addEventListener('click', () => {
   const a = document.createElement('a'); a.href = '/mcp.mjs'; a.download = 'e57view-mcp.mjs';
   document.body.appendChild(a); a.click(); a.remove();
-  $('v-agent').textContent = 'downloaded e57view-mcp.mjs · register it with the command below';
+  agentNote('downloaded e57view-mcp.mjs, now register it below');
 });
+
+/** The running binary's own path, from the shell. Empty until the bridge first answers, which
+ *  is why `mcpTarget` has a per-platform fallback rather than a macOS path. */
+let bridgeExe = '';
 
 // ------------------------------------------------------------------ MCP client setup
 //
@@ -4470,7 +4516,7 @@ const MCP_CLIENTS: McpClient[] = [
 function mcpBlocks(clientId: string, t: McpTarget): McpSnippet[] {
   const client = MCP_CLIENTS.find(c => c.id === clientId) ?? MCP_CLIENTS[0];
   const blocks: McpSnippet[] = [];
-  if (t.download) blocks.push({ label: 'Download the server (one file, Node 20)', text: t.download });
+  if (t.download) blocks.push({ label: 'or paste this in a terminal', text: t.download });
   blocks.push(...client.snippets(t));
   return blocks;
 }
@@ -4483,6 +4529,12 @@ function renderMcpSetup() {
   const sel = $<HTMLSelectElement>('k-mcpclient');
   const t = mcpTarget();
   const blocks = mcpBlocks(sel.value, t);
+  // The download line belongs to step 1, which has its own button; the registration snippets
+  // belong to step 2. Rendering both into one container put the curl line under "Your agent",
+  // where it read as part of the registration.
+  renderClientChips();
+  const dl = $('mcp-dl');
+  if (dl) dl.innerHTML = '';
   const host = $('mcp-snips');
   host.innerHTML = '';
   blocks.forEach((b, i) => {
@@ -4504,11 +4556,11 @@ function renderMcpSetup() {
     // exactly what is shown, not a regenerated approximation of it
     copy.addEventListener('click', async () => {
       const text = pre.textContent ?? '';
-      try { await navigator.clipboard.writeText(text); $('v-agent').textContent = `copied · ${b.label.toLowerCase()}`; }
-      catch { $('v-agent').textContent = 'could not reach the clipboard; select the text and copy it'; }
+      try { await navigator.clipboard.writeText(text); agentNote(`copied: ${b.label.toLowerCase()}`); }
+      catch { agentNote('could not reach the clipboard, so select the text and copy it'); }
     });
     wrap.append(label, pre, copy);
-    host.appendChild(wrap);
+    (i === 0 && t.download && dl ? dl : host).appendChild(wrap);
   });
 }
 $('k-mcpclient').addEventListener('change', () => {
@@ -4519,8 +4571,50 @@ $('k-mcpclient').addEventListener('change', () => {
   const saved = localStorage.getItem('mcp-client');
   if (saved && MCP_CLIENTS.some(c => c.id === saved)) $<HTMLSelectElement>('k-mcpclient').value = saved;
 }
+
+/** The picker as chips. The `<select>` is still the state and still fires `change`, so nothing
+ *  downstream knows the difference; six client names do not fit in a 118px select, and
+ *  truncating the one thing the user is choosing between is the wrong trade. */
+function renderClientChips() {
+  const host = $('mcp-clients');
+  const sel = $<HTMLSelectElement>('k-mcpclient');
+  host.innerHTML = '';
+  for (const c of MCP_CLIENTS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = c.name;
+    b.dataset.client = c.id;
+    b.className = c.id === sel.value ? 'on' : '';
+    b.setAttribute('aria-pressed', String(c.id === sel.value));
+    b.addEventListener('click', () => {
+      sel.value = c.id;
+      sel.dispatchEvent(new Event('change'));
+    });
+    host.appendChild(b);
+  }
+}
+
+// ------------------------------------------------------------------ the three tabs
+type AgentTab = 'mcp' | 'http' | 'script';
+function showAgentTab(which: AgentTab) {
+  const t: AgentTab = (which === 'http' && DESKTOP) ? 'mcp' : which;
+  for (const name of ['mcp', 'http', 'script'] as AgentTab[]) {
+    $(`tab-${name}`)?.classList.toggle('on', name === t);
+    $(`pane-${name}`)?.classList.toggle('hidden', name !== t);
+  }
+  localStorage.setItem('agent-tab', t);
+}
+for (const name of ['mcp', 'http', 'script'] as AgentTab[]) {
+  $(`tab-${name}`)?.addEventListener('click', () => showAgentTab(name));
+}
+showAgentTab((localStorage.getItem('agent-tab') as AgentTab) || 'mcp');
 renderMcpSetup();
-$('k-agent').addEventListener('change', e => { const on = (e.target as HTMLInputElement).checked; localStorage.setItem('agent', on ? '1' : '0'); on ? agent.start() : agent.stop(); });
+$('k-agent').addEventListener('change', e => {
+  const on = (e.target as HTMLInputElement).checked;
+  localStorage.setItem('agent', on ? '1' : '0');
+  on ? agent.start() : agent.stop();
+  refreshAgentState();
+});
 if (!DESKTOP && (new URLSearchParams(location.search).get('agent') === '1' || localStorage.getItem('agent') === '1')) { $<HTMLInputElement>('k-agent').checked = true; agent.start(); }
 
 /** Commands a remote session may run only when this tab has ticked Allow edits:
@@ -4592,16 +4686,84 @@ async function dispatchAgent(cmd: string, args: any = {}) {
 let stopSession: (() => void) | null = null;
 let agentSid: string | null = null;
 let agentToken: string | null = null;      // memory + sessionStorage only, so the tab can revoke itself
+let agentExpires = 0;
 let agentSticky = 0;                                   // hold a message the watcher must not overwrite
-function agentStatus(text: string, sticky = 0) {
+function agentStatus(text: string, sticky = 0, kind: '' | 'ok' | 'busy' | 'err' = '') {
   if (!sticky && Date.now() < agentSticky) return;
   agentSticky = sticky ? Date.now() + sticky : 0;
-  $('v-agenturl').textContent = text;
+  const el = $('v-agenturl');
+  el.textContent = text;
+  el.className = 'statusline' + (kind ? ' ' + kind : '');
 }
 function updateAgentUI() {
-  $('k-agentstop').classList.toggle('hidden', !agentSid);
-  ($('k-agentedits') as HTMLInputElement).disabled = !agentSid;
+  const live = !!agentSid;
+  $('http-idle')?.classList.toggle('hidden', live);
+  $('http-live')?.classList.toggle('hidden', !live);
+  $('k-agentstop').classList.toggle('hidden', !live);
+  document.body.classList.toggle('has-session', live);
+  const two = $<HTMLInputElement>('k-agentedits2');
+  if (two) two.checked = editsAllowed();
+  refreshAgentState();
 }
+/** The one thing people were missing: what a running session is allowed to do. */
+function paintAccessBadge() {
+  const b = $('v-access');
+  if (!b) return;
+  const on = editsAllowed();
+  b.textContent = on ? 'EDITS ALLOWED' : 'READ-ONLY';
+  b.className = 'badge' + (on ? ' edits' : '');
+  $('v-accessnote').textContent = on
+    ? 'The agent can crop, delete, transform and save over this session.'
+    : 'The agent can look and measure. It cannot change or save anything.';
+}
+
+// ---------------------------------------------------------------- what is connected
+//
+// Three ways in, and before this there was one flat list of controls for all of them, so
+// which one you were looking at was a guess. Each option now carries its own pill, and this
+// is the one line that says what is actually connected right now.
+/** What the desktop shell last told us about its bridge. Empty in the web build. */
+const desktopBridge = { port: 0, agents: 0 };
+const hms = (ms: number) => {
+  if (ms <= 0) return 'expired';
+  const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
+  return h ? `${h} h ${m} m` : `${m} m`;
+};
+function refreshAgentState() {
+  // ---- the local MCP bridge
+  let mcp: 'off' | 'waiting' | 'on';
+  if (DESKTOP) mcp = desktopBridge.port ? 'on' : 'waiting';
+  else if (!$<HTMLInputElement>('k-agent').checked) mcp = 'off';
+  else mcp = agent.connected ? 'on' : 'waiting';
+  const calls = agentCalls.n ? ` · ${agentCalls.n} command${agentCalls.n > 1 ? 's' : ''} run` : '';
+  const line = $('v-mcppill');
+  if (line) {
+    const attached = DESKTOP && desktopBridge.agents
+      ? ` · ${desktopBridge.agents} agent${desktopBridge.agents > 1 ? 's' : ''} attached` : '';
+    line.textContent = mcp === 'on'
+      ? `listening on 127.0.0.1:${DESKTOP ? desktopBridge.port : 7337}${attached}${calls}`
+      : mcp === 'waiting' ? 'waiting for the server on 127.0.0.1:7337'
+      : 'not connected';
+    line.className = 'statusline' + (mcp === 'on' ? ' ok' : mcp === 'waiting' ? ' busy' : '');
+  }
+
+  // ---- the hosted HTTP session
+  const live = !!agentSid;
+  const edits = live && editsAllowed();
+  if (live) {
+    const left = agentExpires ? `expires in ${hms(agentExpires - Date.now())}` : 'no expiry known';
+    const note = $('v-agentexp');
+    if (note) note.textContent = left;
+  }
+
+  // ---- a dot on each tab, so a live path shows without opening it
+  $('tab-mcp')?.classList.toggle('live', mcp === 'on');
+  $('tab-mcp')?.classList.toggle('warn', mcp === 'waiting');
+  $('tab-http')?.classList.toggle('live', live && !edits);
+  $('tab-http')?.classList.toggle('warn', live && edits);
+  paintAccessBadge();
+}
+setInterval(refreshAgentState, 30000);        // so the expiry clock ticks down
 async function startRemoteSession(sid: string) {
   const m = sessionMod ?? await import('./session'); sessionMod = m;
   await m.ensureAuth();
@@ -4616,6 +4778,7 @@ $('k-agenturl').addEventListener('click', async () => {
     const m = sessionMod ?? await import('./session'); sessionMod = m;
     const edits = $<HTMLInputElement>('k-agentedits').checked;
     const { sid, token, expiresAt } = await m.createAgentSession(edits);
+    agentExpires = expiresAt;
     agentToken = token;
     try { sessionStorage.setItem('agent-token:' + sid, token); } catch {}
     await startRemoteSession(sid);
@@ -4624,9 +4787,11 @@ $('k-agenturl').addEventListener('click', async () => {
     const page = new URL(location.origin + location.pathname);
     page.searchParams.set('session', sid);
     const blob = [
-      `# e57view agent session — expires ${new Date(expiresAt).toLocaleString()}`,
-      `# ${edits ? 'Edits allowed.' : 'Read-only: tick "Allow edits" in the viewer to permit crop, clean and save.'}`,
-      `# Keep this tab open. The token below is the credential; it is shown once and is not in the URL.`,
+      `# ${edits ? 'EDITS ALLOWED: this session may crop, delete, transform and save.' : 'READ-ONLY: this session may look and measure, and nothing else.'}`,
+      `# Change that with "Allow edits" on the HTTP tab of the viewer's Agent panel.`,
+      `#`,
+      `# e57view agent session, expires ${new Date(expiresAt).toLocaleString()}`,
+      `# Keep this tab open. The token below is the credential. It is shown once and is not in the URL.`,
       '',
       `Viewer page: ${page}`,
       '',
@@ -4636,23 +4801,40 @@ $('k-agenturl').addEventListener('click', async () => {
       `  -d '${JSON.stringify({ session: sid, cmd: 'state' })}'`,
     ].join('\n');
     await navigator.clipboard.writeText(blob);
-    agentStatus(`session ${sid} copied with its token · ${edits ? 'edits allowed' : 'read-only'}`, 8000);
-  } catch (e: any) { agentStatus('failed: ' + (e?.message ?? e), 8000); }
+    agentStatus(`Copied · ${edits ? 'edits allowed' : 'read-only session'}`, 8000, edits ? 'busy' : 'ok');
+  } catch (e: any) { agentStatus('failed: ' + (e?.message ?? e), 8000, 'err'); }
 });
 $('k-agentstop').addEventListener('click', async () => {
   if (!agentSid) return;
   const sid = agentSid;
-  stopSession?.(); stopSession = null; agentSid = null; agentToken = null;
+  stopSession?.(); stopSession = null; agentSid = null; agentToken = null; agentExpires = 0;
   try { sessionStorage.removeItem('agent-token:' + sid); } catch {}
   updateAgentUI();
-  try { await sessionMod?.stopAgentSession(sid); agentStatus('session stopped · its token no longer works', 8000); }
-  catch (e: any) { agentStatus('stopped locally, but the record remains: ' + (e?.message ?? e), 8000); }
+  try { await sessionMod?.stopAgentSession(sid); agentStatus('session stopped, its token no longer works', 8000); }
+  catch (e: any) { agentStatus('stopped locally, but the record remains: ' + (e?.message ?? e), 8000, 'err'); }
 });
+/** Allow edits appears twice: once before a session is started, where the choice is made
+ *  deliberately, and once beside the live badge, where it is changed. One setting, so the
+ *  second is mirrored onto the first and everything else reads `k-agentedits`. */
+const editsAllowed = () => $<HTMLInputElement>('k-agentedits').checked;
+function setEditsAllowed(on: boolean) {
+  $<HTMLInputElement>('k-agentedits').checked = on;
+  const two = $<HTMLInputElement>('k-agentedits2');
+  if (two) two.checked = on;
+  refreshAgentState();
+}
 $('k-agentedits').addEventListener('change', async e => {
   const on = (e.target as HTMLInputElement).checked;
+  setEditsAllowed(on);
+  if (agentSid) { try { await sessionMod?.setAgentEdits(agentSid, on); } catch {} }
+});
+$('k-agentedits2')?.addEventListener('change', async e => {
+  const on = (e.target as HTMLInputElement).checked;
+  setEditsAllowed(on);
   if (agentSid) { try { await sessionMod?.setAgentEdits(agentSid, on); } catch {} }
 });
 updateAgentUI();
+refreshAgentState();
 // Close the window, lose the token. A beacon survives unload where a normal request does
 // not; bfcache (persisted) is a pause, not a close, so it must not revoke.
 addEventListener('pagehide', (e) => {
@@ -4818,21 +5000,18 @@ async function startDesktop() {
   refreshBridge();
   setInterval(refreshBridge, 4000);
 }
-/** The running binary's own path, from the shell. Empty until the bridge first answers, which
- *  is why `mcpTarget` has a per-platform fallback rather than a macOS path. */
-let bridgeExe = '';
 async function refreshBridge() {
   if (!shell) return;
   try {
     const b = await shell.bridgeStatus();
     bridgeExe = b.exe ?? bridgeExe;
-    $('v-agent').textContent = `MCP: on · port ${b.port} · ${b.viewer ? 'viewer connected' : 'waiting for the viewer'}`
-      + (b.agents ? ` · ${b.agents} agent${b.agents > 1 ? 's' : ''} attached` : '');
+    desktopBridge.port = b.port; desktopBridge.agents = b.agents;
+    refreshAgentState();
     // the real path of the running binary, which is what every snippet has to name
     if (b.exe) renderMcpSetup();
-  } catch { $('v-agent').textContent = 'MCP: the bridge did not answer'; }
+  } catch { desktopBridge.port = 0; agentNote('the bridge did not answer'); refreshAgentState(); }
 }
-if (DESKTOP) startDesktop().catch(e => { $('v-agent').textContent = 'desktop shell: ' + (e?.message ?? e); });
+if (DESKTOP) startDesktop().catch(e => { agentNote('desktop shell: ' + (e?.message ?? e)); });
 
 (window as any).__app = { openFile, openCached, writeCache, applyKeep, applyCrop, setCropRole, get cropState() { return cropState; }, addSection, undoEdit, redoEdit, saveCurrent, hist,
   commitTransform, transformState, levelCloud, rowMajor, fromRowMajor, runExport, updateTransformUI,

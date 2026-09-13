@@ -63,7 +63,8 @@ been released yet, so everything is unreleased.
   something scanned from the inside.
 - **Scalar fields** from curvature, planarity, verticality, roughness, density and more, with a
   ramp, a histogram and a value filter.
-- **Cleaning**: **SOR and noise filters with the same semantics and defaults as CloudCompare's**
+- **Cleaning** has a group of its own in the panel. **SOR and noise filters with the same
+  semantics and defaults as CloudCompare's**
   reimplemented in Rust from `CCCoreLib::CloudSamplingTools`, not copied, and asserted to
   remove the same points as a transcription of that algorithm on every run. The noise filter
   has all of CloudCompare's options: a sphere or kNN neighbourhood, a relative or absolute

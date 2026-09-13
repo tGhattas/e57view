@@ -57,7 +57,7 @@
       <h1>e57view</h1>
       <p class="lede" id="drop-lede">Drop an E57 scan anywhere, or pick one. Nothing is uploaded — the file is read straight off your disk.</p>
       <button id="pick" class="primary">Open file</button>
-      <p class="hint mono" id="drop-hint">.e57 · reads header in ~10 ms</p>
+      <p class="statusline" id="drop-hint">.e57 · reads header in ~10 ms</p>
       <div id="scan-card" class="hidden">
         <p class="lab mono">SCAN WITH THIS DEVICE</p>
         <p class="small">Safari cannot reach the LiDAR sensor, so capture happens in a scanning app and the scan opens here. Scaniverse, Polycam and 3D Scanner App all export <b>PLY</b>, <b>LAS</b> or <b>E57</b>, which this viewer reads directly.</p>
@@ -78,7 +78,7 @@
       <div class="scanrow"><span class="lab mono">SENSOR</span><span id="ld-sensor">—</span></div>
       <div class="scanrow"><span class="lab mono">FIELDS</span><span id="ld-fields">—</span></div>
       <div class="bar"><i id="ld-bar"></i></div>
-      <p class="hint mono" id="ld-stat">opening…</p>
+      <p class="statusline" id="ld-stat">opening…</p>
     </div>
   </div>
 
@@ -94,8 +94,11 @@
       <button id="k-layermerge" class="ghost wide">Merge into active…</button>
       <label class="row"><span>Tint this layer</span><input type="checkbox" id="k-layertint"></label>
       <label class="row"><span>Colour</span><input type="color" id="k-layercolor" value="#66ccff"></label>
-      <p class="hint mono" id="v-layers">—</p>
-      <p class="hint">Every visible layer is drawn; the <b>active</b> one (click its name) is what every tool works on. Double-click a name to rename it. <b>Add file…</b> opens another scan alongside this one — so does dropping a file with <b>Shift</b> held — while <b>Open file…</b> replaces everything. A tint multiplies a layer's colour so two overlapping scans can be told apart.</p>
+      <p class="statusline" id="v-layers">—</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">Every visible layer is drawn; the <b>active</b> one (click its name) is what every tool works on. Double-click a name to rename it. <b>Add file…</b> opens another scan alongside this one — so does dropping a file with <b>Shift</b> held — while <b>Open file…</b> replaces everything. A tint multiplies a layer's colour so two overlapping scans can be told apart.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="register">
@@ -109,8 +112,11 @@
       <label class="row"><span>Max iterations</span><input type="range" id="k-regiter" min="5" max="80" step="1" value="30"><b class="mono" id="v-regiter">30</b></label>
       <button id="k-regicp" class="primary wide">Fine registration (ICP)…</button>
       <button id="k-regdistance" class="ghost wide">Distance to reference</button>
-      <p class="hint mono" id="v-register">—</p>
-      <p class="hint">Moves the <b>active</b> layer onto the reference and never touches the reference. <b>Match centres</b> and <b>Match scales</b> are the coarse step; <b>ICP</b> is point-to-plane and lands on the reference's own surfaces. <b>Distance to reference</b> writes a scalar field on the active layer, so the colour ramp and the histogram show where the two disagree.</p>
+      <p class="statusline" id="v-register">—</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">Moves the <b>active</b> layer onto the reference and never touches the reference. <b>Match centres</b> and <b>Match scales</b> are the coarse step; <b>ICP</b> is point-to-plane and lands on the reference's own surfaces. <b>Distance to reference</b> writes a scalar field on the active layer, so the colour ramp and the histogram show where the two disagree.</p>
+      </details>
     </div>
 
     <div class="grp">
@@ -177,7 +183,7 @@
       <label class="row"><span>Density</span><input type="range" id="k-density" min="0.3" max="4" step="0.05" value="2"><b class="mono" id="v-density">2.00</b></label>
       <label class="row"><span>Max point px</span><input type="range" id="k-maxpx" min="2" max="24" step="0.5" value="7"><b class="mono" id="v-maxpx">7.0</b></label>
       <label class="row"><span>While moving</span><input type="range" id="k-moving" min="0.1" max="1" step="0.05" value="0.35"><b class="mono" id="v-moving">0.35</b></label>
-      <p class="hint mono" id="v-stats">—</p>
+      <p class="statusline" id="v-stats">—</p>
       <label class="row"><span>In memory</span>
         <select id="k-load">
           <option value="1">Everything</option>
@@ -187,7 +193,7 @@
           <option value="30">1 in 30</option>
         </select>
       </label>
-      <p class="hint mono" id="v-loaded">—</p>
+      <p class="statusline" id="v-loaded">—</p>
       <div class="seg">
         <button id="k-undo" class="ghost" disabled>Undo</button>
         <button id="k-redo" class="ghost" disabled>Redo</button>
@@ -196,7 +202,7 @@
       <button id="k-reload" class="ghost wide">Reload</button>
       <button id="k-open" class="ghost wide">Open another scan…</button>
       <p class="hint">Undo/redo cover crop and section edits. <b>Save as…</b> writes a copy of the current points to a file you choose, updates the on-device cache if there is one, and clears undo. <b>⌘Z</b> / <b>⇧⌘Z</b> / <b>⌘S</b>. Escape cancels a crop region.</p>
-      <p class="hint mono" id="v-hist">—</p>
+      <p class="statusline" id="v-hist">—</p>
     </div>
 
     <div class="grp" data-grp="crop">
@@ -225,34 +231,75 @@
       <div class="row"><span>Shape</span>
         <select id="k-newshape"><option value="box">Box</option><option value="sphere">Sphere</option></select>
       </div>
-      <button id="k-place" class="primary wide">Create region (S)</button>
+      <button id="k-place" class="ghost wide">Create region (S)</button>
       <div class="seg region-active">
         <button id="k-grow" class="ghost">Grow ×1.5</button>
         <button id="k-shrink" class="ghost">Shrink ÷1.5</button>
       </div>
       <button id="k-fitcontents" class="ghost wide region-active">Fit to contents</button>
       <button id="k-segment" class="ghost wide">Draw an outline… (⇧S)</button>
-      <p class="hint">Click <b>Create region</b> then click a point on the cloud: a small shape appears there, ready to resize. <b>Grow</b>, the handles, the size sliders, or <b>Alt</b> + scroll while it is active all enlarge it; <b>Fit to contents</b> grows it until it stops finding new points and then tightens onto them.</p>
-      <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. <b>Keep inside</b> dims everything outside the region; <b>Remove inside</b> dims what is inside it — either way the preview is what Apply will leave behind. <b>Escape</b> cancels the region.</p>
       <div class="seg">
         <button id="k-cropcancel" class="ghost">Cancel region</button>
         <button id="k-cropapply" class="primary">Apply crop…</button>
       </div>
-      <p class="hint mono" id="v-crop">—</p>
+      <p class="statusline" id="v-crop">—</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">Click <b>Create region</b> then click a point on the cloud: a small shape appears there, ready to resize. <b>Grow</b>, the handles, the size sliders, or <b>Alt</b> + scroll while it is active all enlarge it; <b>Fit to contents</b> grows it until it stops finding new points and then tightens onto them.</p>
+        <p class="hint">Drag the arrows to move, the rings to rotate, the handles to resize. Double-click a point to move the orbit centre, then centre the region there. <b>Keep inside</b> dims everything outside the region; <b>Remove inside</b> dims what is inside it — either way the preview is what Apply will leave behind. <b>Escape</b> cancels the region.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="sections">
       <h3>Sections</h3>
-      <p class="hint">Bounding shapes, combined as a union: keep only what lies inside any of them, or mark one <b>Remove</b> to drop what is inside it. A section is a slab you move, tilt and thicken with the gizmo — floors, a wall, a corridor. A drawn region (<b>S</b>) is an outline extruded along the direction you drew it from, so you can orbit around it and see exactly what it holds.</p>
       <button id="k-secadd" class="ghost wide">Add section at orbit point</button>
       <ul id="sec-list" class="mlist"></ul>
-      <p class="hint mono" id="v-sections">—</p>
+      <p class="statusline" id="v-sections">—</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">Bounding shapes, combined as a union: keep only what lies inside any of them, or mark one <b>Remove</b> to drop what is inside it. A section is a slab you move, tilt and thicken with the gizmo — floors, a wall, a corridor. A drawn region (<b>S</b>) is an outline extruded along the direction you drew it from, so you can orbit around it and see exactly what it holds.</p>
+      </details>
+    </div>
+
+    <div class="grp" data-grp="clean">
+      <h3>Clean</h3>
+      <label class="row"><span title="How many nearest points each measurement looks at.">Neighbours</span><input type="range" id="k-ank2" min="3" max="64" step="1" value="16"><b class="mono" id="v-ank2">16</b></label>
+      <label class="row"><span title="How many standard deviations from the mean a point may be before it is dropped.">Strictness</span><input type="range" id="k-ansigma" min="0.5" max="4" step="0.1" value="1.0"><b class="mono" id="v-ansigma">1.0 σ</b></label>
+
+      <button id="k-ansor" class="primary wide">Remove outliers…</button>
+      <button id="k-annoise" class="ghost wide">Remove noise…</button>
+      <details class="sub">
+        <summary>Noise filter options</summary>
+        <label class="row"><span title="CloudCompare calls this the neighbours option. A sphere is its default.">Neighbourhood</span>
+          <select id="k-annbmode">
+            <option value="radius">Sphere of a radius</option>
+            <option value="knn">Nearest neighbours</option>
+          </select>
+        </label>
+        <label class="row"><span>Radius</span><input type="range" id="k-annradius" min="0.01" max="2" step="0.01" value="0.15"><b class="mono" id="v-annradius">0.15 m</b></label>
+        <label class="row"><span title="CloudCompare calls this the error option. Relative is its default.">Threshold</span>
+          <select id="k-anerrmode">
+            <option value="relative">Relative, in sigma</option>
+            <option value="absolute">Absolute distance</option>
+          </select>
+        </label>
+        <label class="row"><span>Absolute</span><input type="range" id="k-annabs" min="0.001" max="0.5" step="0.001" value="0.02"><b class="mono" id="v-annabs">0.020 m</b></label>
+        <label class="row"><span title="Points with fewer than three neighbours cannot have a plane fitted, so the filter has nothing to judge them by.">Remove isolated points</span><input type="checkbox" id="k-annrip"></label>
+      </details>
+      <button id="k-andup" class="ghost wide">Remove duplicates…</button>
+      <p class="statusline" id="v-clean">—</p>
+      <p class="hint">CloudCompare's SOR and noise filters, same settings, same points removed.</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint"><b>Remove outliers</b> measures each point's mean distance to its neighbours and drops the ones beyond the mean plus <b>Strictness</b> standard deviations, judged over the whole cloud. A few very distant points can push that threshold out past the real outliers, so crop a stray reflection away first.</p>
+        <p class="hint"><b>Remove noise</b> fits a plane to the points around each point and drops it if it sits further off that plane than its own neighbours' spread allows. The threshold is local, so a smooth wall is judged strictly and a hedge loosely. Real edges survive because they still fit a plane.</p>
+        <p class="hint">Every removal is one undoable step.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="transform">
       <h3>Transform</h3>
-      <p class="hint">Moves the whole cloud without touching a point. The records stay exactly as they are and a 4&times;4 matrix is applied when they are drawn, tested, analysed and exported — instant, lossless and undoable. <b>Save a copy</b> bakes it into the file.</p>
-      <p class="hint mono" id="v-transform">no transform</p>
+      <p class="statusline" id="v-transform">no transform</p>
 
       <p class="lab mono">TRANSLATE</p>
       <div class="trio">
@@ -288,7 +335,6 @@
         <button id="k-tmoderotate" class="ghost">Rotate</button>
         <button id="k-tmodescale" class="ghost">Scale</button>
       </div>
-      <p class="hint">The gizmo grabs the whole cloud at its bounding-box centre. It shares the handles with the crop region, so turning it on releases the crop gizmo and vice versa. One undo step per drag.</p>
 
       <div class="seg">
         <button id="k-tmatrix" class="ghost">Apply matrix…</button>
@@ -296,9 +342,14 @@
       </div>
 
       <p class="lab mono">GLOBAL SHIFT</p>
-      <p class="hint mono" id="v-shift">—</p>
+      <p class="statusline" id="v-shift">—</p>
       <button id="k-tshift" class="ghost wide">Edit global shift…</button>
-      <p class="hint">The scan's own pose offset, added back on export and shown in the coordinate readout. It is not part of the transform above and moves nothing on screen.</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">Moves the whole cloud without touching a point. The records stay exactly as they are and a 4&times;4 matrix is applied when they are drawn, tested, analysed and exported — instant, lossless and undoable. <b>Save a copy</b> bakes it into the file.</p>
+        <p class="hint">The gizmo grabs the whole cloud at its bounding-box centre. It shares the handles with the crop region, so turning it on releases the crop gizmo and vice versa. One undo step per drag.</p>
+        <p class="hint">The scan's own pose offset, added back on export and shown in the coordinate readout. It is not part of the transform above and moves nothing on screen.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="analysis">
@@ -311,7 +362,7 @@
         <button id="k-anorient" class="ghost">Orient</button>
         <button id="k-aninvert" class="ghost">Invert</button>
       </div>
-      <p class="hint">Surface reconstruction and shading both need normals. <b>Compute</b> fits a plane to each neighbourhood; <b>Orient</b> makes neighbours agree and turns them outward.</p>
+      <p class="hint">Reconstruction and shading both need normals. <b>Orient</b> turns them toward the scanner stations.</p>
 
       <p class="lab mono">MEASURE</p>
       <label class="row"><span>Feature</span>
@@ -335,41 +386,18 @@
       </label>
       <button id="k-anfeatgo" class="ghost wide">Compute feature</button>
 
-      <p class="lab mono">CLEAN</p>
-      <label class="row"><span title="How many standard deviations above the mean a point must be before it is called an outlier.">Strictness</span><input type="range" id="k-ansigma" min="0.5" max="4" step="0.1" value="1.0"><b class="mono" id="v-ansigma">1.0 σ</b></label>
-      <div class="seg">
-        <button id="k-ansor" class="ghost">Outliers…</button>
-        <button id="k-annoise" class="ghost">Noise…</button>
-        <button id="k-andup" class="ghost">Duplicates…</button>
-      </div>
-
       <p class="lab mono">CLUSTER AND THIN</p>
-      <details class="sub">
-        <summary>Noise filter options</summary>
-        <label class="row"><span title="CloudCompare calls this the neighbours option. A sphere is its default.">Neighbourhood</span>
-          <select id="k-annbmode">
-            <option value="radius">Sphere of a radius</option>
-            <option value="knn">Nearest neighbours</option>
-          </select>
-        </label>
-        <label class="row"><span>Radius</span><input type="range" id="k-annradius" min="0.01" max="2" step="0.01" value="0.15"><b class="mono" id="v-annradius">0.15 m</b></label>
-        <label class="row"><span title="CloudCompare calls this the error option. Relative is its default.">Threshold</span>
-          <select id="k-anerrmode">
-            <option value="relative">Relative, in sigma</option>
-            <option value="absolute">Absolute distance</option>
-          </select>
-        </label>
-        <label class="row"><span>Absolute</span><input type="range" id="k-annabs" min="0.001" max="0.5" step="0.001" value="0.02"><b class="mono" id="v-annabs">0.020 m</b></label>
-        <label class="row"><span title="Points with fewer than three neighbours cannot have a plane fitted, so the filter has nothing to judge them by.">Remove isolated points</span><input type="checkbox" id="k-annrip"></label>
-        <p class="hint">Same algorithm and same defaults as CloudCompare's noise filter, so the same settings remove the same points. <b>Strictness</b> above is its nSigma; <b>Neighbours</b> is its kNN.</p>
-      </details>
       <label class="row"><span>Spacing</span><input type="range" id="k-anspace" min="0.01" max="2" step="0.01" value="0.1"><b class="mono" id="v-anspace">0.10 m</b></label>
       <div class="seg">
         <button id="k-ancc" class="ghost">Components</button>
         <button id="k-ansub" class="ghost">Thin…</button>
       </div>
       <p class="hint"><b>Components</b> labels groups of points that touch within the spacing. <b>Thin</b> keeps one point per cube of that size.</p>
-      <p class="hint mono" id="v-analysis">—</p>
+      <p class="statusline" id="v-analysis">—</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">A feature is one number per point, computed from the shape of its neighbourhood and written as a scalar field. Colour by it with <b>Colour → Scalar field</b>, or narrow the range to isolate part of the cloud.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="raster">
@@ -391,7 +419,7 @@
         <select id="k-rfill"><option value="none">Leave empty</option><option value="nearest">Nearest</option><option value="idw">Inverse distance</option></select>
       </label>
       <button id="k-rasterize" class="primary wide">Rasterize</button>
-      <p class="hint mono" id="v-raster">—</p>
+      <p class="statusline" id="v-raster">—</p>
       <label class="row raster-have"><span>Show the draped grid</span><input type="checkbox" id="k-rshow" checked></label>
       <button id="k-rsavepng" class="ghost wide raster-have">Save PNG + world file…</button>
 
@@ -402,19 +430,21 @@
         <button id="k-cdxf" class="ghost">Save DXF…</button>
         <button id="k-cgeojson" class="ghost">Save GeoJSON…</button>
       </div>
-      <p class="hint mono" id="v-contours">—</p>
+      <p class="statusline" id="v-contours">—</p>
 
       <p class="lab mono">VOLUME</p>
       <label class="row"><span>Against</span><select id="k-vref"></select></label>
       <label class="row"><span>Plane height</span><input type="number" id="k-vplane" step="0.1" value="0"></label>
       <button id="k-volume" class="ghost wide">Measure the volume</button>
-      <p class="hint mono" id="v-volume">—</p>
-      <p class="hint">A 2.5D volume: the difference between two height rasters over the same cells, one cell area at a time. Cut and fill are reported separately because their sum hides both.</p>
+      <p class="statusline" id="v-volume">—</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">A 2.5D volume: the difference between two height rasters over the same cells, one cell area at a time. Cut and fill are reported separately because their sum hides both.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="fit">
       <h3>Fit</h3>
-      <p class="hint">Fits a primitive to the <b>active region's contents</b>, or to the whole layer when no region is active. The RMS is the number that says whether to believe it.</p>
       <div class="seg">
         <button id="k-fitplane" class="ghost">Plane</button>
         <button id="k-fitsphere" class="ghost">Sphere</button>
@@ -423,7 +453,7 @@
         <button id="k-fitcyl" class="ghost">Cylinder</button>
         <button id="k-fitcircle" class="ghost">Circle</button>
       </div>
-      <p class="hint mono" id="v-fit">—</p>
+      <p class="statusline" id="v-fit">—</p>
       <button id="k-fitclear" class="ghost wide">Clear the drawn shape</button>
 
       <p class="lab mono">DETECT</p>
@@ -442,11 +472,15 @@
         <button id="k-detkeep" class="ghost">Keep only inliers</button>
         <button id="k-detremove" class="ghost">Remove inliers</button>
       </div>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">Fits a primitive to the <b>active region's contents</b>, or to the whole layer when no region is active. The RMS is the number that says whether to believe it.</p>
+      </details>
     </div>
 
     <div class="grp sf-have" data-grp="field">
       <h3>Scalar field</h3>
-      <p class="hint mono" id="v-sfname">no field</p>
+      <p class="statusline" id="v-sfname">no field</p>
       <canvas id="sf-hist" height="52"></canvas>
       <label class="row"><span>Display from</span><input type="range" id="k-sfmin" min="0" max="1000" step="1" value="0"><b class="mono" id="v-sfmin">—</b></label>
       <label class="row"><span>to</span><input type="range" id="k-sfmax" min="0" max="1000" step="1" value="1000"><b class="mono" id="v-sfmax">—</b></label>
@@ -457,7 +491,10 @@
       <label class="row sf-filtering"><span>Hide the rest</span><input type="checkbox" id="k-sfhide"></label>
       <button id="k-sfapply" class="primary wide sf-filtering">Delete points outside…</button>
       <button id="k-sfclear" class="ghost wide">Clear field</button>
-      <p class="hint">A field is one number per point. Colour by it with <b>Colour → Scalar field</b>, narrow the display range to see detail, or filter to keep only part of the cloud.</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">A field is one number per point. Colour by it with <b>Colour → Scalar field</b>, narrow the display range to see detail, or filter to keep only part of the cloud.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="surface">
@@ -472,19 +509,22 @@
       <label class="row"><span>Fill gaps</span><input type="range" id="k-mtrunc" min="1" max="4" step="0.5" value="2"><b class="mono" id="v-mtrunc">2.0</b></label>
       <label class="row"><span>Flat shading</span><input type="checkbox" id="k-mflat"></label>
       <button id="k-mbuild" class="primary wide">Build surface…</button>
-      <p class="hint mono" id="v-mesh">—</p>
+      <p class="statusline" id="v-mesh">—</p>
       <label class="row mesh-have"><span>Save as</span>
         <select id="k-mfmt"><option value="ply">PLY (binary)</option><option value="obj">OBJ</option><option value="stl">STL (binary)</option></select>
       </label>
       <button id="k-msave" class="ghost wide mesh-have">Save surface…</button>
       <button id="k-mclear" class="ghost wide mesh-have">Discard surface</button>
-      <p class="hint">Builds a triangle surface from the points and their normals. <b>Detail</b> is the voxel size: smaller is finer and slower, and below the scanner's own point spacing it only adds noise. <b>Fill gaps</b> widens the band each point writes, closing small holes at the cost of rounding sharp edges.</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">Builds a triangle surface from the points and their normals. <b>Detail</b> is the voxel size: smaller is finer and slower, and below the scanner's own point spacing it only adds noise. <b>Fill gaps</b> widens the band each point writes, closing small holes at the cost of rounding sharp edges.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="mesh">
       <h3>Mesh</h3>
       <button id="k-meshopen" class="primary wide">Import mesh…</button>
-      <p class="hint mono" id="v-meshinfo">no mesh layer</p>
+      <p class="statusline" id="v-meshinfo">no mesh layer</p>
       <button id="k-meshmeasure" class="ghost wide mesh-have">Measure area and volume</button>
       <div class="seg mesh-have">
         <button id="k-meshflip" class="ghost">Flip faces</button>
@@ -506,36 +546,107 @@
         <select id="k-meshfmt"><option value="ply">PLY (binary)</option><option value="obj">OBJ</option><option value="stl">STL (binary)</option></select>
       </label>
       <button id="k-meshsave" class="ghost wide mesh-have">Save mesh…</button>
-      <p class="hint">A mesh opens as its own layer, drawn alongside the clouds. <b>Area</b> and <b>volume</b> are measured through the layer's transform; volume only means anything when the mesh is closed, so the boundary edge count is reported next to it. <b>Smooth</b> is Taubin with Keep volume on and plain Laplacian with it off. <b>Decimate</b> is vertex clustering at the cell you set, which is fast but cannot hit an exact triangle count.</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">A mesh opens as its own layer, drawn alongside the clouds. <b>Area</b> and <b>volume</b> are measured through the layer's transform; volume only means anything when the mesh is closed, so the boundary edge count is reported next to it. <b>Smooth</b> is Taubin with Keep volume on and plain Laplacian with it off. <b>Decimate</b> is vertex clustering at the cell you set, which is fast but cannot hit an exact triangle count.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="agent">
       <h3>Agent</h3>
-      <label class="row web-only"><span>Local MCP</span><input type="checkbox" id="k-agent"></label>
-      <p class="hint mono" id="v-agent">off</p>
-      <button id="k-script" class="ghost wide">Run script…</button>
-      <p class="hint mono" id="v-script">—</p>
-      <p class="hint web-only">Lets an agent on <b>this machine</b> drive the viewer through the e57view MCP server. It is one file and needs only Node 20; a web page cannot start it for you, so download it and register it once:</p>
-      <p class="hint desktop-only">The MCP server is <b>inside this app</b>: no Node, no install, no network. Register the app itself once and any agent on this machine can drive it.</p>
-      <label class="row"><span>Set up for</span>
-        <select id="k-mcpclient">
-          <option value="claude-code">Claude Code</option>
-          <option value="codex">Codex CLI</option>
-          <option value="cursor">Cursor</option>
-          <option value="claude-desktop">Claude Desktop</option>
-          <option value="gemini">Gemini CLI</option>
-          <option value="windsurf">Windsurf</option>
-        </select>
-      </label>
-      <button id="k-mcpget" class="ghost wide web-only">Download the server first</button>
-      <div id="mcp-snips"></div>
-      <p class="hint web-only">Then tick <b>Local MCP</b> above. The server listens on 127.0.0.1 only, so nothing is exposed off this machine; Chrome asks once to allow local network access.</p>
-      <p class="hint desktop-only">The bridge listens on 127.0.0.1 only and this app opens no other socket.</p>
-      <label class="row web-only"><span>Allow edits</span><input type="checkbox" id="k-agentedits"></label>
-      <button id="k-agenturl" class="ghost wide web-only">Copy agent URL…</button>
-      <button id="k-agentstop" class="ghost wide hidden web-only">Stop session</button>
-      <p class="hint mono web-only" id="v-agenturl">—</p>
-      <p class="hint web-only">Copies a page link plus a bearer token for <span class="mono">POST /agent</span>, so an agent can drive this tab from anywhere without MCP. The token is shown once and never appears in the URL. A session dies when you close this tab, and expires after 8 hours; tick <b>Allow edits</b> to let an agent crop, delete or save. Keep this tab open.</p>
+
+      <!-- Three ways in, one at a time. Each tab shows a dot when its path is live, so you can
+           tell something is running without opening it. -->
+      <div class="tabs" id="agent-tabs" role="tablist">
+        <button class="tab on" id="tab-mcp" role="tab" data-tab="mcp">MCP<i class="dot"></i></button>
+        <button class="tab web-only" id="tab-http" role="tab" data-tab="http">HTTP<i class="dot"></i></button>
+        <button class="tab" id="tab-script" role="tab" data-tab="script">Scripts</button>
+      </div>
+
+      <!-- ---------------------------------------------------------------- 1. local MCP -->
+      <section class="tabpane" id="pane-mcp">
+        <p class="statusline" id="v-mcppill">not connected</p>
+        <p class="use">For an agent running on this machine: Claude Code, Codex CLI, Cursor, Claude Desktop.</p>
+
+        <div class="step web-only">
+          <b>1</b>
+          <div>
+            <button id="k-mcpget" class="ghost wide">Download the server</button>
+            <p class="hint">One file, Node 20. A web page cannot start it for you.</p>
+            <div id="mcp-dl"></div>
+          </div>
+        </div>
+
+        <div class="step">
+          <b class="web-only">2</b>
+          <div>
+            <p class="sublabel">Your agent</p>
+            <div class="chips" id="mcp-clients"></div>
+            <select id="k-mcpclient" class="offscreen">
+              <option value="claude-code">Claude Code</option>
+              <option value="codex">Codex CLI</option>
+              <option value="cursor">Cursor</option>
+              <option value="claude-desktop">Claude Desktop</option>
+              <option value="gemini">Gemini CLI</option>
+              <option value="windsurf">Windsurf</option>
+            </select>
+            <div id="mcp-snips"></div>
+          </div>
+        </div>
+
+        <div class="step web-only">
+          <b>3</b>
+          <div>
+            <label class="row"><span>Connect</span><input type="checkbox" id="k-agent"></label>
+          </div>
+        </div>
+
+        <p class="statusline sub hidden" id="v-agent"></p>
+        <details class="sub">
+          <summary>How this works</summary>
+          <p class="hint web-only">The server is a WebSocket on <span class="mono">127.0.0.1:7337</span> that your agent starts and this tab connects to. Nothing is exposed off this machine. Chrome asks once to allow local network access.</p>
+          <p class="hint desktop-only">The app is the server. It listens on <span class="mono">127.0.0.1</span> only and opens no other socket. There is nothing to download and nothing to switch on.</p>
+          <p class="hint">An agent on this bridge can do anything this panel can do, including deleting points and writing files. The <b>Allow edits</b> switch on the HTTP tab does not apply here. If you do not want an agent editing, do not register the server.</p>
+        </details>
+      </section>
+
+      <!-- ---------------------------------------------------------------- 2. HTTP session -->
+      <section class="tabpane web-only hidden" id="pane-http">
+        <!-- before a session exists -->
+        <div id="http-idle">
+          <p class="use">For an agent running on another machine or in the cloud. It drives this tab over HTTP.</p>
+          <label class="row"><span>Allow edits</span><input type="checkbox" id="k-agentedits"></label>
+          <p class="hint">Decide this before you start. You can change it afterwards.</p>
+          <button id="k-agenturl" class="primary wide">Start session…</button>
+        </div>
+
+        <!-- while one is running -->
+        <div id="http-live" class="hidden">
+          <div class="badge" id="v-access">READ-ONLY</div>
+          <p class="badge-note" id="v-accessnote">The agent can look and measure. It cannot change or save anything.</p>
+          <label class="row"><span>Allow edits</span><input type="checkbox" id="k-agentedits2"></label>
+          <p class="statusline" id="v-agentexp">expires in 8 h</p>
+          <p class="statusline" id="v-agenturl">—</p>
+          <button id="k-agentstop" class="ghost wide">Stop session</button>
+        </div>
+
+        <details class="sub">
+          <summary>How this works</summary>
+          <p class="hint">Starting a session copies a page link plus a bearer token for <span class="mono">POST /agent</span>. <b>The token is shown once</b>, never appears in the URL, and cannot be read back. Start another session if you lose it.</p>
+          <p class="hint">A session expires after 8 hours, dies when you close this tab, and <b>Stop session</b> ends it at once. Keep this tab open.</p>
+        </details>
+      </section>
+
+      <!-- ---------------------------------------------------------------- 3. scripts -->
+      <section class="tabpane hidden" id="pane-script">
+        <p class="use">Run a saved list of agent commands with no agent connected at all.</p>
+        <button id="k-script" class="primary wide">Run script…</button>
+        <p class="statusline" id="v-script">—</p>
+        <details class="sub">
+          <summary>How this works</summary>
+          <p class="hint">A script is a JSON array of <span class="mono">{ "cmd", "args" }</span> steps, run in order against this tab. Each step's result is available to the next as <span class="mono">$last</span>. It is the same command set an agent drives, without the round trip.</p>
+        </details>
+      </section>
     </div>
 
     <div class="grp" data-grp="measure">
@@ -567,14 +678,17 @@
         </select>
       </label>
       <button id="k-export" class="primary wide">Save a copy…</button>
-      <p class="hint">Writes what is in memory — the crop, if you applied one. The original file is never touched.</p>
-      <p class="hint mono" id="v-export">—</p>
+      <p class="statusline" id="v-export">—</p>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">Writes what is in memory — the crop, if you applied one. The original file is never touched.</p>
+      </details>
     </div>
 
     <div class="grp" data-grp="stations">
       <h3>Stations</h3>
       <label class="row"><span>Show stations</span><input type="checkbox" id="k-stations" checked></label>
-      <p class="hint mono" id="v-stations">—</p>
+      <p class="statusline" id="v-stations">—</p>
       <div id="bubble-ui" class="hidden">
         <label class="row"><span>Points over photo</span><input type="range" id="k-blend" min="0" max="1" step="0.01" value="0.35"><b class="mono" id="v-blend">0.35</b></label>
         <button id="k-bubble-exit" class="ghost wide">Leave photo</button>
@@ -584,11 +698,14 @@
 
     <div class="grp" data-grp="cache">
       <h3>Cache</h3>
-      <p class="hint mono" id="v-cache">—</p>
-      <p class="hint">Writes decoded cells on this device so the next open is instant. <b>Save</b> (in Performance) also updates this cache after a crop, and clears undo.</p>
+      <p class="statusline" id="v-cache">—</p>
       <button id="k-cache" class="ghost wide">Cache this scan on this device</button>
       <button id="k-cacheremove" class="ghost wide hidden">Remove from cache</button>
       <button id="k-viewlink" class="ghost wide">Copy view link</button>
+      <details class="sub">
+        <summary>How this works</summary>
+        <p class="hint">Writes decoded cells on this device so the next open is instant. <b>Save</b> (in Performance) also updates this cache after a crop, and clears undo.</p>
+      </details>
     </div>
 
     <div class="grp">

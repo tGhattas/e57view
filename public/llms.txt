@@ -302,7 +302,9 @@ one, and shows a row per step.
 {"session":"S","cmd":"analysis","args":{"op":"feature","feature":"planarity"}}
 
 `analysis` covers normals, the fifteen geometric features, connected components, and the four
-operations that remove points. Every one is a single undoable step on the active layer.
+operations that remove points. Every one is a single undoable step on the active layer. In the
+viewer the removals live in their own **Clean** group and the rest in **Analysis**; over the
+agent interface they are all `analysis`.
 
 `sor` and `noise` are CloudCompare's SOR and noise filters, reimplemented in Rust from the
 published algorithm so the same settings remove the same points. They behave differently and

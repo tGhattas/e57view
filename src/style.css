@@ -323,10 +323,13 @@ body.desktop .web-only{display:none!important}
 
 /* MCP setup snippets: one block per form, each with its own Copy, because two forms of the
    same thing (a shell command and a config file) are not one thing to paste. */
-#mcp-snips{display:flex;flex-direction:column;gap:6px;margin:6px 0}
-#mcp-snips .snipwrap{display:flex;flex-direction:column;gap:4px}
-#mcp-snips .sniplabel{font-size:11px;color:var(--dim);margin:2px 0 0}
-#mcp-snips .snipcopy{align-self:flex-start;font-size:11px;padding:3px 9px}
+#mcp-snips,#mcp-dl{display:flex;flex-direction:column;gap:6px;margin:6px 0}
+.snipwrap{display:flex;flex-direction:column;gap:0;position:relative}
+.sniplabel{font-size:11px;color:var(--dim);margin:2px 0 4px}
+/* the Copy button belongs to the box above it, so it is attached to it rather than floating */
+.snipwrap .snip{margin:0;border-radius:4px 4px 0 0;border-bottom:none}
+.snipwrap .snipcopy{align-self:stretch;font-size:10.5px;padding:4px 9px;border-radius:0 0 4px 4px;
+  border-top:none;text-align:center}
 
 /* A fold for options most people never change. Open it and the defaults are still there. */
 .grp details.sub{border-top:1px solid var(--line);margin-top:6px;padding-top:4px}
@@ -335,3 +338,67 @@ body.desktop .web-only{display:none!important}
 .grp details.sub>summary::before{content:"▸ ";font-size:9px}
 .grp details.sub[open]>summary::before{content:"▾ "}
 .grp label.dim{opacity:.4}
+
+/* ---------------------------------------------------------------- agent tabs
+   Three ways to connect. Stacked, they read as one long list and people tick the wrong box,
+   so there is one tab each and a dot on the tab when that path is live. */
+.tabs{display:flex;gap:2px;margin:0 0 9px;background:#0a1216;border:1px solid var(--line);
+  border-radius:6px;padding:2px}
+.tabs .tab{flex:1;background:none;border:none;color:var(--dim);font-size:11px;padding:5px 4px;
+  border-radius:4px;display:flex;align-items:center;justify-content:center;gap:4px;min-width:0}
+.tabs .tab:hover{color:var(--ink)}
+.tabs .tab.on{background:#1c2c32;color:var(--ink);font-weight:600}
+.tabs .tab .dot{width:5px;height:5px;border-radius:50%;background:transparent;flex:none}
+.tabs .tab.live .dot{background:var(--teal);box-shadow:0 0 0 2px #46c6d233}
+.tabs .tab.warn .dot{background:#e0b263;box-shadow:0 0 0 2px #e0b26333}
+
+.tabpane .use{margin:0 0 9px;font-size:11px;color:var(--dim);line-height:1.45}
+.tabpane .sublabel{margin:0 0 5px;font-size:11px;color:var(--dim)}
+.tabpane .step{display:grid;grid-template-columns:16px 1fr;gap:7px;margin:0 0 9px}
+.tabpane .step>b{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;
+  color:var(--teal);padding-top:5px;font-weight:500}
+.tabpane .step>div{min-width:0}
+body.desktop .tabpane .step{grid-template-columns:1fr}
+
+/* the client picker: chips wrap at the panel's width where a select would truncate */
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 8px}
+.chips button{background:#0a1216;border:1px solid var(--line);color:var(--dim);font-size:10.5px;
+  padding:4px 8px;border-radius:11px}
+.chips button:hover{border-color:var(--teal-dim);color:var(--ink)}
+.chips button.on{background:#12333a;border-color:var(--teal-dim);color:var(--teal);font-weight:600}
+.offscreen{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* the access level of a live session, which was the thing nobody noticed */
+.badge{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px;font-weight:600;
+  letter-spacing:.1em;text-align:center;padding:9px 6px;border-radius:6px;margin:0 0 6px;
+  background:#332612;color:#e0b263;border:1px solid #5a4520}
+.badge.edits{background:#3a1a17;color:#f0897d;border-color:#7a2f27}
+.badge-note{margin:0 0 9px;font-size:11px;color:var(--dim);line-height:1.45;text-align:center}
+
+/* One status component. Every `.mono` hint in the panel used to be its own little thing;
+   this is the same line everywhere, with an optional dot for ok, busy or error. */
+.statusline{margin:6px 0 0;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:10.5px;
+  line-height:1.5;color:var(--dim);display:flex;gap:6px;align-items:baseline;word-break:break-word}
+.statusline::before{content:"";width:5px;height:5px;border-radius:50%;background:#2b3a40;
+  flex:none;transform:translateY(-1px)}
+.statusline.ok::before{background:var(--teal)}
+.statusline.busy::before{background:#e0b263}
+.statusline.err::before{background:#f0897d}
+.statusline.sub{opacity:.75}
+
+/* ---------------------------------------------------------------- panel consistency
+   One row height, one place for a slider's value, one look for a disabled control. Before
+   this each group had drifted a little and the panel read as several panels. */
+.grp .row{min-height:26px}
+.grp .row > span:first-child{line-height:1.35}
+.grp .row > b{min-width:52px}                  /* every slider's value ends in the same column */
+.grp .row > input[type=checkbox]{margin-left:auto;flex:none}
+.grp .row > select{margin-left:auto}
+.grp input:disabled,.grp select:disabled,.grp input[type=range]:disabled{opacity:.4;cursor:not-allowed}
+.grp label.row:has(input:disabled) > span:first-child{opacity:.5}
+.grp details.sub + .statusline{margin-top:8px}
+/* a group is controls first; the prose is one fold at the end of it */
+.grp details.sub{margin-top:9px}
+.grp details.sub .hint:first-of-type{margin-top:6px}
+/* a fold that belongs to the button above it should not look like a new section */
+.grp button.wide + details.sub{border-top:none;margin-top:-2px}
